@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+/meeting-test-zh.mp3
+/meeting-test-zh.vtt
+/artifacts/

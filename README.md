@@ -1,0 +1,81 @@
+# 言澜 Yanlan
+
+> 让每一次发言，都沉淀为可追溯的知识。
+
+[![CI](https://github.com/ranxi2001/yanlan-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/ranxi2001/yanlan-ai/actions/workflows/ci.yml)
+[![MIT License](https://img.shields.io/badge/license-MIT-087e8b.svg)](./LICENSE)
+
+[在线体验](https://onefly.top/yanlan-ai/) · [报告问题](https://github.com/ranxi2001/yanlan-ai/issues/new/choose) · [参与贡献](./CONTRIBUTING.md)
+
+言澜是一个纯前端、可自行部署的开源 AI 会议记录工具。它采用双模型管线：MiMo 负责语音识别，GPT 结合会议背景校正专有名词和上下文，再生成摘要、决策、行动项并回答关于逐字稿的问题。
+
+![言澜会议工作台](./docs/yanlan-workspace.png)
+
+## 功能
+
+- 浏览器录音，分段实时转写，结束后保存完整录音
+- 上传常见格式的音频并转写
+- 保留原始 ASR 片段，GPT 校正不改变时间轴
+- 会议摘要、关键词、决策、行动项和逐字稿问答
+- 本地播放器，点击时间戳跳转到录音位置
+- 导出原始录音、Markdown、WebVTT、JSON 和离线 HTML
+- 生成包含逐字稿、时间和摘要的只读链接
+- 录音保存在 IndexedDB，会议数据保存在 localStorage
+
+MiMo-V2.5-ASR 的模型能力和部署信息见小米官方的 [MiMo-V2.5-ASR 仓库](https://github.com/XiaomiMiMo/MiMo-V2.5-ASR)。默认调用方式与官方 [MiMo-Code](https://github.com/XiaomiMiMo/MiMo-Code) 一致：通过 Chat Completions 发送 data URL 音频和 `asr_options`；设置中也保留了标准 OpenAI Transcriptions 协议，便于连接兼容网关。
+
+## 本地运行
+
+需要 Node.js 20 或更高版本。
+
+```bash
+npm install
+npm run dev
+```
+
+打开 `http://127.0.0.1:4173`。第一次录音或上传前，在页面设置中分别填写：
+
+1. MiMo ASR 的 Base URL、API Key、模型名、调用协议和转写路径
+2. GPT 的 Base URL、API Key、模型名和 Chat Completions 路径
+3. 可选的会议背景、人员姓名、项目名和专有名词
+
+Base URL 会按填写内容原样使用；应用不会自动添加或删除 `/v1`。项目没有 `.env` 文件，也不在源码中内置 Key。
+
+## 数据与安全
+
+- 两个 API Key 仅写入 `sessionStorage`，关闭标签页后清除。
+- 非敏感端点配置和术语提示保存在 `localStorage`。
+- 完整录音保存在本机浏览器的 IndexedDB。
+- 音频片段会发送给配置的 MiMo API；逐字稿会发送给配置的 GPT API。
+- 分享链接和离线网页不包含 API Key、原始录音、问答历史或原始 ASR 备份。
+- 纯前端 BYOK 无法对运行页面隐藏 Key。请使用可信部署，不要在陌生站点填写生产密钥。
+- 模型服务必须允许来自部署域名的浏览器 CORS 请求，否则需要自行部署兼容网关。
+
+## 构建与部署
+
+```bash
+npm run build
+```
+
+`dist/` 是可部署到 GitHub Pages、Cloudflare Pages、Netlify 或任意静态服务器的产物。分享链接把压缩后的逐字稿放在 URL fragment 中，短稿适合直接分享；长稿建议导出离线 HTML，避免聊天软件截断 URL。
+
+## 验证
+
+```bash
+npm run check
+```
+
+浏览器端到端验收需要先启动开发服务器：
+
+```bash
+npm run dev
+npm run test:browser
+```
+
+## 项目状态
+
+`v0.1.0` 是面向个人使用的开源 MVP。下一阶段重点包括说话人分离、逐字稿编辑、协作批注、团队权限和更多模型适配。路线和优先级通过 GitHub Issues 公开维护。
+
+## 开源协议
+
+[MIT](./LICENSE)

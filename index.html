@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f7f8fa" />
+    <meta name="description" content="言澜：纯前端、数据本地保存的开源 AI 会议记录工具" />
+    <title>言澜 · 开源 AI 会议纪要</title>
+    <script type="module" src="/src/app.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand-row">
+          <div class="brand-mark" aria-hidden="true"><i data-lucide="audio-lines"></i></div>
+          <span class="brand-name">言澜</span>
+          <button class="icon-button sidebar-close" id="sidebarClose" title="收起侧栏" aria-label="收起侧栏"><i data-lucide="panel-left-close"></i></button>
+        </div>
+        <button class="new-meeting-button" id="newMeetingButton"><i data-lucide="plus"></i><span>新建记录</span></button>
+        <div class="history-heading"><span>最近记录</span><span class="history-count" id="historyCount">0</span></div>
+        <nav class="history-list" id="historyList" aria-label="最近记录"></nav>
+        <button class="sidebar-footer" id="openSettingsButton" type="button">
+          <span class="status-dot" id="configDot"></span>
+          <span class="config-copy"><strong id="configModel">未配置模型</strong><span id="configHost">点击配置 API</span></span>
+          <i data-lucide="settings-2"></i>
+        </button>
+      </aside>
+
+      <main class="main-shell">
+        <header class="topbar">
+          <button class="icon-button sidebar-open" id="sidebarOpen" title="打开侧栏" aria-label="打开侧栏"><i data-lucide="panel-left-open"></i></button>
+          <div class="meeting-heading">
+            <input id="meetingTitle" class="meeting-title" value="新的会议记录" aria-label="记录标题" />
+            <div class="meeting-meta" id="meetingMeta">尚未开始</div>
+          </div>
+          <div class="topbar-actions">
+            <button class="icon-button" id="copyButton" title="复制逐字稿" aria-label="复制逐字稿" disabled><i data-lucide="copy"></i></button>
+            <button class="icon-button" id="shareButton" title="分享逐字稿" aria-label="分享逐字稿" disabled><i data-lucide="share-2"></i></button>
+            <div class="menu-wrap">
+              <button class="icon-button" id="exportButton" title="导出" aria-label="导出" aria-haspopup="menu" aria-expanded="false" disabled><i data-lucide="download"></i></button>
+              <div class="menu-popover hidden" id="exportMenu" role="menu">
+                <button type="button" role="menuitem" data-export="audio"><i data-lucide="file-audio"></i><span>录音文件</span></button>
+                <button type="button" role="menuitem" data-export="markdown"><i data-lucide="file-text"></i><span>Markdown 逐字稿</span></button>
+                <button type="button" role="menuitem" data-export="vtt"><i data-lucide="captions"></i><span>WebVTT 字幕</span></button>
+                <button type="button" role="menuitem" data-export="json"><i data-lucide="braces"></i><span>JSON 数据</span></button>
+                <button type="button" role="menuitem" data-export="html"><i data-lucide="file-code-2"></i><span>离线分享网页</span></button>
+              </div>
+            </div>
+            <button class="icon-button" id="settingsButton" title="API 设置" aria-label="API 设置"><i data-lucide="settings-2"></i></button>
+            <button class="icon-button mobile-only" id="insightsButton" title="查看智能纪要" aria-label="查看智能纪要"><i data-lucide="panel-right-open"></i></button>
+          </div>
+        </header>
+
+        <div class="notice hidden" id="configNotice"><i data-lucide="circle-alert"></i><button id="configNoticeButton" type="button">请先配置 MiMo API，密钥只保存在当前标签页</button></div>
+        <div class="shared-banner hidden" id="sharedBanner"><i data-lucide="link-2"></i><span>这是只读分享稿，不包含原始录音与 API 配置</span></div>
+
+        <div class="workspace">
+          <section class="transcript-pane">
+            <div class="pane-toolbar">
+              <div class="pane-title"><i data-lucide="text-quote"></i><span>逐字稿</span></div>
+              <label class="search-box hidden" id="searchBox"><i data-lucide="search"></i><input id="searchInput" type="search" placeholder="搜索逐字稿" /></label>
+            </div>
+
+            <div class="live-recorder hidden" id="liveRecorder">
+              <span class="live-badge"><span></span>录音中</span>
+              <div class="mini-waveform" id="waveform" aria-hidden="true"></div>
+              <time id="recordingTime">00:00</time>
+              <span class="live-status" id="liveStatus">正在监听</span>
+              <button class="stop-button compact" id="stopRecordButton"><span></span><span>结束</span></button>
+            </div>
+
+            <div class="recording-player hidden" id="recordingPlayer"><i data-lucide="headphones"></i><audio id="audioPlayer" controls preload="metadata"></audio></div>
+
+            <div class="empty-workspace" id="emptyWorkspace">
+              <div class="recorder-stage" id="recorderStage">
+                <div class="record-orbit"><button class="record-button" id="recordButton" aria-label="开始录音"><i data-lucide="mic"></i></button></div>
+                <h1>开始一段新记录</h1>
+                <div class="source-actions">
+                  <button class="primary-button" id="startRecordButton"><i data-lucide="mic"></i><span>开始录音</span></button>
+                  <button class="secondary-button" id="uploadButton"><i data-lucide="upload"></i><span>上传音频</span></button>
+                  <input id="fileInput" type="file" accept="audio/*,.wav,.mp3,.m4a,.webm,.ogg,.mp4" hidden />
+                </div>
+                <div class="language-row">
+                  <label for="languageSelect">语言</label>
+                  <select id="languageSelect"><option value="auto">自动识别</option><option value="zh">中文</option><option value="en">English</option></select>
+                  <span>录音保存在本机浏览器</span>
+                </div>
+              </div>
+              <div class="processing-stage hidden" id="processingStage">
+                <div class="processing-mark"><i data-lucide="audio-waveform"></i></div>
+                <h2 id="processingTitle">正在转写录音</h2><div class="progress-track"><span></span></div><p id="processingFile"></p>
+              </div>
+              <div class="error-stage hidden" id="errorStage">
+                <div class="error-mark"><i data-lucide="triangle-alert"></i></div><h2>这次处理没有完成</h2><p id="errorMessage"></p>
+                <div class="source-actions"><button class="primary-button" id="retryButton"><i data-lucide="refresh-cw"></i><span>重试</span></button><button class="secondary-button" id="replaceAudioButton"><i data-lucide="replace"></i><span>更换音频</span></button></div>
+              </div>
+            </div>
+            <div class="transcript-list hidden" id="transcriptList"></div>
+          </section>
+
+          <aside class="insights-pane" id="insightsPane">
+            <div class="insights-header">
+              <div class="segmented-control" role="tablist">
+                <button class="segment active" data-insight="summary" role="tab">摘要</button>
+                <button class="segment" data-insight="actions" role="tab">行动项</button>
+                <button class="segment" data-insight="qa" role="tab">提问</button>
+              </div>
+              <button class="icon-button mobile-only" id="insightsClose" title="关闭" aria-label="关闭智能纪要"><i data-lucide="x"></i></button>
+            </div>
+            <div class="insight-content" id="insightContent"></div>
+          </aside>
+        </div>
+      </main>
+    </div>
+
+    <dialog class="dialog" id="settingsDialog">
+      <form method="dialog" id="settingsForm">
+        <header><div><h2>MiMo API 设置</h2><p>Base URL 按官方控制台原样填写，页面不会自动增删 <code>/v1</code>。</p></div><button class="icon-button" value="cancel" aria-label="关闭"><i data-lucide="x"></i></button></header>
+        <section class="settings-section">
+          <h3><i data-lucide="audio-lines"></i>MiMo 语音转写</h3>
+          <div class="settings-fields">
+            <label class="field field-wide"><span>ASR Base URL</span><input id="asrBaseUrlInput" type="url" placeholder="按小米控制台原样填写" autocomplete="url" /></label>
+            <label class="field field-wide"><span>ASR API Key</span><span class="secret-input"><input id="asrApiKeyInput" type="password" placeholder="仅保存在当前标签页" autocomplete="off" /><button class="toggle-key-button" data-key-input="asrApiKeyInput" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏 ASR 密钥"><i data-lucide="eye"></i></button></span></label>
+            <label class="field"><span>语音模型</span><input id="asrModelInput" value="mimo-v2.5-asr" /></label>
+            <label class="field"><span>调用协议</span><select id="asrProtocolInput"><option value="mimo-chat" selected>MiMo Chat（官方）</option><option value="openai-transcriptions">OpenAI Transcriptions</option></select></label>
+            <label class="field"><span>转写路径</span><input id="asrPathInput" value="chat/completions" /></label>
+            <label class="field"><span>实时分段</span><select id="chunkSecondsInput"><option value="5">5 秒</option><option value="10" selected>10 秒</option><option value="15">15 秒</option></select></label>
+          </div>
+        </section>
+        <section class="settings-section">
+          <h3><i data-lucide="sparkles"></i>GPT 总结与提问</h3>
+          <div class="settings-fields">
+            <label class="field field-wide"><span>GPT Base URL</span><input id="chatBaseUrlInput" type="url" placeholder="https://example.com/v1" autocomplete="url" /></label>
+            <label class="field field-wide"><span>GPT API Key</span><span class="secret-input"><input id="chatApiKeyInput" type="password" placeholder="仅保存在当前标签页" autocomplete="off" /><button class="toggle-key-button" data-key-input="chatApiKeyInput" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏 GPT 密钥"><i data-lucide="eye"></i></button></span></label>
+            <label class="field"><span>文本模型</span><input id="chatModelInput" value="gpt-4o-mini" /></label>
+            <label class="field"><span>对话路径</span><input id="chatPathInput" value="chat/completions" /></label>
+            <label class="field field-wide"><span>会议背景 / 专有名词</span><textarea id="contextHintInput" rows="3" placeholder="例如：项目名 OneFly；参会人小明、Alice；术语 Karmada、OpenSandbox"></textarea></label>
+          </div>
+        </section>
+        <p class="settings-note"><i data-lucide="shield-check"></i><span>两个 Key 都使用 sessionStorage，关闭标签页即清除。音频只发送给 MiMo ASR；原始逐字稿会发送给 GPT 校正专有名词、生成总结和回答问题。</span></p>
+        <footer><button class="secondary-button" value="cancel">取消</button><button class="primary-button" id="saveSettingsButton" value="default">保存设置</button></footer>
+      </form>
+    </dialog>
+
+    <dialog class="dialog share-dialog" id="shareDialog">
+      <form method="dialog">
+        <header><div><h2>分享逐字稿</h2><p>分享链接只有逐字稿、时间与摘要，不包含录音和密钥。</p></div><button class="icon-button" value="cancel" aria-label="关闭"><i data-lucide="x"></i></button></header>
+        <label class="field field-wide"><span>只读链接</span><span class="copy-field"><input id="shareUrlInput" readonly /><button type="button" id="copyShareButton" title="复制链接" aria-label="复制分享链接"><i data-lucide="copy"></i></button></span></label>
+        <p class="share-hint" id="shareHint"></p>
+        <footer><button class="secondary-button" type="button" id="downloadShareButton"><i data-lucide="file-down"></i><span>下载离线网页</span></button><button class="primary-button" type="button" id="copySharePrimaryButton"><i data-lucide="link-2"></i><span>复制链接</span></button></footer>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <div class="sidebar-scrim" id="sidebarScrim"></div>
+  </body>
+</html>

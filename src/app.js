@@ -1,0 +1,987 @@
+import { createIcons, icons } from "lucide";
+import "./styles.css";
+import {
+  DEFAULT_CONFIG,
+  askTranscript,
+  buildShareHtml,
+  correctTranscript,
+  formatTimestamp,
+  publicMeeting,
+  summarizeTranscript,
+  toMarkdown,
+  toVtt,
+  transcribeAudio,
+} from "./api.js";
+import { deleteRecording, getRecording, saveRecording } from "./storage.js";
+
+const MEETINGS_KEY = "yanlan.meetings.v1";
+const CONFIG_KEY = "yanlan.config.v1";
+const ASR_KEY = "yanlan.asr-key.v1";
+const CHAT_KEY = "yanlan.chat-key.v1";
+const MAX_MEETINGS = 40;
+const MAX_RECORDING_SECONDS = 4 * 60 * 60;
+
+const $ = (selector) => document.querySelector(selector);
+const elements = {
+  sidebar: $("#sidebar"), sidebarOpen: $("#sidebarOpen"), sidebarClose: $("#sidebarClose"), sidebarScrim: $("#sidebarScrim"),
+  historyList: $("#historyList"), historyCount: $("#historyCount"), newMeetingButton: $("#newMeetingButton"),
+  meetingTitle: $("#meetingTitle"), meetingMeta: $("#meetingMeta"), copyButton: $("#copyButton"), shareButton: $("#shareButton"),
+  exportButton: $("#exportButton"), exportMenu: $("#exportMenu"), settingsButton: $("#settingsButton"), insightsButton: $("#insightsButton"),
+  insightsClose: $("#insightsClose"), insightsPane: $("#insightsPane"), configNotice: $("#configNotice"),
+  configNoticeButton: $("#configNoticeButton"), configDot: $("#configDot"), configModel: $("#configModel"), configHost: $("#configHost"),
+  openSettingsButton: $("#openSettingsButton"), sharedBanner: $("#sharedBanner"), searchBox: $("#searchBox"), searchInput: $("#searchInput"),
+  emptyWorkspace: $("#emptyWorkspace"), recorderStage: $("#recorderStage"), processingStage: $("#processingStage"),
+  processingTitle: $("#processingTitle"), processingFile: $("#processingFile"), errorStage: $("#errorStage"), errorMessage: $("#errorMessage"),
+  transcriptList: $("#transcriptList"), insightContent: $("#insightContent"), recordButton: $("#recordButton"),
+  startRecordButton: $("#startRecordButton"), stopRecordButton: $("#stopRecordButton"), liveRecorder: $("#liveRecorder"),
+  liveStatus: $("#liveStatus"), recordingTime: $("#recordingTime"), waveform: $("#waveform"), uploadButton: $("#uploadButton"),
+  replaceAudioButton: $("#replaceAudioButton"), fileInput: $("#fileInput"), languageSelect: $("#languageSelect"), retryButton: $("#retryButton"),
+  recordingPlayer: $("#recordingPlayer"), audioPlayer: $("#audioPlayer"), settingsDialog: $("#settingsDialog"),
+  settingsForm: $("#settingsForm"), asrBaseUrlInput: $("#asrBaseUrlInput"), asrApiKeyInput: $("#asrApiKeyInput"),
+  asrModelInput: $("#asrModelInput"), asrProtocolInput: $("#asrProtocolInput"), asrPathInput: $("#asrPathInput"), chunkSecondsInput: $("#chunkSecondsInput"),
+  chatBaseUrlInput: $("#chatBaseUrlInput"), chatApiKeyInput: $("#chatApiKeyInput"), chatModelInput: $("#chatModelInput"),
+  chatPathInput: $("#chatPathInput"), contextHintInput: $("#contextHintInput"), shareDialog: $("#shareDialog"),
+  shareUrlInput: $("#shareUrlInput"), shareHint: $("#shareHint"), copyShareButton: $("#copyShareButton"),
+  copySharePrimaryButton: $("#copySharePrimaryButton"), downloadShareButton: $("#downloadShareButton"), toast: $("#toast"),
+};
+
+const state = {
+  meetings: loadMeetings(),
+  activeId: null,
+  draftTitle: "新的会议记录",
+  config: loadConfig(),
+  insight: "summary",
+  query: "",
+  recorder: null,
+  recording: false,
+  sharedMode: false,
+  playerUrl: "",
+  playerLoadToken: 0,
+  toastTimer: 0,
+};
+state.activeId = state.meetings[0]?.id || null;
+
+bindEvents();
+initialize();
+
+async function initialize() {
+  const shared = await readSharedMeeting().catch(() => null);
+  if (shared) {
+    shared.id = "shared";
+    shared.status = "done";
+    shared.readOnly = true;
+    shared.hasRecording = false;
+    shared.qa = [];
+    state.meetings = [shared];
+    state.activeId = shared.id;
+    state.sharedMode = true;
+  }
+  render();
+}
+
+function bindEvents() {
+  elements.newMeetingButton.addEventListener("click", newMeeting);
+  elements.recordButton.addEventListener("click", startRecording);
+  elements.startRecordButton.addEventListener("click", startRecording);
+  elements.stopRecordButton.addEventListener("click", stopRecording);
+  elements.uploadButton.addEventListener("click", () => chooseAudio());
+  elements.replaceAudioButton.addEventListener("click", () => chooseAudio());
+  elements.fileInput.addEventListener("change", handleFileSelection);
+  elements.retryButton.addEventListener("click", retryActiveMeeting);
+  elements.copyButton.addEventListener("click", copyTranscript);
+  elements.shareButton.addEventListener("click", openShareDialog);
+  elements.exportButton.addEventListener("click", toggleExportMenu);
+  elements.exportMenu.addEventListener("click", handleExport);
+  elements.settingsButton.addEventListener("click", openSettings);
+  elements.openSettingsButton.addEventListener("click", openSettings);
+  elements.configNoticeButton.addEventListener("click", openSettings);
+  elements.settingsForm.addEventListener("submit", saveSettings);
+  elements.asrProtocolInput.addEventListener("change", () => {
+    elements.asrPathInput.value = elements.asrProtocolInput.value === "mimo-chat" ? "chat/completions" : "audio/transcriptions";
+  });
+  document.querySelectorAll(".toggle-key-button").forEach((button) => button.addEventListener("click", toggleSecret));
+  elements.searchInput.addEventListener("input", (event) => { state.query = event.target.value.trim().toLocaleLowerCase(); renderTranscript(activeMeeting()); });
+  elements.meetingTitle.addEventListener("input", updateMeetingTitle);
+  elements.meetingTitle.addEventListener("blur", normalizeMeetingTitle);
+  elements.historyList.addEventListener("click", handleHistoryClick);
+  document.querySelectorAll("[data-insight]").forEach((button) => button.addEventListener("click", () => selectInsight(button.dataset.insight)));
+  elements.insightContent.addEventListener("submit", handleQuestion);
+  elements.transcriptList.addEventListener("click", seekToSegment);
+  elements.sidebarOpen.addEventListener("click", openSidebar);
+  elements.sidebarClose.addEventListener("click", closeSidebar);
+  elements.sidebarScrim.addEventListener("click", closeSidebar);
+  elements.insightsButton.addEventListener("click", () => elements.insightsPane.classList.add("open"));
+  elements.insightsClose.addEventListener("click", () => elements.insightsPane.classList.remove("open"));
+  elements.copyShareButton.addEventListener("click", copyShareUrl);
+  elements.copySharePrimaryButton.addEventListener("click", copyShareUrl);
+  elements.downloadShareButton.addEventListener("click", downloadShareHtml);
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".menu-wrap")) closeExportMenu();
+  });
+  window.addEventListener("beforeunload", cleanupPlayerUrl);
+}
+
+function render() {
+  const meeting = activeMeeting();
+  renderHistory();
+  renderHeader(meeting);
+  renderMain(meeting);
+  renderInsights(meeting);
+  renderConfig();
+  renderSharedMode();
+  refreshIcons();
+}
+
+function renderHistory() {
+  elements.historyCount.textContent = String(state.meetings.length);
+  if (!state.meetings.length) {
+    elements.historyList.innerHTML = '<div class="history-empty">暂无记录</div>';
+    return;
+  }
+  elements.historyList.innerHTML = state.meetings.map((meeting) => `
+    <div class="history-item ${meeting.id === state.activeId ? "active" : ""}" data-meeting-id="${escapeHtml(meeting.id)}">
+      <span class="history-icon"><i data-lucide="${statusIcon(meeting.status)}"></i></span>
+      <span class="history-text"><span class="history-title">${escapeHtml(meeting.title)}</span><span class="history-date">${escapeHtml(formatHistoryDate(meeting.createdAt))}</span></span>
+      ${meeting.readOnly ? "" : `<button class="history-delete" data-delete-id="${escapeHtml(meeting.id)}" title="删除记录" aria-label="删除记录"><i data-lucide="trash-2"></i></button>`}
+    </div>`).join("");
+}
+
+function renderHeader(meeting) {
+  elements.meetingTitle.value = meeting?.title || state.draftTitle;
+  elements.meetingTitle.readOnly = Boolean(meeting?.readOnly);
+  const exportable = Boolean(meeting?.segments?.length);
+  elements.copyButton.disabled = !exportable;
+  elements.shareButton.disabled = !exportable;
+  elements.exportButton.disabled = !exportable;
+  if (!meeting) {
+    elements.meetingMeta.textContent = "尚未开始";
+    return;
+  }
+  const parts = [formatFullDate(meeting.createdAt)];
+  if (meeting.duration) parts.push(formatDurationLabel(meeting.duration));
+  parts.push(statusLabel(meeting.status));
+  elements.meetingMeta.textContent = parts.filter(Boolean).join(" · ");
+}
+
+function renderMain(meeting) {
+  const liveOrTranscript = Boolean(meeting && (meeting.status === "recording" || meeting.segments?.length || meeting.status === "done"));
+  elements.emptyWorkspace.classList.toggle("hidden", liveOrTranscript);
+  elements.transcriptList.classList.toggle("hidden", !liveOrTranscript);
+  elements.searchBox.classList.toggle("hidden", !meeting?.segments?.length);
+  elements.liveRecorder.classList.toggle("hidden", !state.recording);
+  elements.recorderStage.classList.toggle("hidden", Boolean(meeting));
+  const showProcessing = Boolean(meeting && !liveOrTranscript && ["transcribing", "correcting", "summarizing"].includes(meeting.status));
+  elements.processingStage.classList.toggle("hidden", !showProcessing);
+  elements.errorStage.classList.toggle("hidden", meeting?.status !== "error");
+  if (showProcessing) {
+    elements.processingTitle.textContent = statusLabel(meeting.status);
+    elements.processingFile.textContent = meeting.sourceName || "正在处理音频";
+  }
+  if (meeting?.status === "error") {
+    elements.errorMessage.textContent = meeting.error || "处理失败，请稍后重试。";
+    elements.retryButton.disabled = !meeting.hasRecording;
+  }
+  if (liveOrTranscript) renderTranscript(meeting);
+  renderPlayer(meeting);
+  if (state.recording) renderLiveStatus();
+}
+
+function renderTranscript(meeting) {
+  if (!meeting) return;
+  const segments = (meeting.segments || []).filter((segment) => !state.query || `${segment.speaker} ${segment.text}`.toLocaleLowerCase().includes(state.query));
+  if (!segments.length) {
+    elements.transcriptList.innerHTML = `<div class="no-results">${state.recording ? '<span class="inline-loader"></span>等待第一个实时转写片段' : (state.query ? "没有匹配内容" : "模型未返回逐字稿")}</div>`;
+    return;
+  }
+  elements.transcriptList.innerHTML = segments.map((segment, index) => `
+    <article class="transcript-segment">
+      <button class="segment-time" data-seek="${Number(segment.start_seconds) || 0}" title="跳转到此时间">${formatTimestamp(segment.start_seconds)}</button>
+      <div><div class="speaker-line"><span class="speaker-avatar">${escapeHtml(speakerInitial(segment.speaker, index))}</span><span class="speaker-name">${escapeHtml(segment.speaker || "发言人")}</span></div><p class="segment-text">${escapeHtml(segment.text)}</p></div>
+    </article>`).join("");
+  if (state.recording && !state.query) elements.transcriptList.scrollTop = elements.transcriptList.scrollHeight;
+}
+
+function renderInsights(meeting) {
+  renderInsightTabs();
+  if (!meeting?.segments?.length) {
+    elements.insightContent.innerHTML = `<div class="insight-empty"><i data-lucide="sparkles"></i><span>转写完成后生成智能纪要</span></div>`;
+    return;
+  }
+  if (state.insight === "actions") renderActions(meeting);
+  else if (state.insight === "qa") renderQa(meeting);
+  else renderSummary(meeting);
+}
+
+function renderSummary(meeting) {
+  if (["recording", "correcting", "summarizing"].includes(meeting.status) && !meeting.summary) {
+    elements.insightContent.innerHTML = `<div class="insight-empty"><span class="inline-loader"></span><span>${meeting.status === "recording" ? "结束录音后校正并总结" : statusLabel(meeting.status)}</span></div>`;
+    return;
+  }
+  const keywords = meeting.keywords?.length ? `<div class="keyword-list">${meeting.keywords.map((item) => `<span class="keyword">${escapeHtml(item)}</span>`).join("")}</div>` : '<p class="summary-text">无关键词</p>';
+  const decisions = meeting.decisions?.length ? `<ul class="decision-list">${meeting.decisions.map((item) => `<li class="decision-item">${escapeHtml(item)}</li>`).join("")}</ul>` : '<p class="summary-text">没有识别到明确决策</p>';
+  const correction = meeting.correctionError ? `<p class="inline-warning">术语校正未完成：${escapeHtml(meeting.correctionError)}</p>` : (meeting.terminology?.length ? `<p class="correction-note"><i data-lucide="spell-check-2"></i>已统一 ${meeting.terminology.length} 个术语</p>` : "");
+  elements.insightContent.innerHTML = `${correction}<section class="insight-section"><h2 class="insight-label"><i data-lucide="align-left"></i><span>内容摘要</span></h2><p class="summary-text">${escapeHtml(meeting.summary || meeting.summaryError || "暂无摘要")}</p></section><section class="insight-section"><h2 class="insight-label"><i data-lucide="tags"></i><span>关键词</span></h2>${keywords}</section><section class="insight-section"><h2 class="insight-label"><i data-lucide="circle-check-big"></i><span>会议决策</span></h2>${decisions}</section>`;
+}
+
+function renderActions(meeting) {
+  if (!meeting.action_items?.length) {
+    elements.insightContent.innerHTML = '<div class="insight-empty"><i data-lucide="list-checks"></i><span>没有识别到明确行动项</span></div>';
+    return;
+  }
+  elements.insightContent.innerHTML = `<ul class="action-list">${meeting.action_items.map((item) => `<li class="action-item"><i data-lucide="square-check-big"></i><div><p class="action-task">${escapeHtml(item.task)}</p><div class="action-meta">${item.owner ? `<span><i data-lucide="user"></i>${escapeHtml(item.owner)}</span>` : ""}${item.due ? `<span><i data-lucide="calendar-clock"></i>${escapeHtml(item.due)}</span>` : ""}${!item.owner && !item.due ? "待确认负责人和时间" : ""}</div></div></li>`).join("")}</ul>`;
+}
+
+function renderQa(meeting) {
+  const messages = meeting.qa || [];
+  elements.insightContent.innerHTML = `<div class="qa-view"><div class="qa-messages">${messages.length ? messages.map((message) => `<div class="qa-message ${message.role}"><span>${message.role === "user" ? "你" : "AI"}</span><p>${escapeHtml(message.content)}</p></div>`).join("") : '<div class="qa-starter"><i data-lucide="message-circle-question"></i><span>基于校正后的逐字稿提问</span></div>'}</div>${meeting.readOnly ? '<p class="share-hint">分享稿为只读模式，不能调用你的 API。</p>' : `<form class="qa-composer" id="qaForm"><textarea id="questionInput" rows="2" maxlength="1000" placeholder="例如：会议最终决定了什么？" required></textarea><button class="icon-button" aria-label="发送问题" title="发送问题" ${meeting.asking ? "disabled" : ""}><i data-lucide="${meeting.asking ? "loader-circle" : "send"}"></i></button></form>`}</div>`;
+  requestAnimationFrame(() => { const list = elements.insightContent.querySelector(".qa-messages"); if (list) list.scrollTop = list.scrollHeight; });
+}
+
+function renderInsightTabs() {
+  document.querySelectorAll("[data-insight]").forEach((button) => {
+    const active = button.dataset.insight === state.insight;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+}
+
+function renderConfig() {
+  const asrReady = Boolean(state.config.asrBaseUrl && state.config.asrApiKey);
+  const chatReady = Boolean(state.config.chatBaseUrl && state.config.chatApiKey);
+  elements.configModel.textContent = asrReady && chatReady ? `${state.config.asrModel} + ${state.config.chatModel}` : "双模型未配置";
+  elements.configHost.textContent = asrReady && chatReady ? "MiMo 转写 · GPT 校正" : "点击配置 API";
+  elements.configDot.className = `status-dot ${asrReady && chatReady ? "ready" : "error"}`;
+  elements.configNotice.classList.toggle("hidden", (asrReady && chatReady) || state.sharedMode);
+}
+
+function renderSharedMode() {
+  elements.sharedBanner.classList.toggle("hidden", !state.sharedMode);
+  elements.newMeetingButton.disabled = state.sharedMode;
+  elements.settingsButton.classList.toggle("hidden", state.sharedMode);
+  elements.openSettingsButton.disabled = state.sharedMode;
+}
+
+function renderPlayer(meeting) {
+  const visible = Boolean(meeting?.hasRecording && !state.recording && !meeting.readOnly);
+  elements.recordingPlayer.classList.toggle("hidden", !visible);
+  if (!visible) {
+    cleanupPlayerUrl();
+    elements.audioPlayer.removeAttribute("src");
+    return;
+  }
+  if (elements.audioPlayer.dataset.meetingId === meeting.id && elements.audioPlayer.src) return;
+  loadPlayer(meeting.id);
+}
+
+async function loadPlayer(meetingId) {
+  const token = ++state.playerLoadToken;
+  try {
+    const record = await getRecording(meetingId);
+    if (token !== state.playerLoadToken || !record?.blob) return;
+    cleanupPlayerUrl();
+    state.playerUrl = URL.createObjectURL(record.blob);
+    elements.audioPlayer.src = state.playerUrl;
+    elements.audioPlayer.dataset.meetingId = meetingId;
+  } catch {
+    elements.recordingPlayer.classList.add("hidden");
+  }
+}
+
+function cleanupPlayerUrl() {
+  state.playerLoadToken += 1;
+  if (state.playerUrl) URL.revokeObjectURL(state.playerUrl);
+  state.playerUrl = "";
+}
+
+async function handleFileSelection(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  if (!file.type.startsWith("audio/") && !/\.(wav|mp3|m4a|webm|ogg|mp4)$/i.test(file.name)) {
+    showToast("请选择常见格式的音频文件", true);
+    return;
+  }
+  if (!requireConfig()) return;
+  const duration = await probeDuration(file).catch(() => 0);
+  const titleInput = elements.meetingTitle.value.trim();
+  const autoTitle = !titleInput || ["新的会议记录", "未命名记录"].includes(titleInput);
+  const meeting = createMeeting({
+    title: autoTitle ? cleanFileTitle(file.name) || "新的会议记录" : titleInput,
+    autoTitle,
+    duration,
+    sourceName: file.name,
+    sourceType: file.type || "audio/mpeg",
+    language: elements.languageSelect.value,
+    status: "transcribing",
+  });
+  try {
+    await saveRecording(meeting.id, file, { fileName: file.name, mimeType: file.type || "audio/mpeg" });
+    meeting.hasRecording = true;
+    saveMeetings();
+    render();
+    await processStoredAudio(meeting, file, file.name);
+  } catch (error) {
+    failMeeting(meeting, error);
+  }
+}
+
+async function processStoredAudio(meeting, blob, fileName) {
+  meeting.status = "transcribing";
+  meeting.error = "";
+  saveAndRender();
+  meeting.rawSegments = await transcribeStoredBlob(meeting, blob, fileName);
+  meeting.segments = meeting.rawSegments.map((segment) => ({ ...segment }));
+  if (!meeting.segments.length) throw new Error("MiMo 没有返回可用的逐字稿");
+  await enrichMeeting(meeting);
+}
+
+async function transcribeStoredBlob(meeting, blob, fileName) {
+  if (state.config.asrProtocol === "openai-transcriptions") {
+    const result = await transcribeAudio({ config: state.config, blob, fileName, language: meeting.language });
+    return normalizeSegments(result.segments, meeting.duration);
+  }
+  try {
+    const decoded = await decodeAudio(blob);
+    const chunkSamples = Math.max(15, Number(state.config.chunkSeconds) * 3) * decoded.sampleRate;
+    const segments = [];
+    for (let offset = 0, index = 0; offset < decoded.pcm.length; offset += chunkSamples, index += 1) {
+      const pcm = decoded.pcm.subarray(offset, Math.min(decoded.pcm.length, offset + chunkSamples));
+      const start = offset / decoded.sampleRate;
+      const duration = pcm.length / decoded.sampleRate;
+      meeting.sourceName = `${fileName} · 转写 ${Math.min(100, Math.round(((offset + pcm.length) / decoded.pcm.length) * 100))}%`;
+      elements.processingFile.textContent = meeting.sourceName;
+      const result = await transcribeAudio({ config: state.config, blob: encodeWav(pcm, decoded.sampleRate), fileName: `part-${String(index).padStart(4, "0")}.wav`, language: meeting.language });
+      segments.push(...normalizeSegments(result.segments, duration).map((segment) => ({
+        ...segment,
+        start_seconds: segment.start_seconds + start,
+        end_seconds: segment.end_seconds > segment.start_seconds ? segment.end_seconds + start : start + duration,
+      })));
+    }
+    meeting.sourceName = fileName;
+    return segments;
+  } catch (error) {
+    meeting.sourceName = fileName;
+    if (error.name !== "EncodingError" && !/decode|解码/i.test(error.message)) throw error;
+    const result = await transcribeAudio({ config: state.config, blob, fileName, language: meeting.language });
+    return normalizeSegments(result.segments, meeting.duration);
+  }
+}
+
+async function decodeAudio(blob) {
+  const context = new AudioContext();
+  try {
+    const buffer = await context.decodeAudioData(await blob.arrayBuffer());
+    const pcm = new Float32Array(buffer.length);
+    for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+      const input = buffer.getChannelData(channel);
+      for (let index = 0; index < input.length; index += 1) pcm[index] += input[index] / buffer.numberOfChannels;
+    }
+    return { pcm, sampleRate: buffer.sampleRate };
+  } catch (error) {
+    const wrapped = new Error(`浏览器无法解码该音频：${error.message}`);
+    wrapped.name = "EncodingError";
+    throw wrapped;
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+async function enrichMeeting(meeting) {
+  meeting.status = "correcting";
+  meeting.correctionError = "";
+  saveAndRender();
+  try {
+    const corrected = await correctTranscript({ config: state.config, meeting });
+    meeting.segments = corrected.segments;
+    meeting.terminology = corrected.terminology;
+  } catch (error) {
+    meeting.correctionError = error.message;
+    meeting.segments = (meeting.rawSegments || meeting.segments).map((segment) => ({ ...segment }));
+  }
+
+  meeting.status = "summarizing";
+  saveAndRender();
+  try {
+    const summary = await summarizeTranscript({ config: state.config, meeting });
+    Object.assign(meeting, summary);
+    if (meeting.autoTitle && summary.title) meeting.title = summary.title.slice(0, 120);
+    meeting.summaryError = "";
+  } catch (error) {
+    meeting.summaryError = error.message;
+  }
+  meeting.status = "done";
+  saveAndRender();
+  showToast(meeting.correctionError || meeting.summaryError ? "转写已保存，部分 GPT 处理未完成" : "逐字稿已校正，智能纪要已生成");
+}
+
+async function retryActiveMeeting() {
+  const meeting = activeMeeting();
+  if (!meeting?.hasRecording || !requireConfig()) return;
+  try {
+    const record = await getRecording(meeting.id);
+    if (!record?.blob) throw new Error("本机没有找到这段录音，请重新上传");
+    await processStoredAudio(meeting, record.blob, record.fileName || meeting.sourceName || "audio.webm");
+  } catch (error) {
+    failMeeting(meeting, error);
+  }
+}
+
+async function startRecording() {
+  if (state.recording || !requireConfig()) return;
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    showToast("当前浏览器不支持麦克风录音，请使用新版 Chromium 浏览器", true);
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const audioContext = new AudioContext();
+    const source = audioContext.createMediaStreamSource(stream);
+    const processor = audioContext.createScriptProcessor(4096, Math.min(2, source.channelCount || 1), 1);
+    const mimeType = preferredRecorderMime();
+    const mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    const meeting = createMeeting({
+      title: normalizeDraftTitle(elements.meetingTitle.value), autoTitle: true, duration: 0,
+      sourceName: `录音 ${formatFileDate(new Date())}.${extensionForMime(mediaRecorder.mimeType)}`,
+      sourceType: mediaRecorder.mimeType || "audio/webm", language: elements.languageSelect.value,
+      status: "recording", rawSegments: [], segments: [],
+    });
+    const recorder = {
+      meeting, stream, audioContext, source, processor, mediaRecorder, mediaChunks: [],
+      pendingPcm: [], pendingSamples: 0, processedSamples: 0, sampleRate: audioContext.sampleRate,
+      startedAt: performance.now(), queue: Promise.resolve(), pendingRequests: 0, errors: [], closing: false,
+    };
+    mediaRecorder.addEventListener("dataavailable", (event) => { if (event.data.size) recorder.mediaChunks.push(event.data); });
+    processor.onaudioprocess = (event) => capturePcm(recorder, event.inputBuffer);
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+    mediaRecorder.start(1000);
+    state.recorder = recorder;
+    state.recording = true;
+    recorder.timer = window.setInterval(updateRecordingClock, 250);
+    renderWaveformBars();
+    render();
+    updateRecordingClock();
+  } catch (error) {
+    showToast(error.name === "NotAllowedError" ? "没有获得麦克风权限" : `无法开始录音：${error.message}`, true);
+  }
+}
+
+function capturePcm(recorder, inputBuffer) {
+  if (recorder.closing) return;
+  const length = inputBuffer.length;
+  const mono = new Float32Array(length);
+  for (let channel = 0; channel < inputBuffer.numberOfChannels; channel += 1) {
+    const input = inputBuffer.getChannelData(channel);
+    for (let index = 0; index < length; index += 1) mono[index] += input[index] / inputBuffer.numberOfChannels;
+  }
+  recorder.pendingPcm.push(mono);
+  recorder.pendingSamples += mono.length;
+  updateWaveform(rms(mono));
+  if (recorder.pendingSamples >= Number(state.config.chunkSeconds) * recorder.sampleRate) flushLiveChunk(recorder);
+  if ((performance.now() - recorder.startedAt) / 1000 >= MAX_RECORDING_SECONDS) stopRecording();
+}
+
+function flushLiveChunk(recorder) {
+  if (!recorder.pendingSamples) return;
+  const pcm = concatenatePcm(recorder.pendingPcm, recorder.pendingSamples);
+  const start = recorder.processedSamples / recorder.sampleRate;
+  recorder.processedSamples += recorder.pendingSamples;
+  recorder.pendingPcm = [];
+  recorder.pendingSamples = 0;
+  const chunkNumber = Math.round(start / Math.max(1, Number(state.config.chunkSeconds)));
+  const wav = encodeWav(pcm, recorder.sampleRate);
+  recorder.queue = recorder.queue.then(async () => {
+    recorder.pendingRequests += 1;
+    renderLiveStatus();
+    try {
+      const result = await transcribeAudio({ config: state.config, blob: wav, fileName: `live-${String(chunkNumber).padStart(4, "0")}.wav`, language: recorder.meeting.language });
+      const duration = pcm.length / recorder.sampleRate;
+      const segments = normalizeSegments(result.segments, duration).map((segment) => ({ ...segment, start_seconds: segment.start_seconds + start, end_seconds: segment.end_seconds ? segment.end_seconds + start : start + duration }));
+      recorder.meeting.rawSegments.push(...segments);
+      recorder.meeting.segments = recorder.meeting.rawSegments.map((segment) => ({ ...segment }));
+      saveMeetings();
+      if (state.activeId === recorder.meeting.id) { renderTranscript(recorder.meeting); renderHeader(recorder.meeting); }
+    } catch (error) {
+      recorder.errors.push(error.message);
+    } finally {
+      recorder.pendingRequests -= 1;
+      renderLiveStatus();
+    }
+  });
+}
+
+async function stopRecording() {
+  const recorder = state.recorder;
+  if (!recorder || recorder.closing) return;
+  recorder.closing = true;
+  flushLiveChunk(recorder);
+  const duration = Math.max(0, (performance.now() - recorder.startedAt) / 1000);
+  const mediaStopped = new Promise((resolve) => recorder.mediaRecorder.addEventListener("stop", resolve, { once: true }));
+  clearInterval(recorder.timer);
+  recorder.processor.onaudioprocess = null;
+  recorder.processor.disconnect();
+  recorder.source.disconnect();
+  if (recorder.mediaRecorder.state !== "inactive") recorder.mediaRecorder.stop();
+  recorder.stream.getTracks().forEach((track) => track.stop());
+  await recorder.audioContext.close().catch(() => {});
+  await mediaStopped;
+  state.recording = false;
+  state.recorder = null;
+  const meeting = recorder.meeting;
+  meeting.duration = duration;
+  meeting.status = "transcribing";
+  const blob = new Blob(recorder.mediaChunks, { type: recorder.mediaRecorder.mimeType || meeting.sourceType });
+  try {
+    if (!blob.size) throw new Error("浏览器没有生成录音数据");
+    await saveRecording(meeting.id, blob, { fileName: meeting.sourceName, mimeType: blob.type });
+    meeting.hasRecording = true;
+    saveAndRender();
+    await recorder.queue;
+    if (!meeting.rawSegments.length) throw new Error(recorder.errors[0] || "MiMo 没有返回实时逐字稿");
+    await enrichMeeting(meeting);
+  } catch (error) {
+    failMeeting(meeting, error);
+  }
+}
+
+function createMeeting(values) {
+  const meeting = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), qa: [], keywords: [], decisions: [], action_items: [], ...values };
+  state.meetings.unshift(meeting);
+  state.meetings = state.meetings.slice(0, MAX_MEETINGS);
+  state.activeId = meeting.id;
+  state.query = "";
+  elements.searchInput.value = "";
+  saveMeetings();
+  render();
+  return meeting;
+}
+
+function failMeeting(meeting, error) {
+  meeting.status = "error";
+  meeting.error = error?.message || String(error);
+  saveAndRender();
+  showToast(meeting.error, true);
+}
+
+function newMeeting() {
+  if (state.recording || state.sharedMode) return;
+  state.activeId = null;
+  state.draftTitle = "新的会议记录";
+  state.query = "";
+  elements.searchInput.value = "";
+  elements.insightsPane.classList.remove("open");
+  closeSidebar();
+  render();
+}
+
+async function handleHistoryClick(event) {
+  const deleteButton = event.target.closest("[data-delete-id]");
+  if (deleteButton) {
+    event.stopPropagation();
+    await removeMeeting(deleteButton.dataset.deleteId);
+    return;
+  }
+  const item = event.target.closest("[data-meeting-id]");
+  if (!item) return;
+  state.activeId = item.dataset.meetingId;
+  state.query = "";
+  elements.searchInput.value = "";
+  closeSidebar();
+  render();
+}
+
+async function removeMeeting(id) {
+  const meeting = state.meetings.find((item) => item.id === id);
+  if (!meeting || !window.confirm(`删除“${meeting.title}”及保存在本机的录音？此操作无法撤销。`)) return;
+  state.meetings = state.meetings.filter((item) => item.id !== id);
+  if (state.activeId === id) state.activeId = state.meetings[0]?.id || null;
+  await deleteRecording(id).catch(() => {});
+  saveAndRender();
+  showToast("记录和本地录音已删除");
+}
+
+async function handleQuestion(event) {
+  if (event.target.id !== "qaForm") return;
+  event.preventDefault();
+  const meeting = activeMeeting();
+  const input = event.target.querySelector("#questionInput");
+  const question = input.value.trim();
+  if (!meeting || !question || meeting.asking || !requireConfig()) return;
+  meeting.qa ||= [];
+  meeting.qa.push({ role: "user", content: question });
+  meeting.asking = true;
+  saveAndRender();
+  try {
+    const answer = await askTranscript({ config: state.config, meeting, question });
+    meeting.qa.push({ role: "assistant", content: answer });
+  } catch (error) {
+    meeting.qa.push({ role: "assistant", content: `回答失败：${error.message}` });
+  } finally {
+    meeting.asking = false;
+    saveAndRender();
+  }
+}
+
+function selectInsight(value) {
+  state.insight = value;
+  renderInsights(activeMeeting());
+  refreshIcons();
+}
+
+function seekToSegment(event) {
+  const target = event.target.closest("[data-seek]");
+  if (!target || !elements.audioPlayer.src) return;
+  elements.audioPlayer.currentTime = Number(target.dataset.seek) || 0;
+  elements.audioPlayer.play().catch(() => {});
+}
+
+function updateMeetingTitle(event) {
+  const title = event.target.value.slice(0, 120);
+  const meeting = activeMeeting();
+  if (meeting && !meeting.readOnly) {
+    meeting.title = title || "未命名记录";
+    meeting.autoTitle = false;
+    saveMeetings();
+    renderHistory();
+    refreshIcons();
+  } else if (!meeting) state.draftTitle = title;
+}
+
+function normalizeMeetingTitle() {
+  if (elements.meetingTitle.value.trim()) return;
+  elements.meetingTitle.value = "未命名记录";
+  const meeting = activeMeeting();
+  if (meeting && !meeting.readOnly) { meeting.title = "未命名记录"; saveMeetings(); renderHistory(); }
+  else if (!meeting) state.draftTitle = "未命名记录";
+}
+
+function openSettings() {
+  if (state.sharedMode) return;
+  elements.asrBaseUrlInput.value = state.config.asrBaseUrl;
+  elements.asrApiKeyInput.value = state.config.asrApiKey;
+  elements.asrModelInput.value = state.config.asrModel;
+  elements.asrProtocolInput.value = state.config.asrProtocol;
+  elements.asrPathInput.value = state.config.asrPath;
+  elements.chunkSecondsInput.value = String(state.config.chunkSeconds);
+  elements.chatBaseUrlInput.value = state.config.chatBaseUrl;
+  elements.chatApiKeyInput.value = state.config.chatApiKey;
+  elements.chatModelInput.value = state.config.chatModel;
+  elements.chatPathInput.value = state.config.chatPath;
+  elements.contextHintInput.value = state.config.contextHint;
+  elements.settingsDialog.showModal();
+  refreshIcons();
+}
+
+function saveSettings(event) {
+  event.preventDefault();
+  const next = {
+    asrBaseUrl: elements.asrBaseUrlInput.value.trim(), asrApiKey: elements.asrApiKeyInput.value.trim(),
+    asrModel: elements.asrModelInput.value.trim(), asrProtocol: elements.asrProtocolInput.value, asrPath: elements.asrPathInput.value.trim(), chunkSeconds: Number(elements.chunkSecondsInput.value),
+    chatBaseUrl: elements.chatBaseUrlInput.value.trim(), chatApiKey: elements.chatApiKeyInput.value.trim(),
+    chatModel: elements.chatModelInput.value.trim(), chatPath: elements.chatPathInput.value.trim(), contextHint: elements.contextHintInput.value.trim(),
+  };
+  if (!next.asrBaseUrl || !next.asrApiKey || !next.asrModel || !next.asrPath || !next.chatBaseUrl || !next.chatApiKey || !next.chatModel || !next.chatPath) {
+    showToast("请完整填写 MiMo 和 GPT 两组配置", true);
+    return;
+  }
+  state.config = { ...DEFAULT_CONFIG, ...next };
+  const { asrApiKey, chatApiKey, ...nonSecret } = state.config;
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(nonSecret));
+  sessionStorage.setItem(ASR_KEY, asrApiKey);
+  sessionStorage.setItem(CHAT_KEY, chatApiKey);
+  elements.settingsDialog.close();
+  renderConfig();
+  showToast("双模型配置已保存在浏览器中");
+}
+
+function loadConfig() {
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem(CONFIG_KEY) || "{}"); } catch {}
+  return { ...DEFAULT_CONFIG, ...stored, asrApiKey: sessionStorage.getItem(ASR_KEY) || "", chatApiKey: sessionStorage.getItem(CHAT_KEY) || "" };
+}
+
+function requireConfig() {
+  if (state.config.asrBaseUrl && state.config.asrApiKey && state.config.chatBaseUrl && state.config.chatApiKey) return true;
+  openSettings();
+  showToast("请先配置 MiMo ASR 和 GPT 两组 API", true);
+  return false;
+}
+
+function toggleSecret(event) {
+  const input = document.getElementById(event.currentTarget.dataset.keyInput);
+  input.type = input.type === "password" ? "text" : "password";
+  event.currentTarget.innerHTML = `<i data-lucide="${input.type === "password" ? "eye" : "eye-off"}"></i>`;
+  refreshIcons();
+}
+
+async function openShareDialog() {
+  const meeting = activeMeeting();
+  if (!meeting?.segments?.length) return;
+  elements.shareUrlInput.value = "正在生成…";
+  elements.shareHint.textContent = "";
+  elements.shareDialog.showModal();
+  try {
+    const url = await buildShareUrl(meeting);
+    elements.shareUrlInput.value = url;
+    elements.shareHint.textContent = url.length > 60000 ? "逐字稿较长，部分聊天软件或浏览器可能截断链接；建议改用离线网页。" : "任何拿到链接的人都能查看这份逐字稿。";
+  } catch (error) {
+    elements.shareUrlInput.value = "";
+    elements.shareHint.textContent = error.message;
+  }
+  refreshIcons();
+}
+
+async function buildShareUrl(meeting) {
+  const bytes = new TextEncoder().encode(JSON.stringify(publicMeeting(meeting)));
+  let prefix = "j.";
+  let output = bytes;
+  if (typeof CompressionStream !== "undefined") {
+    output = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+    prefix = "g.";
+  }
+  const base = `${location.origin}${location.pathname}${location.search}`;
+  return `${base}#share=${prefix}${bytesToBase64Url(output)}`;
+}
+
+async function readSharedMeeting() {
+  const encoded = new URLSearchParams(location.hash.slice(1)).get("share");
+  if (!encoded) return null;
+  const prefix = encoded.slice(0, 2);
+  let bytes = base64UrlToBytes(encoded.slice(2));
+  if (prefix === "g.") {
+    if (typeof DecompressionStream === "undefined") throw new Error("当前浏览器不支持打开压缩分享稿");
+    bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+  } else if (prefix !== "j.") throw new Error("分享稿格式不受支持");
+  const parsed = JSON.parse(new TextDecoder().decode(bytes));
+  if (!Array.isArray(parsed.segments)) throw new Error("分享稿数据不完整");
+  return parsed;
+}
+
+async function copyShareUrl() {
+  if (!elements.shareUrlInput.value || elements.shareUrlInput.value === "正在生成…") return;
+  try { await navigator.clipboard.writeText(elements.shareUrlInput.value); showToast("分享链接已复制"); }
+  catch { showToast("浏览器未允许复制，请手动选择链接", true); }
+}
+
+function downloadShareHtml() {
+  const meeting = activeMeeting();
+  if (!meeting) return;
+  downloadBlob(new Blob([buildShareHtml(meeting)], { type: "text/html;charset=utf-8" }), `${safeFilename(meeting.title)}-分享稿.html`);
+  showToast("离线分享网页已下载");
+}
+
+async function copyTranscript() {
+  const meeting = activeMeeting();
+  if (!meeting?.segments?.length) return;
+  try { await navigator.clipboard.writeText(toMarkdown(meeting)); showToast("逐字稿已复制"); }
+  catch { showToast("浏览器未允许复制", true); }
+}
+
+function toggleExportMenu() {
+  const open = elements.exportMenu.classList.toggle("hidden");
+  elements.exportButton.setAttribute("aria-expanded", String(!open));
+}
+
+function closeExportMenu() {
+  elements.exportMenu.classList.add("hidden");
+  elements.exportButton.setAttribute("aria-expanded", "false");
+}
+
+async function handleExport(event) {
+  const button = event.target.closest("[data-export]");
+  if (!button) return;
+  closeExportMenu();
+  const meeting = activeMeeting();
+  if (!meeting) return;
+  const name = safeFilename(meeting.title);
+  if (button.dataset.export === "audio") {
+    const record = await getRecording(meeting.id).catch(() => null);
+    if (!record?.blob) { showToast("分享稿不包含原始录音", true); return; }
+    downloadBlob(record.blob, record.fileName || `${name}.${extensionForMime(record.mimeType)}`);
+  } else if (button.dataset.export === "markdown") downloadBlob(new Blob([toMarkdown(meeting)], { type: "text/markdown;charset=utf-8" }), `${name}.md`);
+  else if (button.dataset.export === "vtt") downloadBlob(new Blob([toVtt(meeting)], { type: "text/vtt;charset=utf-8" }), `${name}.vtt`);
+  else if (button.dataset.export === "json") downloadBlob(new Blob([JSON.stringify(publicMeeting(meeting), null, 2)], { type: "application/json;charset=utf-8" }), `${name}.json`);
+  else if (button.dataset.export === "html") downloadShareHtml();
+  showToast("导出已开始");
+}
+
+function renderWaveformBars() {
+  if (!elements.waveform.childElementCount) elements.waveform.innerHTML = Array.from({ length: 24 }, () => '<span class="waveform-bar"></span>').join("");
+}
+
+function updateRecordingClock() {
+  if (!state.recorder) return;
+  const seconds = (performance.now() - state.recorder.startedAt) / 1000;
+  elements.recordingTime.textContent = formatTimestamp(seconds);
+  state.recorder.meeting.duration = seconds;
+  renderHeader(state.recorder.meeting);
+}
+
+function renderLiveStatus() {
+  const recorder = state.recorder;
+  if (!recorder) return;
+  if (recorder.pendingRequests) elements.liveStatus.textContent = "正在转写当前片段";
+  else if (recorder.errors.length) elements.liveStatus.textContent = "部分片段等待结束后重试";
+  else elements.liveStatus.textContent = recorder.meeting.segments.length ? "逐字稿实时更新中" : "正在监听";
+}
+
+function updateWaveform(level) {
+  const bars = elements.waveform.children;
+  const energy = Math.min(1, level * 14);
+  for (let index = 0; index < bars.length; index += 1) {
+    const contour = 0.3 + 0.7 * Math.abs(Math.sin(index * 0.8 + performance.now() / 180));
+    bars[index].style.height = `${Math.max(5, 5 + energy * contour * 24)}px`;
+  }
+}
+
+function encodeWav(pcm, sourceRate) {
+  const samples = resample(pcm, sourceRate, 16000);
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  writeAscii(view, 0, "RIFF"); view.setUint32(4, 36 + samples.length * 2, true); writeAscii(view, 8, "WAVE"); writeAscii(view, 12, "fmt ");
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, 16000, true); view.setUint32(28, 32000, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); writeAscii(view, 36, "data"); view.setUint32(40, samples.length * 2, true);
+  let offset = 44;
+  for (const sample of samples) { const clipped = Math.max(-1, Math.min(1, sample)); view.setInt16(offset, clipped < 0 ? clipped * 0x8000 : clipped * 0x7fff, true); offset += 2; }
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+function resample(input, sourceRate, targetRate) {
+  if (sourceRate === targetRate) return input;
+  const ratio = sourceRate / targetRate;
+  const output = new Float32Array(Math.round(input.length / ratio));
+  for (let index = 0; index < output.length; index += 1) {
+    const position = index * ratio;
+    const left = Math.floor(position);
+    const right = Math.min(input.length - 1, left + 1);
+    const weight = position - left;
+    output[index] = input[left] * (1 - weight) + input[right] * weight;
+  }
+  return output;
+}
+
+function concatenatePcm(chunks, length) {
+  const output = new Float32Array(length);
+  let offset = 0;
+  for (const chunk of chunks) { output.set(chunk, offset); offset += chunk.length; }
+  return output;
+}
+
+function rms(samples) {
+  let sum = 0;
+  for (const sample of samples) sum += sample * sample;
+  return Math.sqrt(sum / Math.max(1, samples.length));
+}
+
+function writeAscii(view, offset, text) {
+  for (let index = 0; index < text.length; index += 1) view.setUint8(offset + index, text.charCodeAt(index));
+}
+
+function normalizeSegments(segments, duration) {
+  return (segments || []).map((segment, index) => ({
+    start_seconds: Math.max(0, Number(segment.start_seconds) || 0),
+    end_seconds: Math.max(0, Number(segment.end_seconds) || (index === segments.length - 1 ? duration : 0)),
+    speaker: String(segment.speaker || "发言人 1"), text: String(segment.text || "").trim(),
+  })).filter((segment) => segment.text);
+}
+
+function activeMeeting() { return state.meetings.find((meeting) => meeting.id === state.activeId) || null; }
+
+function saveAndRender() { saveMeetings(); render(); }
+
+function loadMeetings() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MEETINGS_KEY) || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.slice(0, MAX_MEETINGS).map((meeting) => ["recording", "transcribing", "correcting", "summarizing"].includes(meeting.status) ? { ...meeting, status: "error", error: "上次处理被页面关闭中断，可从本地录音重新转写。" } : meeting);
+  } catch { return []; }
+}
+
+function saveMeetings() {
+  if (state.sharedMode) return;
+  try {
+    localStorage.setItem(MEETINGS_KEY, JSON.stringify(state.meetings.slice(0, MAX_MEETINGS).map(({ asking, ...meeting }) => meeting)));
+  } catch { showToast("本地逐字稿存储空间已满，请先导出并删除旧记录", true); }
+}
+
+function probeDuration(file) {
+  return new Promise((resolve, reject) => {
+    const audio = document.createElement("audio");
+    const url = URL.createObjectURL(file);
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(Number.isFinite(audio.duration) ? audio.duration : 0); };
+    audio.onerror = () => { URL.revokeObjectURL(url); reject(new Error("无法读取音频时长")); };
+    audio.src = url;
+  });
+}
+
+function chooseAudio() { if (requireConfig()) elements.fileInput.click(); }
+function openSidebar() { elements.sidebar.classList.add("open"); elements.sidebarScrim.classList.add("visible"); }
+function closeSidebar() { elements.sidebar.classList.remove("open"); elements.sidebarScrim.classList.remove("visible"); }
+function refreshIcons() { createIcons({ icons, attrs: { "stroke-width": 1.8 } }); }
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url; anchor.download = filename; document.body.append(anchor); anchor.click(); anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function bytesToBase64Url(bytes) {
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlToBytes(value) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
+}
+
+function preferredRecorderMime() {
+  return ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm", "audio/mp4"].find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+function extensionForMime(type = "") {
+  if (type.includes("ogg")) return "ogg";
+  if (type.includes("mp4") || type.includes("m4a")) return "m4a";
+  if (type.includes("mpeg")) return "mp3";
+  if (type.includes("wav")) return "wav";
+  return "webm";
+}
+
+function cleanFileTitle(name = "") { return name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim().slice(0, 120); }
+function normalizeDraftTitle(value) { const title = String(value || "").trim(); return !title || ["新的会议记录", "未命名记录"].includes(title) ? `会议记录 ${formatFileDate(new Date())}` : title.slice(0, 120); }
+function safeFilename(value) { return String(value || "会议记录").replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 100) || "会议记录"; }
+function speakerInitial(speaker, index) { return String(speaker || "").match(/\d+/)?.[0] || String(speaker || "S").trim().charAt(0).toUpperCase() || String(index + 1); }
+function statusIcon(status) { return ["recording", "transcribing", "correcting", "summarizing"].includes(status) ? "loader-circle" : status === "error" ? "circle-alert" : "file-audio"; }
+function statusLabel(status) { return ({ recording: "实时转写中", transcribing: "正在转写", correcting: "GPT 正在校正术语", summarizing: "GPT 正在生成纪要", done: "已完成", error: "处理失败" })[status] || ""; }
+
+function formatHistoryDate(value) {
+  const date = new Date(value); if (Number.isNaN(date.getTime())) return "刚刚";
+  return new Intl.DateTimeFormat("zh-CN", date.toDateString() === new Date().toDateString() ? { hour: "2-digit", minute: "2-digit", hour12: false } : { month: "numeric", day: "numeric" }).format(date);
+}
+
+function formatFullDate(value) {
+  const date = new Date(value); if (Number.isNaN(date.getTime())) return "刚刚";
+  return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+}
+
+function formatFileDate(date) {
+  const parts = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.month}-${values.day}_${values.hour}-${values.minute}`;
+}
+
+function formatDurationLabel(seconds) {
+  const value = Math.max(0, Math.round(seconds)); const hours = Math.floor(value / 3600); const minutes = Math.floor((value % 3600) / 60); const rest = value % 60;
+  return `${hours ? `${hours} 小时 ` : ""}${minutes ? `${minutes} 分 ` : ""}${rest} 秒`.trim();
+}
+
+function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]); }
+
+function showToast(message, error = false) {
+  clearTimeout(state.toastTimer);
+  elements.toast.textContent = message;
+  elements.toast.className = `toast visible${error ? " error" : ""}`;
+  state.toastTimer = setTimeout(() => { elements.toast.className = "toast"; }, 3600);
+}
