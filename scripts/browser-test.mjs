@@ -166,6 +166,12 @@ try {
   await page.locator("#settingsDialog header .icon-button").click();
   assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.open), false);
   await page.locator("#settingsButton").click();
+  const settingsActionButtons = page.locator("#settingsDialog .settings-footer button");
+  assert.equal(await settingsActionButtons.count(), 5);
+  assert.deepEqual(await settingsActionButtons.evaluateAll((buttons) => buttons.map((button) => getComputedStyle(button).fontSize)), Array(5).fill("11px"));
+  assert.deepEqual(await settingsActionButtons.evaluateAll((buttons) => buttons.map((button) => getComputedStyle(button).minHeight)), Array(5).fill("34px"));
+  await page.locator("#saveSettingsButton").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: new URL("../artifacts/settings-actions-desktop.png", import.meta.url).pathname, fullPage: true });
   await page.locator('#settingsDialog footer [value="cancel"]').click();
   assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.open), false);
 

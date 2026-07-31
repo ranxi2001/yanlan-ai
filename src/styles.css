@@ -1697,6 +1697,19 @@ textarea:focus-visible {
   justify-content: space-between !important;
 }
 
+.settings-footer button {
+  min-height: 34px;
+  padding-right: 12px;
+  padding-left: 12px;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.dialog .settings-footer button svg {
+  width: 14px;
+  height: 14px;
+}
+
 .settings-key-actions,
 .dialog-actions {
   display: flex;
@@ -2592,6 +2605,10 @@ textarea:focus-visible {
 
   .settings-footer {
     align-items: stretch;
+  }
+
+  .settings-footer button {
+    min-height: 40px;
   }
 
   .settings-key-actions {
