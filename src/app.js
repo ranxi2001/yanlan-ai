@@ -31,6 +31,7 @@ const elements = {
   configNoticeButton: $("#configNoticeButton"), configDot: $("#configDot"), configModel: $("#configModel"), configHost: $("#configHost"),
   openSettingsButton: $("#openSettingsButton"), sharedBanner: $("#sharedBanner"), searchBox: $("#searchBox"), searchInput: $("#searchInput"),
   emptyWorkspace: $("#emptyWorkspace"), recorderStage: $("#recorderStage"), processingStage: $("#processingStage"),
+  recorderHeading: $("#recorderHeading"), interviewBrief: $("#interviewBrief"), interviewBriefTitle: $("#interviewBriefTitle"), interviewBriefMeta: $("#interviewBriefMeta"),
   processingTitle: $("#processingTitle"), processingFile: $("#processingFile"), errorStage: $("#errorStage"), errorMessage: $("#errorMessage"),
   transcriptList: $("#transcriptList"), insightContent: $("#insightContent"), recordButton: $("#recordButton"),
   startRecordButton: $("#startRecordButton"), stopRecordButton: $("#stopRecordButton"), liveRecorder: $("#liveRecorder"),
@@ -43,12 +44,19 @@ const elements = {
   chatPathInput: $("#chatPathInput"), contextHintInput: $("#contextHintInput"), shareDialog: $("#shareDialog"),
   shareUrlInput: $("#shareUrlInput"), shareHint: $("#shareHint"), copyShareButton: $("#copyShareButton"),
   copySharePrimaryButton: $("#copySharePrimaryButton"), downloadShareButton: $("#downloadShareButton"), toast: $("#toast"),
+  interviewDialog: $("#interviewDialog"), interviewForm: $("#interviewForm"), interviewDialogClose: $("#interviewDialogClose"),
+  interviewCancelButton: $("#interviewCancelButton"), interviewContinueButton: $("#interviewContinueButton"), candidateAliasInput: $("#candidateAliasInput"),
+  interviewRoleInput: $("#interviewRoleInput"), interviewStageInput: $("#interviewStageInput"), interviewerInput: $("#interviewerInput"),
+  competenciesInput: $("#competenciesInput"), jobDescriptionInput: $("#jobDescriptionInput"), interviewConsentInput: $("#interviewConsentInput"),
 };
 
 const state = {
   meetings: loadMeetings(),
   activeId: null,
   draftTitle: "新的会议记录",
+  draftMode: "meeting",
+  draftInterview: null,
+  pendingSource: "",
   config: loadConfig(),
   insight: "summary",
   query: "",
@@ -81,12 +89,17 @@ async function initialize() {
 
 function bindEvents() {
   elements.newMeetingButton.addEventListener("click", newMeeting);
-  elements.recordButton.addEventListener("click", startRecording);
-  elements.startRecordButton.addEventListener("click", startRecording);
+  elements.recordButton.addEventListener("click", () => requestSource("record"));
+  elements.startRecordButton.addEventListener("click", () => requestSource("record"));
   elements.stopRecordButton.addEventListener("click", stopRecording);
-  elements.uploadButton.addEventListener("click", () => chooseAudio());
-  elements.replaceAudioButton.addEventListener("click", () => chooseAudio());
+  elements.uploadButton.addEventListener("click", () => requestSource("upload"));
+  elements.replaceAudioButton.addEventListener("click", prepareReplacement);
   elements.fileInput.addEventListener("change", handleFileSelection);
+  document.querySelectorAll("[data-record-mode]").forEach((button) => button.addEventListener("click", () => selectRecordMode(button.dataset.recordMode)));
+  elements.interviewBrief.addEventListener("click", () => openInterviewDialog(""));
+  elements.interviewForm.addEventListener("submit", saveInterviewContext);
+  elements.interviewDialogClose.addEventListener("click", closeInterviewDialog);
+  elements.interviewCancelButton.addEventListener("click", closeInterviewDialog);
   elements.retryButton.addEventListener("click", retryActiveMeeting);
   elements.copyButton.addEventListener("click", copyTranscript);
   elements.shareButton.addEventListener("click", openShareDialog);
@@ -106,6 +119,7 @@ function bindEvents() {
   elements.historyList.addEventListener("click", handleHistoryClick);
   document.querySelectorAll("[data-insight]").forEach((button) => button.addEventListener("click", () => selectInsight(button.dataset.insight)));
   elements.insightContent.addEventListener("submit", handleQuestion);
+  elements.insightContent.addEventListener("click", seekToSegment);
   elements.transcriptList.addEventListener("click", seekToSegment);
   elements.sidebarOpen.addEventListener("click", openSidebar);
   elements.sidebarClose.addEventListener("click", closeSidebar);
@@ -129,6 +143,7 @@ function render() {
   renderInsights(meeting);
   renderConfig();
   renderSharedMode();
+  renderRecorderMode();
   refreshIcons();
 }
 
@@ -140,7 +155,7 @@ function renderHistory() {
   }
   elements.historyList.innerHTML = state.meetings.map((meeting) => `
     <div class="history-item ${meeting.id === state.activeId ? "active" : ""}" data-meeting-id="${escapeHtml(meeting.id)}">
-      <span class="history-icon"><i data-lucide="${statusIcon(meeting.status)}"></i></span>
+      <span class="history-icon ${meeting.mode === "interview" ? "interview" : ""}"><i data-lucide="${statusIcon(meeting.status, meeting.mode)}"></i></span>
       <span class="history-text"><span class="history-title">${escapeHtml(meeting.title)}</span><span class="history-date">${escapeHtml(formatHistoryDate(meeting.createdAt))}</span></span>
       ${meeting.readOnly ? "" : `<button class="history-delete" data-delete-id="${escapeHtml(meeting.id)}" title="删除记录" aria-label="删除记录"><i data-lucide="trash-2"></i></button>`}
     </div>`).join("");
@@ -158,8 +173,9 @@ function renderHeader(meeting) {
     return;
   }
   const parts = [formatFullDate(meeting.createdAt)];
+  if (meeting.mode === "interview") parts.push(`${meeting.interviewContext?.stage || "面试"} · ${meeting.interviewContext?.role || "岗位待补充"}`);
   if (meeting.duration) parts.push(formatDurationLabel(meeting.duration));
-  parts.push(statusLabel(meeting.status));
+  parts.push(statusLabel(meeting.status, meeting.mode));
   elements.meetingMeta.textContent = parts.filter(Boolean).join(" · ");
 }
 
@@ -174,7 +190,7 @@ function renderMain(meeting) {
   elements.processingStage.classList.toggle("hidden", !showProcessing);
   elements.errorStage.classList.toggle("hidden", meeting?.status !== "error");
   if (showProcessing) {
-    elements.processingTitle.textContent = statusLabel(meeting.status);
+    elements.processingTitle.textContent = statusLabel(meeting.status, meeting.mode);
     elements.processingFile.textContent = meeting.sourceName || "正在处理音频";
   }
   if (meeting?.status === "error") {
@@ -202,14 +218,46 @@ function renderTranscript(meeting) {
 }
 
 function renderInsights(meeting) {
-  renderInsightTabs();
+  renderInsightTabs(meeting);
   if (!meeting?.segments?.length) {
-    elements.insightContent.innerHTML = `<div class="insight-empty"><i data-lucide="sparkles"></i><span>转写完成后生成智能纪要</span></div>`;
+    elements.insightContent.innerHTML = `<div class="insight-empty"><i data-lucide="sparkles"></i><span>转写完成后生成${meeting?.mode === "interview" ? "面试评估" : "智能纪要"}</span></div>`;
     return;
   }
-  if (state.insight === "actions") renderActions(meeting);
+  if (meeting.mode === "interview" && state.insight === "actions") renderInterviewEvidence(meeting);
+  else if (meeting.mode === "interview" && state.insight === "summary") renderInterviewAssessment(meeting);
+  else if (state.insight === "actions") renderActions(meeting);
   else if (state.insight === "qa") renderQa(meeting);
   else renderSummary(meeting);
+}
+
+function renderInterviewAssessment(meeting) {
+  if (["recording", "correcting", "summarizing"].includes(meeting.status) && !meeting.interviewReport) {
+    elements.insightContent.innerHTML = `<div class="insight-empty"><span class="inline-loader"></span><span>${meeting.status === "recording" ? "结束录音后校正并评估" : statusLabel(meeting.status, meeting.mode)}</span></div>`;
+    return;
+  }
+  const report = meeting.interviewReport;
+  if (!report) {
+    elements.insightContent.innerHTML = `<div class="insight-empty"><i data-lucide="circle-alert"></i><span>${escapeHtml(meeting.summaryError || "面试评估尚未生成")}</span></div>`;
+    return;
+  }
+  const correction = meeting.correctionError ? `<p class="inline-warning">术语校正未完成：${escapeHtml(meeting.correctionError)}</p>` : (meeting.terminology?.length ? `<p class="correction-note"><i data-lucide="spell-check-2"></i>已统一 ${meeting.terminology.length} 个术语</p>` : "");
+  const strengths = report.strengths?.length ? report.strengths.map((item) => `<li>${escapeHtml(item)}</li>`).join("") : "<li>没有足够证据</li>";
+  const risks = report.risks?.length ? report.risks.map((item) => `<li>${escapeHtml(item)}</li>`).join("") : "<li>没有识别到明确待核实项</li>";
+  elements.insightContent.innerHTML = `${correction}<p class="interview-disclaimer"><i data-lucide="shield-check"></i><span>AI 辅助评估仅供面试官复核，不用于自动录用决定。请忽略敏感个人属性并核对逐字稿证据。</span></p><section class="insight-section"><h2 class="insight-label"><i data-lucide="gavel"></i><span>辅助结论</span></h2><div class="recommendation-row"><span class="recommendation-badge ${escapeHtml(report.recommendation)}">${escapeHtml(recommendationLabel(report.recommendation))}</span><span class="confidence-label">置信度 ${escapeHtml(confidenceLabel(report.confidence))}</span></div><p class="summary-text">${escapeHtml(report.overview || meeting.summary || "证据不足")}</p></section><div class="strength-risk-grid"><section><h2 class="insight-label"><i data-lucide="circle-plus"></i><span>优势证据</span></h2><ul>${strengths}</ul></section><section><h2 class="insight-label"><i data-lucide="search-alert"></i><span>风险与待核实</span></h2><ul>${risks}</ul></section></div>`;
+}
+
+function renderInterviewEvidence(meeting) {
+  const report = meeting.interviewReport;
+  if (!report?.competencies?.length) {
+    elements.insightContent.innerHTML = '<div class="insight-empty"><i data-lucide="scan-search"></i><span>没有可展示的能力证据</span></div>';
+    return;
+  }
+  const competencies = report.competencies.map((item) => {
+    const evidence = item.evidence?.length ? `<div class="evidence-list">${item.evidence.map((entry) => `<button class="evidence-item" type="button" data-seek="${Number(entry.start_seconds) || 0}"><time>${formatTimestamp(entry.start_seconds)}</time><span>“${escapeHtml(entry.quote)}”</span><i data-lucide="play"></i></button>`).join("")}</div>` : '<p class="evidence-empty">无可核验逐字稿证据</p>';
+    return `<section class="competency-item"><div class="competency-head"><h2>${escapeHtml(item.name)}</h2><span class="rating-badge ${escapeHtml(item.rating)}">${escapeHtml(ratingLabel(item.rating))}</span></div><p>${escapeHtml(item.assessment || "证据不足")}</p>${evidence}</section>`;
+  }).join("");
+  const followUps = report.follow_ups?.length ? `<section class="follow-up-section"><h2 class="insight-label"><i data-lucide="message-circle-question"></i><span>下一轮建议追问</span></h2><ol>${report.follow_ups.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol></section>` : "";
+  elements.insightContent.innerHTML = `<div class="competency-list">${competencies}</div>${followUps}`;
 }
 
 function renderSummary(meeting) {
@@ -233,12 +281,16 @@ function renderActions(meeting) {
 
 function renderQa(meeting) {
   const messages = meeting.qa || [];
-  elements.insightContent.innerHTML = `<div class="qa-view"><div class="qa-messages">${messages.length ? messages.map((message) => `<div class="qa-message ${message.role}"><span>${message.role === "user" ? "你" : "AI"}</span><p>${escapeHtml(message.content)}</p></div>`).join("") : '<div class="qa-starter"><i data-lucide="message-circle-question"></i><span>基于校正后的逐字稿提问</span></div>'}</div>${meeting.readOnly ? '<p class="share-hint">分享稿为只读模式，不能调用你的 API。</p>' : `<form class="qa-composer" id="qaForm"><textarea id="questionInput" rows="2" maxlength="1000" placeholder="例如：会议最终决定了什么？" required></textarea><button class="icon-button" aria-label="发送问题" title="发送问题" ${meeting.asking ? "disabled" : ""}><i data-lucide="${meeting.asking ? "loader-circle" : "send"}"></i></button></form>`}</div>`;
+  const interview = meeting.mode === "interview";
+  elements.insightContent.innerHTML = `<div class="qa-view"><div class="qa-messages">${messages.length ? messages.map((message) => `<div class="qa-message ${message.role}"><span>${message.role === "user" ? "你" : "AI"}</span><p>${escapeHtml(message.content)}</p></div>`).join("") : `<div class="qa-starter"><i data-lucide="message-circle-question"></i><span>${interview ? "只基于岗位信息和逐字稿证据追问" : "基于校正后的逐字稿提问"}</span></div>`}</div>${meeting.readOnly ? '<p class="share-hint">分享稿为只读模式，不能调用你的 API。</p>' : `<form class="qa-composer" id="qaForm"><textarea id="questionInput" rows="2" maxlength="1000" placeholder="${interview ? "例如：候选人对故障恢复给出了哪些具体证据？" : "例如：会议最终决定了什么？"}" required></textarea><button class="icon-button" aria-label="发送问题" title="发送问题" ${meeting.asking ? "disabled" : ""}><i data-lucide="${meeting.asking ? "loader-circle" : "send"}"></i></button></form>`}</div>`;
   requestAnimationFrame(() => { const list = elements.insightContent.querySelector(".qa-messages"); if (list) list.scrollTop = list.scrollHeight; });
 }
 
-function renderInsightTabs() {
+function renderInsightTabs(meeting) {
+  const interview = meeting?.mode === "interview";
+  const labels = interview ? { summary: "评估", actions: "证据", qa: "追问" } : { summary: "摘要", actions: "行动项", qa: "提问" };
   document.querySelectorAll("[data-insight]").forEach((button) => {
+    button.textContent = labels[button.dataset.insight];
     const active = button.dataset.insight === state.insight;
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", String(active));
@@ -259,6 +311,102 @@ function renderSharedMode() {
   elements.newMeetingButton.disabled = state.sharedMode;
   elements.settingsButton.classList.toggle("hidden", state.sharedMode);
   elements.openSettingsButton.disabled = state.sharedMode;
+}
+
+function renderRecorderMode() {
+  const interview = state.draftMode === "interview";
+  document.querySelectorAll("[data-record-mode]").forEach((button) => {
+    const active = button.dataset.recordMode === state.draftMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  elements.recorderHeading.textContent = interview ? "开始一场面试记录" : "开始一段新记录";
+  elements.interviewBrief.classList.toggle("hidden", !interview);
+  if (!interview) return;
+  const context = state.draftInterview;
+  elements.interviewBriefTitle.textContent = context?.role || "补充面试信息";
+  elements.interviewBriefMeta.textContent = context ? `${context.candidateAlias || "候选人"} · ${context.stage} · ${context.competencies.length} 项能力` : "岗位、轮次、能力项与 JD";
+}
+
+function selectRecordMode(mode) {
+  if (state.activeId || !["meeting", "interview"].includes(mode)) return;
+  state.draftMode = mode;
+  state.draftTitle = mode === "interview" ? "新的面试记录" : "新的会议记录";
+  elements.meetingTitle.value = state.draftTitle;
+  renderRecorderMode();
+  refreshIcons();
+}
+
+function requestSource(source) {
+  if (!requireConfig()) return;
+  if (state.draftMode === "interview" && !state.draftInterview) {
+    openInterviewDialog(source);
+    return;
+  }
+  if (source === "record") startRecording();
+  else chooseAudio();
+}
+
+function openInterviewDialog(source = "") {
+  if (state.sharedMode) return;
+  state.pendingSource = source;
+  const context = state.draftInterview || {};
+  elements.candidateAliasInput.value = context.candidateAlias || "";
+  elements.interviewRoleInput.value = context.role || "";
+  elements.interviewStageInput.value = context.stage || "技术一面";
+  elements.interviewerInput.value = context.interviewer || "";
+  elements.competenciesInput.value = context.competencies?.join("、") || "专业能力、问题分析、协作沟通";
+  elements.jobDescriptionInput.value = context.jobDescription || "";
+  elements.interviewConsentInput.checked = Boolean(context.consentConfirmed);
+  const action = source === "upload" ? "选择音频" : source === "record" ? "继续录音" : "保存信息";
+  const icon = source === "upload" ? "upload" : source === "record" ? "mic" : "check";
+  elements.interviewContinueButton.innerHTML = `<i data-lucide="${icon}"></i><span>${action}</span>`;
+  elements.interviewDialog.showModal();
+  refreshIcons();
+}
+
+function closeInterviewDialog() {
+  state.pendingSource = "";
+  elements.interviewDialog.close();
+}
+
+function saveInterviewContext(event) {
+  event.preventDefault();
+  const competencies = splitCompetencies(elements.competenciesInput.value);
+  if (!competencies.length) {
+    showToast("请至少填写一个岗位能力项", true);
+    return;
+  }
+  state.draftInterview = {
+    candidateAlias: elements.candidateAliasInput.value.trim() || "候选人",
+    role: elements.interviewRoleInput.value.trim(),
+    stage: elements.interviewStageInput.value,
+    interviewer: elements.interviewerInput.value.trim(),
+    competencies,
+    jobDescription: elements.jobDescriptionInput.value.trim(),
+    consentConfirmed: elements.interviewConsentInput.checked,
+  };
+  if (!state.draftTitle || ["新的会议记录", "新的面试记录", "未命名记录"].includes(state.draftTitle)) {
+    state.draftTitle = `${state.draftInterview.candidateAlias} · ${state.draftInterview.role} ${state.draftInterview.stage}`.slice(0, 120);
+    elements.meetingTitle.value = state.draftTitle;
+  }
+  const source = state.pendingSource;
+  state.pendingSource = "";
+  elements.interviewDialog.close();
+  renderRecorderMode();
+  if (source === "record") startRecording();
+  else if (source === "upload") chooseAudio();
+}
+
+function prepareReplacement() {
+  const meeting = activeMeeting();
+  state.draftMode = meeting?.mode === "interview" ? "interview" : "meeting";
+  state.draftInterview = null;
+  if (meeting?.mode === "interview") {
+    state.draftInterview = meeting.interviewContext ? { ...meeting.interviewContext, competencies: [...(meeting.interviewContext.competencies || [])] } : null;
+    state.draftTitle = meeting.title;
+  }
+  chooseAudio();
 }
 
 function renderPlayer(meeting) {
@@ -304,9 +452,9 @@ async function handleFileSelection(event) {
   if (!requireConfig()) return;
   const duration = await probeDuration(file).catch(() => 0);
   const titleInput = elements.meetingTitle.value.trim();
-  const autoTitle = !titleInput || ["新的会议记录", "未命名记录"].includes(titleInput);
+  const autoTitle = state.draftMode !== "interview" && (!titleInput || ["新的会议记录", "未命名记录"].includes(titleInput));
   const meeting = createMeeting({
-    title: autoTitle ? cleanFileTitle(file.name) || "新的会议记录" : titleInput,
+    title: autoTitle ? cleanFileTitle(file.name) || "新的会议记录" : (titleInput || normalizeDraftTitle("")),
     autoTitle,
     duration,
     sourceName: file.name,
@@ -411,7 +559,7 @@ async function enrichMeeting(meeting) {
   }
   meeting.status = "done";
   saveAndRender();
-  showToast(meeting.correctionError || meeting.summaryError ? "转写已保存，部分 GPT 处理未完成" : "逐字稿已校正，智能纪要已生成");
+  showToast(meeting.correctionError || meeting.summaryError ? "转写已保存，部分 GPT 处理未完成" : (meeting.mode === "interview" ? "逐字稿已校正，面试评估已生成" : "逐字稿已校正，智能纪要已生成"));
 }
 
 async function retryActiveMeeting() {
@@ -545,7 +693,12 @@ async function stopRecording() {
 }
 
 function createMeeting(values) {
-  const meeting = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), qa: [], keywords: [], decisions: [], action_items: [], ...values };
+  const meeting = {
+    id: crypto.randomUUID(), createdAt: new Date().toISOString(), qa: [], keywords: [], decisions: [], action_items: [],
+    mode: state.draftMode,
+    ...(state.draftMode === "interview" && state.draftInterview ? { interviewContext: { ...state.draftInterview, competencies: [...state.draftInterview.competencies] } } : {}),
+    ...values,
+  };
   state.meetings.unshift(meeting);
   state.meetings = state.meetings.slice(0, MAX_MEETINGS);
   state.activeId = meeting.id;
@@ -567,6 +720,10 @@ function newMeeting() {
   if (state.recording || state.sharedMode) return;
   state.activeId = null;
   state.draftTitle = "新的会议记录";
+  state.draftMode = "meeting";
+  state.draftInterview = null;
+  state.pendingSource = "";
+  state.insight = "summary";
   state.query = "";
   elements.searchInput.value = "";
   elements.insightsPane.classList.remove("open");
@@ -950,11 +1107,22 @@ function extensionForMime(type = "") {
 }
 
 function cleanFileTitle(name = "") { return name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim().slice(0, 120); }
-function normalizeDraftTitle(value) { const title = String(value || "").trim(); return !title || ["新的会议记录", "未命名记录"].includes(title) ? `会议记录 ${formatFileDate(new Date())}` : title.slice(0, 120); }
+function normalizeDraftTitle(value) {
+  const title = String(value || "").trim();
+  if (state.draftMode === "interview") {
+    if (state.draftInterview) return `${state.draftInterview.candidateAlias || "候选人"} · ${state.draftInterview.role} ${state.draftInterview.stage}`.slice(0, 120);
+    return `面试记录 ${formatFileDate(new Date())}`;
+  }
+  return !title || ["新的会议记录", "未命名记录"].includes(title) ? `会议记录 ${formatFileDate(new Date())}` : title.slice(0, 120);
+}
 function safeFilename(value) { return String(value || "会议记录").replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 100) || "会议记录"; }
 function speakerInitial(speaker, index) { return String(speaker || "").match(/\d+/)?.[0] || String(speaker || "S").trim().charAt(0).toUpperCase() || String(index + 1); }
-function statusIcon(status) { return ["recording", "transcribing", "correcting", "summarizing"].includes(status) ? "loader-circle" : status === "error" ? "circle-alert" : "file-audio"; }
-function statusLabel(status) { return ({ recording: "实时转写中", transcribing: "正在转写", correcting: "GPT 正在校正术语", summarizing: "GPT 正在生成纪要", done: "已完成", error: "处理失败" })[status] || ""; }
+function splitCompetencies(value) { return [...new Set(String(value || "").split(/[、,，;；\n]+/).map((item) => item.trim()).filter(Boolean))].slice(0, 20); }
+function recommendationLabel(value) { return ({ advance: "建议推进", follow_up: "补充追问", hold: "暂不推进", insufficient: "证据不足" })[value] || "证据不足"; }
+function confidenceLabel(value) { return ({ high: "高", medium: "中", low: "低" })[value] || "低"; }
+function ratingLabel(value) { return ({ strong: "突出", adequate: "符合", mixed: "有待确认", weak: "不足", insufficient: "证据不足" })[value] || "证据不足"; }
+function statusIcon(status, mode) { return ["recording", "transcribing", "correcting", "summarizing"].includes(status) ? "loader-circle" : status === "error" ? "circle-alert" : mode === "interview" ? "briefcase-business" : "file-audio"; }
+function statusLabel(status, mode) { return ({ recording: "实时转写中", transcribing: "正在转写", correcting: "GPT 正在校正术语", summarizing: mode === "interview" ? "GPT 正在生成面试评估" : "GPT 正在生成纪要", done: "已完成", error: "处理失败" })[status] || ""; }
 
 function formatHistoryDate(value) {
   const date = new Date(value); if (Number.isNaN(date.getTime())) return "刚刚";

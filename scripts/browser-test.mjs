@@ -31,9 +31,33 @@ await page.route("https://gpt.example/v1/chat/completions", async (route) => {
   assert.match(route.request().headers().authorization || "", /^Bearer gpt-test-key$/);
   const request = route.request().postDataJSON();
   const system = request.messages[0].content;
+  const user = request.messages[1].content;
   let content;
   if (system.includes("逐字稿校对员")) {
-    content = JSON.stringify({ segments: [{ id: 0, speaker: "小明", text: "今天讨论 OneFly 项目，由小明明天完成。" }], terminology: ["OneFly"] });
+    content = user.includes("目标岗位：")
+      ? JSON.stringify({ segments: [{ id: 0, speaker: "候选人", text: "我会先做服务降级，再通过日志和指标定位故障。" }], terminology: ["服务降级"] })
+      : JSON.stringify({ segments: [{ id: 0, speaker: "小明", text: "今天讨论 OneFly 项目，由小明明天完成。" }], terminology: ["OneFly"] });
+  } else if (system.includes("面试评估助手")) {
+    assert.match(system, /不得根据声音、口音/);
+    assert.match(user, /目标岗位：平台工程师/);
+    content = JSON.stringify({
+      title: "平台工程师技术一面",
+      summary: "候选人给出了服务降级和故障定位思路。",
+      keywords: ["服务降级", "故障定位"],
+      interview_report: {
+        recommendation: "follow_up",
+        confidence: "medium",
+        overview: "候选人具备基本故障处理思路，系统设计深度需要补充验证。",
+        competencies: [
+          { name: "系统设计", rating: "mixed", assessment: "提到了服务降级，但缺少容量与一致性细节。", evidence: [{ start_seconds: 0, quote: "我会先做服务降级" }] },
+          { name: "故障排查", rating: "adequate", assessment: "给出了日志与指标结合的定位路径。", evidence: [{ start_seconds: 0, quote: "通过日志和指标定位故障" }] },
+          { name: "协作沟通", rating: "insufficient", assessment: "证据不足", evidence: [] },
+        ],
+        strengths: ["能够先控制故障影响"],
+        risks: ["系统设计深度尚未验证"],
+        follow_ups: ["请说明降级恢复时如何保证数据一致性。"],
+      },
+    });
   } else if (system.includes("会议纪要助手")) {
     content = JSON.stringify({ title: "OneFly 项目周会", summary: "会议明确了 OneFly 项目的近期交付安排。", keywords: ["OneFly", "交付"], decisions: ["项目明天完成"], action_items: [{ task: "完成 OneFly 项目", owner: "小明", due: "明天" }] });
   } else {
@@ -110,8 +134,64 @@ try {
   await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("已完成"), null, { timeout: 15000 });
   await page.locator("#recordingPlayer:not(.hidden)").waitFor();
 
+  await page.locator("#newMeetingButton").click();
+  await page.locator('[data-record-mode="interview"]').click();
+  assert.equal(await page.locator("#recorderHeading").textContent(), "开始一场面试记录");
+  await page.locator("#uploadButton").click();
+  await page.locator("#candidateAliasInput").fill("候选人 A");
+  await page.locator("#interviewRoleInput").fill("平台工程师");
+  await page.locator("#interviewStageInput").selectOption({ label: "技术一面" });
+  await page.locator("#interviewerInput").fill("内部面试官");
+  await page.locator("#competenciesInput").fill("系统设计、故障排查、协作沟通");
+  await page.locator("#jobDescriptionInput").fill("内部 JD：负责核心平台可靠性");
+  await page.locator("#interviewConsentInput").check();
+  const fileChooserPromise = page.waitForEvent("filechooser");
+  await page.locator("#interviewContinueButton").click();
+  const fileChooser = await fileChooserPromise;
+  await fileChooser.setFiles(fixture);
+  await page.getByText("补充追问", { exact: true }).waitFor({ timeout: 15000 });
+  assert.equal(await page.locator('[data-insight="summary"]').textContent(), "评估");
+  assert.equal(await page.locator('[data-insight="actions"]').textContent(), "证据");
+  assert.equal(await page.locator('[data-insight="qa"]').textContent(), "追问");
+  await page.locator(".interview-disclaimer").waitFor();
+
+  await page.locator('[data-insight="actions"]').click();
+  await page.getByText("故障排查", { exact: true }).waitFor();
+  await page.locator(".evidence-item", { hasText: "通过日志和指标定位故障" }).waitFor();
+  assert.equal(await page.locator(".evidence-item").first().getAttribute("data-seek"), "0");
+
+  await page.locator("#shareButton").click();
+  await page.waitForFunction(() => document.querySelector("#shareUrlInput").value.startsWith("http"));
+  const interviewShareUrl = await page.locator("#shareUrlInput").inputValue();
+  const decodedPublic = await page.evaluate(async (url) => {
+    const encoded = new URLSearchParams(new URL(url).hash.slice(1)).get("share");
+    const prefix = encoded.slice(0, 2);
+    const value = encoded.slice(2).replace(/-/g, "+").replace(/_/g, "/");
+    const bytes = Uint8Array.from(atob(value.padEnd(Math.ceil(value.length / 4) * 4, "=")), (char) => char.charCodeAt(0));
+    const output = prefix === "g." ? new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer()) : bytes;
+    return JSON.parse(new TextDecoder().decode(output));
+  }, interviewShareUrl);
+  assert.equal(decodedPublic.interviewContext.role, "平台工程师");
+  assert.equal(decodedPublic.interviewReport.recommendation, "follow_up");
+  assert.doesNotMatch(JSON.stringify(decodedPublic), /内部 JD|内部面试官/);
+  await page.keyboard.press("Escape");
+  await page.locator('[data-insight="summary"]').click();
+  await page.locator("#toast").evaluate((element) => { element.className = "toast"; });
+  await page.screenshot({ path: new URL("../artifacts/interview-desktop.png", import.meta.url).pathname, fullPage: true });
+
+  const interviewMobile = await context.newPage();
+  await interviewMobile.setViewportSize({ width: 390, height: 844 });
+  await interviewMobile.goto(interviewShareUrl, { waitUntil: "networkidle" });
+  await interviewMobile.locator("#insightsButton").click();
+  await interviewMobile.waitForTimeout(250);
+  await interviewMobile.getByText("补充追问", { exact: true }).waitFor();
+  await interviewMobile.locator(".interview-disclaimer").waitFor();
+  await interviewMobile.screenshot({ path: new URL("../artifacts/interview-mobile-share.png", import.meta.url).pathname, fullPage: true });
+  assert.equal(await interviewMobile.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
+  await interviewMobile.close();
+
   assert.deepEqual(browserErrors, []);
-  console.log("Browser flow passed: upload, live recording, dual-model correction, summary, Q&A, audio/text export, share, responsive layout.");
+  console.log("Browser flow passed: meeting and interview uploads, live recording, dual-model correction, evidence report, Q&A, exports, share, responsive layout.");
 } finally {
   await browser.close();
 }

@@ -73,8 +73,13 @@
 
             <div class="empty-workspace" id="emptyWorkspace">
               <div class="recorder-stage" id="recorderStage">
+                <div class="record-type-control" role="group" aria-label="记录场景">
+                  <button class="record-type active" type="button" data-record-mode="meeting"><i data-lucide="users"></i><span>会议</span></button>
+                  <button class="record-type" type="button" data-record-mode="interview"><i data-lucide="briefcase-business"></i><span>面试</span></button>
+                </div>
                 <div class="record-orbit"><button class="record-button" id="recordButton" aria-label="开始录音"><i data-lucide="mic"></i></button></div>
-                <h1>开始一段新记录</h1>
+                <h1 id="recorderHeading">开始一段新记录</h1>
+                <button class="interview-brief hidden" id="interviewBrief" type="button"><i data-lucide="clipboard-pen-line"></i><span><strong id="interviewBriefTitle">补充面试信息</strong><small id="interviewBriefMeta">岗位、轮次、能力项与 JD</small></span><i data-lucide="chevron-right"></i></button>
                 <div class="source-actions">
                   <button class="primary-button" id="startRecordButton"><i data-lucide="mic"></i><span>开始录音</span></button>
                   <button class="secondary-button" id="uploadButton"><i data-lucide="upload"></i><span>上传音频</span></button>
@@ -142,9 +147,26 @@
       </form>
     </dialog>
 
+    <dialog class="dialog interview-dialog" id="interviewDialog">
+      <form id="interviewForm">
+        <header><div><h2>设置面试上下文</h2><p>岗位信息会帮助 GPT 校正专有名词，并按能力项整理可核验的逐字稿证据。</p></div><button class="icon-button" type="button" id="interviewDialogClose" aria-label="关闭"><i data-lucide="x"></i></button></header>
+        <div class="settings-fields interview-fields">
+          <label class="field"><span>候选人代称</span><input id="candidateAliasInput" maxlength="60" placeholder="例如：候选人 A" autocomplete="off" /></label>
+          <label class="field"><span>目标岗位</span><input id="interviewRoleInput" maxlength="100" placeholder="例如：后端研发工程师" required /></label>
+          <label class="field"><span>面试轮次</span><select id="interviewStageInput"><option>初试</option><option>技术一面</option><option>技术二面</option><option>交叉面</option><option>终面</option><option>其他</option></select></label>
+          <label class="field"><span>面试官（仅本机）</span><input id="interviewerInput" maxlength="80" placeholder="选填，不进入分享稿" autocomplete="off" /></label>
+          <label class="field field-wide"><span>岗位能力项</span><textarea id="competenciesInput" rows="2" placeholder="系统设计、编码能力、故障排查、协作沟通" required></textarea></label>
+          <label class="field field-wide"><span>职位描述 / 面试重点（仅本机）</span><textarea id="jobDescriptionInput" rows="5" placeholder="粘贴 JD，或写明这轮需要验证的职责、技术栈和能力要求。不会进入分享稿。"></textarea></label>
+        </div>
+        <label class="consent-check"><input id="interviewConsentInput" type="checkbox" required /><span>我已确认录音与 AI 处理符合组织政策，并已完成必要的告知或授权。</span></label>
+        <p class="settings-note interview-safety-note"><i data-lucide="shield-check"></i><span>AI 只整理岗位相关证据，不应根据声音、口音或敏感个人属性判断候选人，也不用于自动录用决定。</span></p>
+        <footer><button class="secondary-button" type="button" id="interviewCancelButton">取消</button><button class="primary-button" type="submit" id="interviewContinueButton"><i data-lucide="mic"></i><span>继续录音</span></button></footer>
+      </form>
+    </dialog>
+
     <dialog class="dialog share-dialog" id="shareDialog">
       <form method="dialog">
-        <header><div><h2>分享逐字稿</h2><p>分享链接只有逐字稿、时间与摘要，不包含录音和密钥。</p></div><button class="icon-button" value="cancel" aria-label="关闭"><i data-lucide="x"></i></button></header>
+        <header><div><h2>分享逐字稿</h2><p>分享链接不包含录音、密钥、问答历史、完整 JD 和面试官姓名。</p></div><button class="icon-button" value="cancel" aria-label="关闭"><i data-lucide="x"></i></button></header>
         <label class="field field-wide"><span>只读链接</span><span class="copy-field"><input id="shareUrlInput" readonly /><button type="button" id="copyShareButton" title="复制链接" aria-label="复制分享链接"><i data-lucide="copy"></i></button></span></label>
         <p class="share-hint" id="shareHint"></p>
         <footer><button class="secondary-button" type="button" id="downloadShareButton"><i data-lucide="file-down"></i><span>下载离线网页</span></button><button class="primary-button" type="button" id="copySharePrimaryButton"><i data-lucide="link-2"></i><span>复制链接</span></button></footer>
