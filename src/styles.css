@@ -59,6 +59,18 @@ textarea:focus-visible {
   display: none !important;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .mobile-only,
 .sidebar-open,
 .sidebar-close,
@@ -1517,6 +1529,49 @@ textarea:focus-visible {
   padding-right: 3px;
 }
 
+.key-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.connection-test-button {
+  min-width: 82px;
+  min-height: 38px;
+  padding-right: 12px;
+  padding-left: 12px;
+}
+
+.connection-test-button.is-testing svg {
+  animation: spin 800ms linear infinite;
+}
+
+.connection-test-button[aria-disabled="true"] {
+  color: var(--text-secondary);
+  background: var(--surface-muted);
+  cursor: wait;
+  pointer-events: none;
+}
+
+.connection-test-result {
+  min-height: 15px;
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.connection-test-result[data-state="success"] {
+  color: #067647;
+}
+
+.connection-test-result[data-state="error"] {
+  color: var(--danger);
+}
+
 .secret-input input,
 .copy-field input {
   min-width: 0;
@@ -2483,8 +2538,20 @@ textarea:focus-visible {
   }
 
   .settings-key-actions {
+    display: grid;
     width: 100%;
-    flex-wrap: wrap;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-key-actions > button {
+    min-width: 0;
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .settings-key-actions .clear-keys-button {
+    width: 100%;
+    grid-column: 1 / -1;
   }
 
   .dialog-actions {

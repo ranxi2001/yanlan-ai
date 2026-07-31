@@ -147,7 +147,7 @@
           </div>
           <div class="settings-fields">
             <label class="field field-wide"><span>MiMo Base URL</span><input id="asrBaseUrlInput" type="url" value="https://api.xiaomimimo.com" autocomplete="url" /></label>
-            <label class="field field-wide"><span>MiMo API Key</span><span class="secret-input"><input id="asrApiKeyInput" type="password" placeholder="sk-..." maxlength="8192" autocomplete="off" /><button class="toggle-key-button" data-key-input="asrApiKeyInput" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏 MiMo 密钥"><i data-lucide="eye"></i></button></span></label>
+            <div class="field field-wide"><label for="asrApiKeyInput">MiMo API Key</label><div class="key-input-row"><span class="secret-input"><input id="asrApiKeyInput" type="password" placeholder="sk-..." maxlength="8192" autocomplete="off" aria-describedby="asrConnectionResult" /><button class="toggle-key-button" data-key-input="asrApiKeyInput" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏 MiMo 密钥"><i data-lucide="eye"></i></button></span><button class="secondary-button connection-test-button" id="testAsrButton" type="button" title="发送 1 秒测试音频并验证当前配置" aria-label="测试 MiMo 连接" aria-describedby="asrTestDescription asrConnectionResult"><i data-lucide="plug-zap"></i><span>测试</span></button></div><span class="visually-hidden" id="asrTestDescription">发送 1 秒低音量测试音频，可能产生极少量 API 用量。</span><p class="connection-test-result" id="asrConnectionResult" role="status"></p></div>
             <label class="field"><span>语音模型</span><input id="asrModelInput" value="mimo-v2.5-asr" /></label>
             <label class="field"><span>实时分段</span><select id="chunkSecondsInput"><option value="5">5 秒</option><option value="10" selected>10 秒</option><option value="15">15 秒</option></select></label>
           </div>
@@ -156,7 +156,7 @@
           <h3><i data-lucide="sparkles"></i>GPT 总结与提问</h3>
           <div class="settings-fields">
             <label class="field field-wide"><span>GPT Base URL</span><input id="chatBaseUrlInput" type="url" placeholder="https://example.com/v1" autocomplete="url" /></label>
-            <label class="field field-wide"><span>GPT API Key</span><span class="secret-input"><input id="chatApiKeyInput" type="password" placeholder="仅保存在此浏览器" maxlength="8192" autocomplete="off" /><button class="toggle-key-button" data-key-input="chatApiKeyInput" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏 GPT 密钥"><i data-lucide="eye"></i></button></span></label>
+            <div class="field field-wide"><label for="chatApiKeyInput">GPT API Key</label><div class="key-input-row"><span class="secret-input"><input id="chatApiKeyInput" type="password" placeholder="仅保存在此浏览器" maxlength="8192" autocomplete="off" aria-describedby="chatConnectionResult" /><button class="toggle-key-button" data-key-input="chatApiKeyInput" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏 GPT 密钥"><i data-lucide="eye"></i></button></span><button class="secondary-button connection-test-button" id="testChatButton" type="button" title="发送最小提示并验证当前配置" aria-label="测试 GPT 连接" aria-describedby="chatTestDescription chatConnectionResult"><i data-lucide="plug-zap"></i><span>测试</span></button></div><span class="visually-hidden" id="chatTestDescription">发送一句最小测试提示，可能产生极少量 API 用量。</span><p class="connection-test-result" id="chatConnectionResult" role="status"></p></div>
             <label class="field"><span>文本模型</span><input id="chatModelInput" value="gpt-5.6-luna" /></label>
             <label class="field"><span>调用协议</span><select id="chatProtocolInput"><option value="responses" selected>Responses（推荐）</option><option value="chat-completions">Chat Completions（兼容）</option></select></label>
             <label class="field"><span>相对路径</span><input id="chatPathInput" value="responses" /></label>
@@ -167,8 +167,8 @@
         <input id="importKeysInput" type="file" accept="application/json,.json" hidden />
         <footer class="settings-footer">
           <div class="settings-key-actions">
-            <button class="secondary-button" id="importKeysButton" type="button"><i data-lucide="file-up"></i><span>导入 Key</span></button>
-            <button class="secondary-button" id="exportKeysButton" type="button"><i data-lucide="file-down"></i><span>导出 Key</span></button>
+            <button class="secondary-button" id="importKeysButton" type="button"><i data-lucide="file-up"></i><span>导入 Key JSON</span></button>
+            <button class="secondary-button" id="exportKeysButton" type="button"><i data-lucide="file-down"></i><span>导出 Key JSON</span></button>
             <button class="secondary-button clear-keys-button" id="clearKeysButton" type="button"><i data-lucide="key-round"></i><span>清除 Key</span></button>
           </div>
           <div class="dialog-actions"><button class="secondary-button" value="cancel">取消</button><button class="primary-button" id="saveSettingsButton" value="default">保存设置</button></div>

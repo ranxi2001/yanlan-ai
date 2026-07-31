@@ -28,9 +28,10 @@ const browser = await chromium.launch({ headless: true, args: ["--use-fake-ui-fo
 const context = await browser.newContext({ viewport: { width: 1440, height: 960 }, acceptDownloads: true, permissions: ["microphone"] });
 const page = await context.newPage();
 const browserErrors = [];
-let transientAsrFailures = 2;
+let transientAsrFailures = 0;
 let successfulAsrResponsesRemaining = Number.POSITIVE_INFINITY;
 let asrTranscript = "今天讨论万福来项目，由小明明天完成。";
+let asrResponseDelayMs = 0;
 page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
 page.on("pageerror", (error) => browserErrors.push(error.message));
 
@@ -40,6 +41,11 @@ await page.route("https://mimo.example/v1/chat/completions", async (route) => {
   const request = route.request().postDataJSON();
   assert.equal(request.model, "mimo-v2.5-asr");
   assert.match(request.messages[0].content[0].input_audio.data, /^data:audio\/wav;base64,/);
+  if (asrResponseDelayMs) {
+    const delay = asrResponseDelayMs;
+    asrResponseDelayMs = 0;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
   if (successfulAsrResponsesRemaining <= 0 || transientAsrFailures > 0) {
     transientAsrFailures = Math.max(0, transientAsrFailures - 1);
     await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "temporary ASR failure" } }) });
@@ -52,6 +58,10 @@ await page.route("https://mimo.example/v1/chat/completions", async (route) => {
       choices: [{ message: { content: asrTranscript } }],
     }),
   });
+});
+
+await page.route("https://bad-mimo.example/v1/chat/completions", async (route) => {
+  await route.fulfill({ status: 401, contentType: "application/json", body: JSON.stringify({ error: { message: "invalid API key" } }) });
 });
 
 await page.route("https://gpt.example/v1/responses", async (route) => {
@@ -111,6 +121,9 @@ try {
   assert.equal(await page.locator("#brandLogo").evaluate((image) => image.complete && image.naturalWidth === 1254), true);
   assert.match(await page.locator('link[rel="icon"]').getAttribute("href"), /yanlan-logo\.png$/);
   await page.locator("#settingsButton").click();
+  await page.locator("#settingsDialog").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#testAsrButton").getAttribute("aria-label"), "测试 MiMo 连接");
+  assert.equal(await page.locator("#testChatButton").getAttribute("aria-label"), "测试 GPT 连接");
   assert.equal(await page.locator('.provider-link[href="https://ai.tosky.top/"]').getAttribute("target"), "_blank");
   assert.equal(await page.locator('.provider-link[href="https://platform.xiaomimimo.com?ref=6ENEDG"]').getAttribute("target"), "_blank");
   await page.getByText("专属链接注册，双方各得 10 元 API 体验金", { exact: true }).waitFor();
@@ -279,6 +292,28 @@ try {
   assert.equal(await page.locator("#chatPathInput").inputValue(), "responses");
   assert.equal(await page.locator("#transportModeInput").inputValue(), "direct");
   assert.equal(await page.locator("#relayPathInput").isDisabled(), true);
+  await page.locator("#asrBaseUrlInput").fill("https://bad-mimo.example");
+  await page.locator("#testAsrButton").click();
+  await page.getByText("MiMo API Key 无效或已失效（HTTP 401）", { exact: true }).waitFor();
+  const expectedUnauthorized = browserErrors.findIndex((message) => message.includes("401 (Unauthorized)"));
+  assert.notEqual(expectedUnauthorized, -1);
+  browserErrors.splice(expectedUnauthorized, 1);
+  await page.locator("#asrBaseUrlInput").fill("https://mimo.example");
+  assert.equal(await page.locator("#asrConnectionResult").textContent(), "");
+  asrResponseDelayMs = 200;
+  await page.locator("#testAsrButton").click();
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "testAsrButton");
+  assert.equal(await page.locator("#testAsrButton").getAttribute("aria-disabled"), "true");
+  await page.getByText("MiMo 连接成功，Base URL、API Key 和模型均可用", { exact: true }).waitFor();
+  await page.locator("#testChatButton").click();
+  await page.getByText("GPT 连接成功，Base URL、API Key 和模型均可用", { exact: true }).waitFor();
+  await page.screenshot({ path: new URL("../artifacts/connection-tests-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#chatConnectionResult").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: new URL("../artifacts/connection-tests-mobile.png", import.meta.url).pathname, fullPage: true });
+  assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);
+  await page.setViewportSize({ width: 1440, height: 960 });
+  transientAsrFailures = 2;
   page.once("dialog", (dialog) => dialog.accept());
   const keyDownloadPromise = page.waitForEvent("download");
   await page.locator("#exportKeysButton").click();
@@ -501,6 +536,13 @@ try {
   await legacy.locator("#chatProtocolInput").scrollIntoViewIfNeeded();
   await legacy.screenshot({ path: new URL("../artifacts/responses-settings-mobile.png", import.meta.url).pathname, fullPage: true });
   assert.equal(await legacy.locator("#settingsDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);
+  const keyActionLayout = await legacy.locator(".settings-key-actions").evaluate((element) => {
+    const [importButton, exportButton, clearButton] = [...element.children].map((button) => button.getBoundingClientRect());
+    return { display: getComputedStyle(element).display, importTop: importButton.top, exportTop: exportButton.top, importBottom: importButton.bottom, clearTop: clearButton.top };
+  });
+  assert.equal(keyActionLayout.display, "grid");
+  assert.equal(keyActionLayout.importTop, keyActionLayout.exportTop);
+  assert.ok(keyActionLayout.clearTop > keyActionLayout.importBottom);
   await legacy.close();
 
   const migrationContext = await browser.newContext();
@@ -533,7 +575,7 @@ try {
 
   assert.ok(browserErrors.some((message) => /status of 503/.test(message)));
   assert.deepEqual(browserErrors.filter((message) => !/Failed to load resource: the server responded with a status of 503/.test(message)), []);
-  console.log("Browser flow passed: crash recovery, ASR retries and completeness gating, keyless recorder, persistent keys, meeting/interview workflows, exports, sharing, and responsive layout.");
+  console.log("Browser flow passed: connection tests, key JSON backup, crash recovery, ASR retries, meeting/interview workflows, sharing, and responsive layout.");
 } finally {
   await browser.close();
   await developmentServer?.close();

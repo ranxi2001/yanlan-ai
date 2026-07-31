@@ -4,6 +4,7 @@ import {
   DEFAULT_CONFIG,
   askTranscript,
   buildShareHtml,
+  connectionTestErrorMessage,
   correctTranscript,
   formatTimestamp,
   joinApiUrl,
@@ -12,6 +13,8 @@ import {
   publicMeeting,
   requestUrlForConfig,
   summarizeTranscript,
+  testAsrConnection,
+  testChatConnection,
   toMarkdown,
   toVtt,
   transcribeAudio,
@@ -113,6 +116,118 @@ test("official MiMo ASR uses chat completions data-URL protocol", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("MiMo connection test uses the fixed endpoint and accepts an empty recognized transcription", async () => {
+  const originalFetch = globalThis.fetch;
+  let responseBody = { choices: [{ message: { content: "" } }] };
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, "https://mimo.example/v1/chat/completions");
+    assert.equal(options.headers.Authorization, "Bearer asr-secret");
+    const body = JSON.parse(options.body);
+    assert.equal(body.model, "mimo-v2.5-asr");
+    assert.equal(body.asr_options.language, "auto");
+    const audio = body.messages[0].content[0].input_audio.data;
+    assert.match(audio, /^data:audio\/wav;base64,/);
+    const wav = Buffer.from(audio.split(",")[1], "base64");
+    assert.equal(wav.subarray(0, 4).toString("ascii"), "RIFF");
+    assert.equal(wav.readUInt32LE(24), 16_000);
+    return new Response(JSON.stringify(responseBody), { headers: { "content-type": "application/json" } });
+  };
+  try {
+    const testConfig = { ...DEFAULT_CONFIG, asrBaseUrl: "https://mimo.example", asrApiKey: "asr-secret" };
+    const result = await testAsrConnection({ config: testConfig });
+    assert.equal(result.text, "");
+    responseBody = { choices: [] };
+    await assert.rejects(() => testAsrConnection({ config: testConfig }), (error) => error.code === "invalid-response");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GPT connection test follows the configured Responses or Chat Completions protocol", async () => {
+  const originalFetch = globalThis.fetch;
+  let protocol = "responses";
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    assert.equal(options.headers.Authorization, "Bearer gpt-secret");
+    if (protocol === "responses") {
+      assert.equal(url, "https://gpt.example/v1/responses");
+      assert.deepEqual(body, {
+        model: "gpt-test",
+        instructions: "这是一次 API 配置连通性测试。",
+        input: "只回复 OK。",
+        store: false,
+      });
+      return new Response(JSON.stringify({ output_text: "OK" }));
+    }
+    assert.equal(url, "https://gpt.example/v1/chat/completions");
+    assert.deepEqual(body, {
+      model: "gpt-test",
+      messages: [
+        { role: "system", content: "这是一次 API 配置连通性测试。" },
+        { role: "user", content: "只回复 OK。" },
+      ],
+      temperature: 0.2,
+    });
+    return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }));
+  };
+  try {
+    const base = { ...DEFAULT_CONFIG, chatBaseUrl: "https://gpt.example/v1", chatApiKey: "gpt-secret", chatModel: "gpt-test" };
+    assert.equal(await testChatConnection({ config: base }), "OK");
+    protocol = "chat-completions";
+    assert.equal(await testChatConnection({ config: { ...base, chatProtocol: protocol, chatPath: "chat/completions" } }), "OK");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("connection tests keep HTTP and transport details without retrying", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  const testConfig = { ...DEFAULT_CONFIG, chatBaseUrl: "https://gpt.example/v1", chatApiKey: "gpt-secret", chatModel: "gpt-test" };
+  try {
+    globalThis.fetch = async () => {
+      requests += 1;
+      return new Response(JSON.stringify({ error: "Upstream API is unreachable" }), { status: 502 });
+    };
+    await assert.rejects(() => testChatConnection({ config: testConfig }), (error) => {
+      assert.equal(error.code, "http");
+      assert.equal(error.status, 502);
+      assert.equal(error.message, "Upstream API is unreachable（HTTP 502）");
+      return true;
+    });
+    assert.equal(requests, 1);
+
+    globalThis.fetch = async () => { throw new TypeError("Failed to fetch"); };
+    await assert.rejects(() => testChatConnection({ config: testConfig }), (error) => error.code === "network-or-cors");
+    await assert.rejects(
+      () => testChatConnection({ config: { ...testConfig, transportMode: "relay", relayPath: "/api/relay" } }),
+      (error) => error.code === "relay-unavailable",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("connection test errors explain auth, quota, endpoint, format, and transport failures", () => {
+  const cases = [
+    [401, /Key 无效/],
+    [403, /无权访问/],
+    [402, /额度不足/],
+    [429, /请求受限/],
+    [404, /Base URL 或接口路径/],
+    [405, /Base URL 或接口路径/],
+    [400, /模型名或接口格式/],
+    [415, /模型名或接口格式/],
+    [422, /模型名或接口格式/],
+    [503, /服务暂时不可用/],
+  ];
+  for (const [status, pattern] of cases) assert.match(connectionTestErrorMessage("MiMo", { status }), pattern);
+  assert.match(connectionTestErrorMessage("GPT", { code: "timeout" }), /超时/);
+  assert.match(connectionTestErrorMessage("GPT", { code: "network-or-cors" }), /网络连接失败/);
+  assert.match(connectionTestErrorMessage("GPT", { code: "relay-unavailable" }), /本地同源网关不可用/);
+  assert.match(connectionTestErrorMessage("GPT", { code: "invalid-response" }), /不是兼容 API 响应/);
 });
 
 test("ASR retries transient upstream failures and preserves permanent failures", async () => {

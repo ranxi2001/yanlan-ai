@@ -4,11 +4,14 @@ import {
   DEFAULT_CONFIG,
   askTranscript,
   buildShareHtml,
+  connectionTestErrorMessage,
   correctTranscript,
   formatTimestamp,
   normalizeMimoBaseUrl,
   publicMeeting,
   summarizeTranscript,
+  testAsrConnection,
+  testChatConnection,
   toMarkdown,
   toVtt,
   transcribeAudioWithRetry,
@@ -27,6 +30,10 @@ const MAX_RECORDING_SECONDS = 4 * 60 * 60;
 const RECORDING_HEARTBEAT_MS = 1_000;
 const RECORDING_STALE_MS = 4_000;
 const recoveringMeetingIds = new Set();
+const connectionTestRuns = {
+  asr: { token: 0, controller: null },
+  chat: { token: 0, controller: null },
+};
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
@@ -46,8 +53,10 @@ const elements = {
   replaceAudioButton: $("#replaceAudioButton"), fileInput: $("#fileInput"), languageSelect: $("#languageSelect"), retryButton: $("#retryButton"),
   recordingPlayer: $("#recordingPlayer"), audioPlayer: $("#audioPlayer"), settingsDialog: $("#settingsDialog"),
   settingsForm: $("#settingsForm"), asrBaseUrlInput: $("#asrBaseUrlInput"), asrApiKeyInput: $("#asrApiKeyInput"),
+  testAsrButton: $("#testAsrButton"), asrConnectionResult: $("#asrConnectionResult"),
   asrModelInput: $("#asrModelInput"), chunkSecondsInput: $("#chunkSecondsInput"), mimoHelpButton: $("#mimoHelpButton"), mimoHelpDialog: $("#mimoHelpDialog"),
   chatBaseUrlInput: $("#chatBaseUrlInput"), chatApiKeyInput: $("#chatApiKeyInput"), chatModelInput: $("#chatModelInput"),
+  testChatButton: $("#testChatButton"), chatConnectionResult: $("#chatConnectionResult"),
   chatProtocolInput: $("#chatProtocolInput"), chatPathInput: $("#chatPathInput"), contextHintInput: $("#contextHintInput"),
   transportModeInput: $("#transportModeInput"), relayPathInput: $("#relayPathInput"), transportHelp: $("#transportHelp"), shareDialog: $("#shareDialog"),
   clearKeysButton: $("#clearKeysButton"), importKeysButton: $("#importKeysButton"), exportKeysButton: $("#exportKeysButton"), importKeysInput: $("#importKeysInput"),
@@ -120,15 +129,24 @@ function bindEvents() {
   elements.openSettingsButton.addEventListener("click", openSettings);
   elements.configNoticeButton.addEventListener("click", openSettings);
   elements.settingsForm.addEventListener("submit", saveSettings);
+  elements.settingsDialog.addEventListener("close", clearConnectionTests);
   elements.clearKeysButton.addEventListener("click", clearStoredKeys);
   elements.mimoHelpButton.addEventListener("click", () => elements.mimoHelpDialog.showModal());
   elements.importKeysButton.addEventListener("click", () => elements.importKeysInput.click());
   elements.importKeysInput.addEventListener("change", importKeys);
   elements.exportKeysButton.addEventListener("click", exportKeys);
+  elements.testAsrButton.addEventListener("click", () => testSettingsConnection("asr"));
+  elements.testChatButton.addEventListener("click", () => testSettingsConnection("chat"));
   elements.chatProtocolInput.addEventListener("change", () => {
     elements.chatPathInput.value = elements.chatProtocolInput.value === "responses" ? "responses" : "chat/completions";
+    clearConnectionTest("chat");
   });
-  elements.transportModeInput.addEventListener("change", renderTransportHelp);
+  elements.transportModeInput.addEventListener("change", () => { renderTransportHelp(); clearConnectionTests(); });
+  elements.relayPathInput.addEventListener("input", clearConnectionTests);
+  [elements.asrBaseUrlInput, elements.asrApiKeyInput, elements.asrModelInput]
+    .forEach((input) => input.addEventListener("input", () => clearConnectionTest("asr")));
+  [elements.chatBaseUrlInput, elements.chatApiKeyInput, elements.chatModelInput, elements.chatPathInput]
+    .forEach((input) => input.addEventListener("input", () => clearConnectionTest("chat")));
   document.querySelectorAll(".toggle-key-button").forEach((button) => button.addEventListener("click", toggleSecret));
   elements.searchInput.addEventListener("input", (event) => { state.query = event.target.value.trim().toLocaleLowerCase(); renderTranscript(activeMeeting()); });
   elements.meetingTitle.addEventListener("input", updateMeetingTitle);
@@ -1189,6 +1207,7 @@ function openSettings() {
   elements.relayPathInput.value = state.config.relayPath;
   elements.contextHintInput.value = state.config.contextHint;
   renderTransportHelp();
+  clearConnectionTests();
   elements.settingsDialog.showModal();
   refreshIcons();
 }
@@ -1196,13 +1215,7 @@ function openSettings() {
 function saveSettings(event) {
   if (event.submitter?.value === "cancel") return;
   event.preventDefault();
-  const next = {
-    asrBaseUrl: normalizeMimoBaseUrl(elements.asrBaseUrlInput.value), asrApiKey: elements.asrApiKeyInput.value.trim(),
-    asrModel: elements.asrModelInput.value.trim(), asrProtocol: DEFAULT_CONFIG.asrProtocol, asrPath: DEFAULT_CONFIG.asrPath, chunkSeconds: Number(elements.chunkSecondsInput.value),
-    chatBaseUrl: elements.chatBaseUrlInput.value.trim(), chatApiKey: elements.chatApiKeyInput.value.trim(),
-    chatModel: elements.chatModelInput.value.trim(), chatProtocol: elements.chatProtocolInput.value, chatPath: elements.chatPathInput.value.trim(),
-    transportMode: elements.transportModeInput.value, relayPath: elements.relayPathInput.value.trim(), contextHint: elements.contextHintInput.value.trim(),
-  };
+  const next = settingsConfigFromForm();
   if (!next.asrBaseUrl || !next.asrApiKey || !next.asrModel || !next.chatBaseUrl || !next.chatApiKey || !next.chatModel || !next.chatPath || !next.relayPath) {
     showToast("请完整填写 MiMo 和 GPT 两组配置", true);
     return;
@@ -1216,6 +1229,73 @@ function saveSettings(event) {
   showToast("双模型配置已保存在此浏览器");
 }
 
+function settingsConfigFromForm() {
+  return {
+    asrBaseUrl: normalizeMimoBaseUrl(elements.asrBaseUrlInput.value), asrApiKey: elements.asrApiKeyInput.value.trim(),
+    asrModel: elements.asrModelInput.value.trim(), asrProtocol: DEFAULT_CONFIG.asrProtocol, asrPath: DEFAULT_CONFIG.asrPath, chunkSeconds: Number(elements.chunkSecondsInput.value),
+    chatBaseUrl: elements.chatBaseUrlInput.value.trim(), chatApiKey: elements.chatApiKeyInput.value.trim(),
+    chatModel: elements.chatModelInput.value.trim(), chatProtocol: elements.chatProtocolInput.value, chatPath: elements.chatPathInput.value.trim(),
+    transportMode: elements.transportModeInput.value, relayPath: elements.relayPathInput.value.trim(), contextHint: elements.contextHintInput.value.trim(),
+  };
+}
+
+async function testSettingsConnection(kind) {
+  const isAsr = kind === "asr";
+  const provider = isAsr ? "MiMo" : "GPT";
+  const button = isAsr ? elements.testAsrButton : elements.testChatButton;
+  const result = isAsr ? elements.asrConnectionResult : elements.chatConnectionResult;
+  const testConnection = isAsr ? testAsrConnection : testChatConnection;
+  if (button.getAttribute("aria-disabled") === "true") return;
+  const run = connectionTestRuns[kind];
+  run.controller?.abort();
+  const token = ++run.token;
+  run.controller = new AbortController();
+  const controller = run.controller;
+  const timeoutId = window.setTimeout(() => controller.abort(new DOMException("API 请求超时", "TimeoutError")), 30_000);
+  setConnectionTestState(button, result, "testing", `正在测试 ${provider} 连接...`);
+  try {
+    await testConnection({ config: settingsConfigFromForm(), signal: controller.signal });
+    if (token !== run.token) return;
+    setConnectionTestState(button, result, "success", `${provider} 连接成功，Base URL、API Key 和模型均可用`);
+  } catch (error) {
+    if (token !== run.token) return;
+    setConnectionTestState(button, result, "error", connectionTestErrorMessage(provider, error));
+  } finally {
+    window.clearTimeout(timeoutId);
+    if (token === run.token) run.controller = null;
+  }
+}
+
+function setConnectionTestState(button, result, status, message) {
+  const testing = status === "testing";
+  button.setAttribute("aria-disabled", String(testing));
+  button.classList.toggle("is-testing", testing);
+  button.setAttribute("aria-busy", String(testing));
+  button.querySelector("span").textContent = testing ? "测试中" : "测试";
+  result.dataset.state = status;
+  result.textContent = message;
+}
+
+function clearConnectionTest(kind) {
+  const run = connectionTestRuns[kind];
+  run.token += 1;
+  run.controller?.abort();
+  run.controller = null;
+  const button = kind === "asr" ? elements.testAsrButton : elements.testChatButton;
+  const result = kind === "asr" ? elements.asrConnectionResult : elements.chatConnectionResult;
+  button.setAttribute("aria-disabled", "false");
+  button.classList.remove("is-testing");
+  button.setAttribute("aria-busy", "false");
+  button.querySelector("span").textContent = "测试";
+  result.removeAttribute("data-state");
+  result.textContent = "";
+}
+
+function clearConnectionTests() {
+  clearConnectionTest("asr");
+  clearConnectionTest("chat");
+}
+
 function clearStoredKeys() {
   if (!window.confirm("清除保存在此浏览器中的 MiMo 和 GPT API Key？")) return;
   state.config = { ...state.config, asrApiKey: "", chatApiKey: "" };
@@ -1224,6 +1304,7 @@ function clearStoredKeys() {
   sessionStorage.removeItem(LEGACY_CHAT_SESSION_KEY);
   elements.asrApiKeyInput.value = "";
   elements.chatApiKeyInput.value = "";
+  clearConnectionTests();
   renderConfig();
   showToast("本机保存的 API Key 已清除");
 }
@@ -1255,6 +1336,7 @@ async function importKeys() {
     const keys = parseKeyBackup(await file.text());
     elements.asrApiKeyInput.value = keys.mimo;
     elements.chatApiKeyInput.value = keys.gpt;
+    clearConnectionTests();
     showToast("API Key 已填入，请检查后保存设置");
   } catch (error) {
     showToast(`导入失败：${error.message}`, true);

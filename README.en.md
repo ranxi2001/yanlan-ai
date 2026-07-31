@@ -36,6 +36,7 @@ Yanlan is an open-source, self-hostable AI audio workspace that runs entirely in
 - Require HTTPS for remote model endpoints; HTTP is accepted only for loopback hosts (`localhost`, `127.0.0.0/8`, and `[::1]`)
 - Store recordings in IndexedDB and workspace data in localStorage
 - Import and export both API keys as versioned JSON; imports cannot change model endpoints or other settings
+- Test each MiMo or GPT base URL, key, and model before saving, with distinct guidance for authentication, quota, endpoint, network, and CORS failures
 - Retry transient MiMo failures with timeouts and backoff; if any live segment still fails, stop before generating incomplete notes and keep the recording for retranscription
 - Process long transcripts in bounded summary/interview batches and retrieve question-relevant time ranges for Q&A instead of sending the whole meeting in one prompt
 
@@ -106,6 +107,8 @@ Open `http://127.0.0.1:4173`. Recording, playback, and audio export work without
 1. The MiMo ASR API key; the official base URL, model, and 10-second live segmentation are prefilled and remain adjustable where applicable
 2. GPT base URL, API key, model, protocol, and relative API path
 3. Optional shared background plus domain terms explicitly labeled with fields such as `Term:`, `Project:`, or `Name:`
+
+Each Test button uses the current unsaved form values. The MiMo test sends a one-second low-volume WAV and the GPT test sends one minimal prompt, so both may consume a very small amount of real API usage. Testing does not save the configuration.
 
 Choose Interview when creating a record, then provide the role context. The complete job description is sent with the transcript to the configured GPT endpoint for correction and assessment. The full job description and interviewer names are never included in shared links or offline share pages.
 

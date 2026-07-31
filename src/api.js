@@ -19,6 +19,8 @@ export const DEFAULT_CONFIG = Object.freeze({
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_ASR_ATTEMPTS = 3;
+const CONNECTION_TEST_AUDIO_SECONDS = 1;
+const CONNECTION_TEST_AUDIO_SAMPLE_RATE = 16_000;
 const MAX_TEXT_INPUT_CHARACTERS = 18_000;
 const SUMMARY_MERGE_GROUP_SIZE = 4;
 const SUMMARY_MERGE_ITEM_CHARACTERS = 3_500;
@@ -66,11 +68,11 @@ async function apiFetch(url, options, config = DEFAULT_CONFIG) {
   try {
     response = await fetch(requestUrl, { ...options, signal: requestSignal(options?.signal) });
   } catch (error) {
-    if (error?.name === "TimeoutError") throw retryableError("API 请求超时，请稍后重试", error);
-    if (error?.name === "AbortError") throw new Error("API 请求已取消", { cause: error });
+    if (error?.name === "TimeoutError") throw retryableError("API 请求超时，请稍后重试", error, "timeout");
+    if (error?.name === "AbortError") throw codedError("API 请求已取消", "aborted", error);
     if (error instanceof TypeError) {
-      if (config.transportMode === "relay") throw retryableError("本地同源网关不可用，请使用 npm run local 启动言澜", error);
-      throw retryableError("无法访问 API，请检查 Base URL 与网络连接；浏览器直连时还需检查服务端 CORS", error);
+      if (config.transportMode === "relay") throw retryableError("本地同源网关不可用，请使用 npm run local 启动言澜", error, "relay-unavailable");
+      throw retryableError("无法访问 API，请检查 Base URL 与网络连接；浏览器直连时还需检查服务端 CORS", error, "network-or-cors");
     }
     throw error;
   }
@@ -78,15 +80,16 @@ async function apiFetch(url, options, config = DEFAULT_CONFIG) {
   try {
     raw = await response.text();
   } catch (error) {
-    if (error?.name === "AbortError") throw new Error("API 请求已取消", { cause: error });
-    throw retryableError("读取 API 响应时连接中断，请稍后重试", error);
+    if (error?.name === "AbortError") throw codedError("API 请求已取消", "aborted", error);
+    throw retryableError("读取 API 响应时连接中断，请稍后重试", error, "response-interrupted");
   }
   let body;
   try { body = raw ? JSON.parse(raw) : {}; }
   catch { body = { message: raw }; }
   if (!response.ok) {
-    const message = body?.error?.message || body?.message || body?.detail || `API 请求失败（HTTP ${response.status}）`;
+    const message = body?.error?.message || (typeof body?.error === "string" ? body.error : "") || body?.message || body?.detail || "API 请求失败";
     const error = new Error(`${message}（HTTP ${response.status}）`);
+    error.code = "http";
     error.status = response.status;
     error.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
     throw error;
@@ -98,8 +101,14 @@ function requestSignal(signal) {
   return signal || AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS);
 }
 
-function retryableError(message, cause) {
+function codedError(message, code, cause) {
   const error = new Error(message, { cause });
+  error.code = code;
+  return error;
+}
+
+function retryableError(message, cause, code) {
+  const error = codedError(message, code, cause);
   error.retryable = true;
   return error;
 }
@@ -152,6 +161,44 @@ export async function transcribeAudio({ config, blob, fileName = "audio.wav", la
   return parseTranscriptionResponse(body);
 }
 
+export async function testAsrConnection({ config, signal }) {
+  const result = await transcribeAudio({
+    config,
+    blob: connectionTestAudio(),
+    fileName: "yanlan-connection-test.wav",
+    language: "auto",
+    signal,
+  });
+  if (!recognizedTranscriptionEnvelope(result.raw)) throw codedError("API 已响应，但返回的不是兼容的语音转写结果", "invalid-response");
+  return result;
+}
+
+export async function testChatConnection({ config, signal }) {
+  return chatCompletion({
+    config,
+    system: "这是一次 API 配置连通性测试。",
+    user: "只回复 OK。",
+    signal,
+  });
+}
+
+export function connectionTestErrorMessage(provider, error) {
+  const name = String(provider || "API").trim() || "API";
+  const status = Number(error?.status);
+  if (status === 401) return `${name} API Key 无效或已失效（HTTP 401）`;
+  if (status === 403) return `${name} API Key 无权访问当前模型（HTTP 403）`;
+  if (status === 402) return `${name} 账户余额或调用额度不足（HTTP 402）`;
+  if (status === 429) return `${name} 请求受限，请检查额度或稍后重试（HTTP 429）`;
+  if (status === 404 || status === 405) return `${name} Base URL 或接口路径不正确（HTTP ${status}）`;
+  if (status === 400 || status === 415 || status === 422) return `${name} 模型名或接口格式不兼容（HTTP ${status}）`;
+  if (status === 408 || status === 425 || status >= 500) return `${name} 服务暂时不可用（HTTP ${status}），请稍后重试`;
+  if (error?.code === "timeout") return `${name} 连接测试超时，请检查 Base URL 与网络`;
+  if (error?.code === "network-or-cors") return `${name} 网络连接失败；浏览器直连时也可能是服务端未允许 CORS`;
+  if (error?.code === "relay-unavailable") return "本地同源网关不可用，请先运行 npm run local";
+  if (error?.code === "invalid-response") return `${name} 地址可访问，但返回的不是兼容 API 响应`;
+  return error?.message || `${name} 连接测试失败`;
+}
+
 export async function transcribeAudioWithRetry(args, { attempts = DEFAULT_ASR_ATTEMPTS, baseDelayMs = 500 } = {}) {
   const count = Math.max(1, Math.min(5, Number(attempts) || DEFAULT_ASR_ATTEMPTS));
   const signal = args.signal || AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS);
@@ -191,6 +238,34 @@ async function blobToDataUrl(blob) {
   return `data:${blob.type || "audio/wav"};base64,${btoa(binary)}`;
 }
 
+function connectionTestAudio() {
+  const sampleCount = Math.round(CONNECTION_TEST_AUDIO_SECONDS * CONNECTION_TEST_AUDIO_SAMPLE_RATE);
+  const buffer = new ArrayBuffer(44 + sampleCount * 2);
+  const view = new DataView(buffer);
+  writeAscii(view, 0, "RIFF");
+  view.setUint32(4, 36 + sampleCount * 2, true);
+  writeAscii(view, 8, "WAVE");
+  writeAscii(view, 12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, CONNECTION_TEST_AUDIO_SAMPLE_RATE, true);
+  view.setUint32(28, CONNECTION_TEST_AUDIO_SAMPLE_RATE * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, "data");
+  view.setUint32(40, sampleCount * 2, true);
+  for (let index = 0; index < sampleCount; index += 1) {
+    const sample = Math.sin((2 * Math.PI * 440 * index) / CONNECTION_TEST_AUDIO_SAMPLE_RATE) * 0.04;
+    view.setInt16(44 + index * 2, Math.round(sample * 0x7fff), true);
+  }
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+function writeAscii(view, offset, value) {
+  for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
+}
+
 export function parseTranscriptionResponse(body) {
   const choiceContent = body?.choices?.[0]?.message?.content;
   const text = String(body?.text ?? body?.transcript ?? (typeof choiceContent === "string" ? choiceContent : "")).trim();
@@ -203,6 +278,13 @@ export function parseTranscriptionResponse(body) {
   })).filter((segment) => segment.text);
   if (!segments.length && text) segments.push({ start_seconds: 0, end_seconds: 0, speaker: "发言人 1", text });
   return { text: text || segments.map((segment) => segment.text).join(" "), segments, raw: body };
+}
+
+function recognizedTranscriptionEnvelope(body) {
+  return (Array.isArray(body?.choices) && body.choices.some((choice) => typeof choice?.message?.content === "string"))
+    || typeof body?.text === "string"
+    || typeof body?.transcript === "string"
+    || Array.isArray(body?.segments);
 }
 
 function numericTime(value) {
