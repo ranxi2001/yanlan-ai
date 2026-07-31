@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG, formatTimestamp, transcribeAudioWithRetry } from "./api
 
 export const CLI_VERSION = "0.4.6";
 export const DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com/v1";
+const DEFAULT_MIMO_ASR_PATH = "chat/completions";
 
 const AUDIO_TYPES = Object.freeze({
   ".aac": "audio/aac",
@@ -195,7 +196,7 @@ export async function runCli(argv, io = {}) {
       asrApiKey: apiKey,
       asrModel: firstValue(options.model, env.MIMO_ASR_MODEL, DEFAULT_CONFIG.asrModel),
       asrProtocol: protocol,
-      asrPath: firstValue(options.apiPath, env.MIMO_ASR_PATH, protocol === "openai-transcriptions" ? "audio/transcriptions" : DEFAULT_CONFIG.asrPath),
+      asrPath: firstValue(options.apiPath, env.MIMO_ASR_PATH, protocol === "openai-transcriptions" ? "audio/transcriptions" : DEFAULT_MIMO_ASR_PATH),
       transportMode: "direct",
     };
     if (!options.quiet) stderr.write(`Transcribing ${basename(inputPath)} with ${config.asrModel}...\n`);

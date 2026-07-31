@@ -1,9 +1,11 @@
+export const DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com";
+
 export const DEFAULT_CONFIG = Object.freeze({
-  asrBaseUrl: "",
+  asrBaseUrl: DEFAULT_MIMO_BASE_URL,
   asrApiKey: "",
   asrModel: "mimo-v2.5-asr",
   asrProtocol: "mimo-chat",
-  asrPath: "chat/completions",
+  asrPath: "v1/chat/completions",
   chatBaseUrl: "",
   chatApiKey: "",
   chatModel: "gpt-5.6-luna",
@@ -33,6 +35,21 @@ export function joinApiUrl(baseUrl, endpointPath) {
   } catch {
     throw new Error("API Base URL 格式不正确");
   }
+}
+
+export function normalizeMimoBaseUrl(value) {
+  const input = String(value || "").trim().replace(/\/+$/, "");
+  if (!input) return DEFAULT_MIMO_BASE_URL;
+  let url;
+  try { url = new URL(input); }
+  catch { return input; }
+  let pathname = url.pathname.replace(/\/+$/, "");
+  if (/\/chat\/completions$/i.test(pathname)) pathname = pathname.slice(0, -"/chat/completions".length);
+  if (/\/v1$/i.test(pathname)) pathname = pathname.slice(0, -"/v1".length);
+  url.pathname = pathname || "/";
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/+$/, "");
 }
 
 function authHeaders(apiKey, contentType = "application/json") {

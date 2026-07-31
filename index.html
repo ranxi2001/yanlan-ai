@@ -123,7 +123,7 @@
 
     <dialog class="dialog" id="settingsDialog">
       <form method="dialog" id="settingsForm">
-        <header><div><h2>模型与网络设置</h2><p>Base URL 按服务商控制台原样填写，页面不会自动增删 <code>/v1</code>。</p></div><button class="icon-button" value="cancel" aria-label="关闭"><i data-lucide="x"></i></button></header>
+        <header><div><h2>模型与网络设置</h2><p>MiMo 官方地址已预设，语音转写通常只需填写对应 API Key。</p></div><button class="icon-button" value="cancel" aria-label="关闭"><i data-lucide="x"></i></button></header>
         <section class="settings-section recommended-section">
           <h3><i data-lucide="badge-check"></i>推荐服务</h3>
           <div class="provider-links">
@@ -141,13 +141,14 @@
           <p class="transport-help" id="transportHelp">直连要求模型服务允许当前网页域名发起 CORS 请求。</p>
         </section>
         <section class="settings-section">
-          <h3><i data-lucide="audio-lines"></i>MiMo 语音转写</h3>
+          <div class="settings-section-heading">
+            <h3><i data-lucide="audio-lines"></i>MiMo 语音转写</h3>
+            <button class="section-help-button" id="mimoHelpButton" type="button" title="MiMo 配置教程" aria-label="查看 MiMo 配置教程"><i data-lucide="circle-help"></i></button>
+          </div>
           <div class="settings-fields">
-            <label class="field field-wide"><span>ASR Base URL</span><input id="asrBaseUrlInput" type="url" placeholder="按小米控制台原样填写" autocomplete="url" /></label>
-            <label class="field field-wide"><span>ASR API Key</span><span class="secret-input"><input id="asrApiKeyInput" type="password" placeholder="仅保存在此浏览器" autocomplete="off" /><button class="toggle-key-button" data-key-input="asrApiKeyInput" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏 ASR 密钥"><i data-lucide="eye"></i></button></span></label>
+            <label class="field field-wide"><span>MiMo Base URL</span><input id="asrBaseUrlInput" type="url" value="https://api.xiaomimimo.com" autocomplete="url" /></label>
+            <label class="field field-wide"><span>MiMo API Key</span><span class="secret-input"><input id="asrApiKeyInput" type="password" placeholder="sk-..." maxlength="8192" autocomplete="off" /><button class="toggle-key-button" data-key-input="asrApiKeyInput" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏 MiMo 密钥"><i data-lucide="eye"></i></button></span></label>
             <label class="field"><span>语音模型</span><input id="asrModelInput" value="mimo-v2.5-asr" /></label>
-            <label class="field"><span>调用协议</span><select id="asrProtocolInput"><option value="mimo-chat" selected>MiMo Chat（官方）</option><option value="openai-transcriptions">OpenAI Transcriptions</option></select></label>
-            <label class="field"><span>转写路径</span><input id="asrPathInput" value="chat/completions" /></label>
             <label class="field"><span>实时分段</span><select id="chunkSecondsInput"><option value="5">5 秒</option><option value="10" selected>10 秒</option><option value="15">15 秒</option></select></label>
           </div>
         </section>
@@ -155,7 +156,7 @@
           <h3><i data-lucide="sparkles"></i>GPT 总结与提问</h3>
           <div class="settings-fields">
             <label class="field field-wide"><span>GPT Base URL</span><input id="chatBaseUrlInput" type="url" placeholder="https://example.com/v1" autocomplete="url" /></label>
-            <label class="field field-wide"><span>GPT API Key</span><span class="secret-input"><input id="chatApiKeyInput" type="password" placeholder="仅保存在此浏览器" autocomplete="off" /><button class="toggle-key-button" data-key-input="chatApiKeyInput" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏 GPT 密钥"><i data-lucide="eye"></i></button></span></label>
+            <label class="field field-wide"><span>GPT API Key</span><span class="secret-input"><input id="chatApiKeyInput" type="password" placeholder="仅保存在此浏览器" maxlength="8192" autocomplete="off" /><button class="toggle-key-button" data-key-input="chatApiKeyInput" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏 GPT 密钥"><i data-lucide="eye"></i></button></span></label>
             <label class="field"><span>文本模型</span><input id="chatModelInput" value="gpt-5.6-luna" /></label>
             <label class="field"><span>调用协议</span><select id="chatProtocolInput"><option value="responses" selected>Responses（推荐）</option><option value="chat-completions">Chat Completions（兼容）</option></select></label>
             <label class="field"><span>相对路径</span><input id="chatPathInput" value="responses" /></label>
@@ -163,7 +164,32 @@
           </div>
         </section>
         <p class="settings-note"><i data-lucide="shield-check"></i><span>两个 Key 仅保存在此浏览器的 localStorage，调用时只发送给你填写的模型 API，不发送给言澜托管服务器。本地网关不记录 Key、音频或逐字稿。</span></p>
-        <footer><button class="secondary-button clear-keys-button" id="clearKeysButton" type="button"><i data-lucide="key-round"></i><span>清除本机 Key</span></button><button class="secondary-button" value="cancel">取消</button><button class="primary-button" id="saveSettingsButton" value="default">保存设置</button></footer>
+        <input id="importKeysInput" type="file" accept="application/json,.json" hidden />
+        <footer class="settings-footer">
+          <div class="settings-key-actions">
+            <button class="secondary-button" id="importKeysButton" type="button"><i data-lucide="file-up"></i><span>导入 Key</span></button>
+            <button class="secondary-button" id="exportKeysButton" type="button"><i data-lucide="file-down"></i><span>导出 Key</span></button>
+            <button class="secondary-button clear-keys-button" id="clearKeysButton" type="button"><i data-lucide="key-round"></i><span>清除 Key</span></button>
+          </div>
+          <div class="dialog-actions"><button class="secondary-button" value="cancel">取消</button><button class="primary-button" id="saveSettingsButton" value="default">保存设置</button></div>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog class="dialog mimo-help-dialog" id="mimoHelpDialog">
+      <form method="dialog">
+        <header><div><h2>配置 MiMo 语音转写</h2><p>官方接口地址、协议和转写路径已由言澜处理。</p></div><button class="icon-button" value="cancel" aria-label="关闭 MiMo 配置教程"><i data-lucide="x"></i></button></header>
+        <div class="mimo-help-content">
+          <section class="help-step"><span>1</span><div><h3>获取按量 API Key</h3><p>在 Xiaomi MiMo 开放平台创建 <code>sk-</code> 开头的 Key。默认 Base URL 无需修改。</p></div></section>
+          <section class="help-step"><span>2</span><div><h3>粘贴并保存</h3><p>将 Key 填入“MiMo API Key”，保存后即可录音或上传音频。模型、协议和接口路径均已预设。</p></div></section>
+          <section class="help-step"><span>3</span><div><h3>遇到网络错误</h3><p>先确认 Key 和额度；若服务不允许浏览器跨域，请在本机运行言澜并选择“本地同源网关”。</p></div></section>
+          <div class="key-type-note"><i data-lucide="circle-alert"></i><p><strong>不要混用两类 Key：</strong><code>sk-</code> 是按量 API Key；<code>tp-</code> 是 Token Plan 专属 Key。Token Plan 当前面向 AI 编程工具，会议转写应使用按量 API Key。</p></div>
+          <div class="help-links">
+            <a href="https://platform.xiaomimimo.com?ref=6ENEDG" target="_blank" rel="noopener noreferrer"><span>前往 MiMo 开放平台</span><i data-lucide="external-link"></i></a>
+            <a href="https://mimo.mi.com/docs/zh-CN/api/audio/Speech-Recognition" target="_blank" rel="noopener noreferrer"><span>查看官方语音识别文档</span><i data-lucide="external-link"></i></a>
+          </div>
+        </div>
+        <footer><button class="primary-button" value="default">知道了</button></footer>
       </form>
     </dialog>
 

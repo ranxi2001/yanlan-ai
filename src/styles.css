@@ -1351,6 +1351,36 @@ textarea:focus-visible {
   color: var(--teal);
 }
 
+.settings-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-help-button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  margin-top: -7px;
+  place-items: center;
+  color: var(--text-secondary);
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.section-help-button:hover {
+  color: var(--teal);
+  background: var(--teal-soft);
+}
+
+.section-help-button svg {
+  width: 15px;
+  height: 15px;
+}
+
 .provider-links {
   overflow: hidden;
   border: 1px solid var(--line);
@@ -1560,8 +1590,19 @@ textarea:focus-visible {
   gap: 8px;
 }
 
-.dialog footer .clear-keys-button {
-  margin-right: auto;
+.settings-footer {
+  align-items: center;
+  justify-content: space-between !important;
+}
+
+.settings-key-actions,
+.dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-key-actions .clear-keys-button {
   color: var(--danger);
 }
 
@@ -1576,6 +1617,96 @@ textarea:focus-visible {
 
 .interview-dialog {
   width: min(720px, calc(100vw - 28px));
+}
+
+.mimo-help-dialog {
+  width: min(560px, calc(100vw - 28px));
+}
+
+.mimo-help-content {
+  display: grid;
+  gap: 16px;
+}
+
+.help-step {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.help-step > span {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  color: var(--teal);
+  background: var(--teal-soft);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.help-step h3 {
+  margin: 2px 0 4px;
+  font-size: 12px;
+}
+
+.help-step p,
+.key-type-note p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.key-type-note {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  padding: 10px;
+  gap: 8px;
+  background: #fff9ed;
+  border: 1px solid #f2d9a6;
+  border-radius: 7px;
+}
+
+.key-type-note > svg {
+  width: 16px;
+  height: 16px;
+  color: #9a6700;
+}
+
+.help-links {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.help-links a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 8px 10px;
+  gap: 12px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.help-links a + a {
+  border-top: 1px solid var(--line);
+}
+
+.help-links a:hover {
+  background: var(--surface-muted);
+}
+
+.help-links svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  color: var(--text-faint);
 }
 
 .interview-fields textarea#jobDescriptionInput {
@@ -2345,6 +2476,20 @@ textarea:focus-visible {
 
   .dialog footer {
     flex-wrap: wrap;
+  }
+
+  .settings-footer {
+    align-items: stretch;
+  }
+
+  .settings-key-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .dialog-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 }
 

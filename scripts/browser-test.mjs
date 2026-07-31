@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 import { buildShareHtml } from "../src/api.js";
@@ -114,6 +114,14 @@ try {
   assert.equal(await page.locator('.provider-link[href="https://ai.tosky.top/"]').getAttribute("target"), "_blank");
   assert.equal(await page.locator('.provider-link[href="https://platform.xiaomimimo.com?ref=6ENEDG"]').getAttribute("target"), "_blank");
   await page.getByText("专属链接注册，双方各得 10 元 API 体验金", { exact: true }).waitFor();
+  assert.equal(await page.locator("#asrBaseUrlInput").inputValue(), "https://api.xiaomimimo.com");
+  assert.equal(await page.locator("#asrProtocolInput").count(), 0);
+  assert.equal(await page.locator("#asrPathInput").count(), 0);
+  await page.locator("#mimoHelpButton").click();
+  await page.getByText("配置 MiMo 语音转写", { exact: true }).waitFor();
+  await page.getByText("Token Plan 当前面向 AI 编程工具，会议转写应使用按量 API Key。", { exact: false }).waitFor();
+  await page.screenshot({ path: new URL("../artifacts/mimo-help-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.locator('#mimoHelpDialog [value="default"]').click();
   await page.screenshot({ path: new URL("../artifacts/recommended-providers-desktop.png", import.meta.url).pathname, fullPage: true });
   await page.locator("#settingsDialog header .icon-button").click();
   assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.open), false);
@@ -262,7 +270,7 @@ try {
   await page.locator("#newMeetingButton").click();
 
   await page.locator("#settingsButton").click();
-  await page.locator("#asrBaseUrlInput").fill("https://mimo.example/v1");
+  await page.locator("#asrBaseUrlInput").fill("https://mimo.example");
   await page.locator("#asrApiKeyInput").fill("asr-test-key");
   await page.locator("#chatBaseUrlInput").fill("https://gpt.example/v1");
   await page.locator("#chatApiKeyInput").fill("gpt-test-key");
@@ -271,6 +279,20 @@ try {
   assert.equal(await page.locator("#chatPathInput").inputValue(), "responses");
   assert.equal(await page.locator("#transportModeInput").inputValue(), "direct");
   assert.equal(await page.locator("#relayPathInput").isDisabled(), true);
+  page.once("dialog", (dialog) => dialog.accept());
+  const keyDownloadPromise = page.waitForEvent("download");
+  await page.locator("#exportKeysButton").click();
+  const keyDownload = await keyDownloadPromise;
+  const keyBackup = JSON.parse(await readFile(await keyDownload.path(), "utf8"));
+  assert.equal(keyBackup.schema, "yanlan.api-keys");
+  assert.deepEqual(keyBackup.keys, { mimo: "asr-test-key", gpt: "gpt-test-key" });
+  assert.equal(keyBackup.asrBaseUrl, undefined);
+  await page.locator("#asrApiKeyInput").fill("");
+  await page.locator("#chatApiKeyInput").fill("");
+  await page.locator("#importKeysInput").setInputFiles(await keyDownload.path());
+  await page.getByText("API Key 已填入，请检查后保存设置", { exact: true }).waitFor();
+  assert.equal(await page.locator("#asrApiKeyInput").inputValue(), "asr-test-key");
+  assert.equal(await page.locator("#chatApiKeyInput").inputValue(), "gpt-test-key");
   await page.screenshot({ path: new URL("../artifacts/responses-settings-desktop.png", import.meta.url).pathname, fullPage: true });
   assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);
   await page.locator("#chunkSecondsInput").selectOption("5");
@@ -280,6 +302,9 @@ try {
   const persisted = await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } }));
   assert.match(JSON.stringify(persisted.local), /asr-test-key|gpt-test-key/);
   assert.doesNotMatch(JSON.stringify(persisted.session), /asr-test-key|gpt-test-key/);
+  const persistedConfig = JSON.parse(persisted.local["yanlan.config.v1"]);
+  assert.equal(persistedConfig.asrBaseUrl, "https://mimo.example");
+  assert.equal(persistedConfig.asrPath, "v1/chat/completions");
   await page.reload({ waitUntil: "networkidle" });
   await page.locator("#settingsButton").click();
   assert.equal(await page.locator("#asrApiKeyInput").inputValue(), "asr-test-key");
@@ -453,6 +478,7 @@ try {
   const legacy = await context.newPage();
   await legacy.setViewportSize({ width: 390, height: 844 });
   await legacy.addInitScript(() => localStorage.setItem("yanlan.config.v1", JSON.stringify({
+    asrBaseUrl: "https://api.xiaomimimo.com/v1", asrProtocol: "openai-transcriptions", asrPath: "audio/transcriptions",
     chatModel: "gpt-4o-mini", chatPath: "chat/completions",
   })));
   await legacy.goto(baseUrl, { waitUntil: "networkidle" });
@@ -462,6 +488,16 @@ try {
   assert.equal(await legacy.locator("#chatModelInput").inputValue(), "gpt-4o-mini");
   assert.equal(await legacy.locator("#chatProtocolInput").inputValue(), "chat-completions");
   assert.equal(await legacy.locator("#chatPathInput").inputValue(), "chat/completions");
+  assert.equal(await legacy.locator("#asrBaseUrlInput").inputValue(), "https://api.xiaomimimo.com");
+  const migratedAsr = await legacy.evaluate(() => JSON.parse(localStorage.getItem("yanlan.config.v1")));
+  assert.equal(migratedAsr.asrProtocol, "mimo-chat");
+  assert.equal(migratedAsr.asrPath, "v1/chat/completions");
+  await legacy.locator("#mimoHelpButton").scrollIntoViewIfNeeded();
+  await legacy.locator("#mimoHelpButton").click();
+  await legacy.locator("#mimoHelpDialog").waitFor();
+  assert.equal(await legacy.locator("#mimoHelpDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);
+  await legacy.screenshot({ path: new URL("../artifacts/mimo-help-mobile.png", import.meta.url).pathname, fullPage: true });
+  await legacy.locator('#mimoHelpDialog [value="default"]').click();
   await legacy.locator("#chatProtocolInput").scrollIntoViewIfNeeded();
   await legacy.screenshot({ path: new URL("../artifacts/responses-settings-mobile.png", import.meta.url).pathname, fullPage: true });
   assert.equal(await legacy.locator("#settingsDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);

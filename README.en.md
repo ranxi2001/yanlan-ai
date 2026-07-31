@@ -35,12 +35,13 @@ Yanlan is an open-source, self-hostable AI audio workspace that runs entirely in
 - Choose between direct browser requests and a local same-origin relay for user-defined API base URLs
 - Require HTTPS for remote model endpoints; HTTP is accepted only for loopback hosts (`localhost`, `127.0.0.0/8`, and `[::1]`)
 - Store recordings in IndexedDB and workspace data in localStorage
+- Import and export both API keys as versioned JSON; imports cannot change model endpoints or other settings
 - Retry transient MiMo failures with timeouts and backoff; if any live segment still fails, stop before generating incomplete notes and keep the recording for retranscription
 - Process long transcripts in bounded summary/interview batches and retrieve question-relevant time ranges for Q&A instead of sending the whole meeting in one prompt
 
-See Xiaomi's official [MiMo-V2.5-ASR repository](https://github.com/XiaomiMiMo/MiMo-V2.5-ASR) for model and deployment details. Yanlan's default request format follows [MiMo-Code](https://github.com/XiaomiMiMo/MiMo-Code): audio is sent as a data URL through Chat Completions with `asr_options`. A standard OpenAI Transcriptions mode is also available for compatible gateways.
+See Xiaomi's official [MiMo-V2.5-ASR repository](https://github.com/XiaomiMiMo/MiMo-V2.5-ASR) for model and deployment details. The web app fixes MiMo ASR to the official Chat Completions format, sending audio as a data URL with `asr_options`, so users no longer select a protocol or enter an endpoint path. The CLI retains a standard OpenAI Transcriptions mode for compatible gateways.
 
-The default MiMo browser upload path accepts files up to 30 minutes and 128 MiB; fallback whole-file uploads are capped at 40 MiB when the browser cannot decode a file. Split longer recordings, use live recording, or select the standard OpenAI Transcriptions protocol when a compatible provider supports it. These bounds prevent native browser decoding from exhausting memory; provider-side limits still apply.
+The default MiMo browser upload path accepts files up to 30 minutes and 128 MiB; fallback whole-file uploads are capped at 40 MiB when the browser cannot decode a file. Split longer recordings or use live recording; the CLI can select standard OpenAI Transcriptions with a compatible provider. These bounds prevent native browser decoding from exhausting memory; provider-side limits still apply.
 
 ## Recommended Providers
 
@@ -102,13 +103,13 @@ npm run dev
 
 Open `http://127.0.0.1:4173`. Recording, playback, and audio export work without model configuration. To enable transcription and AI notes, configure these fields in Settings:
 
-1. MiMo ASR base URL, API key, model, protocol, and transcription path
+1. The MiMo ASR API key; the official base URL, model, and 10-second live segmentation are prefilled and remain adjustable where applicable
 2. GPT base URL, API key, model, protocol, and relative API path
 3. Optional shared background plus domain terms explicitly labeled with fields such as `Term:`, `Project:`, or `Name:`
 
 Choose Interview when creating a record, then provide the role context. The complete job description is sent with the transcript to the configured GPT endpoint for correction and assessment. The full job description and interviewer names are never included in shared links or offline share pages.
 
-Yanlan uses each base URL exactly as entered and does not add or remove `/v1`. The project has no `.env` file and does not embed API keys in source code.
+The MiMo base URL defaults to the service root `https://api.xiaomimimo.com`; the version and API format live in the internal relative path `v1/chat/completions`. If a legacy base URL containing `/v1` or a complete request URL is pasted, the web app normalizes it back to the service root while preserving the final `POST /v1/chat/completions` request. GPT base URLs and relative paths are still used as entered. The project has no `.env` file and does not embed API keys in source code.
 
 New configurations use the Responses API by default. If the base URL already includes `/v1`, such as `https://api.openai.com/v1`, enter `responses` as the relative path to produce `POST /v1/responses`. Compatible gateways without Responses support can use Chat Completions instead. Existing browser configurations retain their selected protocol.
 
@@ -137,6 +138,7 @@ The relay listens only on `127.0.0.1`, validates Host and Origin, accepts only `
 
 - Both API keys, endpoint settings, and terminology prompts are stored in the current browser's `localStorage` and remain available after refresh or restart.
 - Keys are sent only to the model APIs configured by the user, never to a Yanlan-hosted server. Use Clear local keys in Settings to remove them at any time.
+- Export Key produces JSON containing plaintext credentials. Keep it only on a trusted device in a controlled location. Import reads only the two keys and ignores any endpoint or other configuration fields.
 - Recording chunks are committed to IndexedDB throughout capture, then atomically combined into the complete recording and removed after a normal stop.
 - After an accidental close, Yanlan can recover consecutive chunks that were already committed. The final chunk of roughly one second may not yet have been emitted, so export a backup after important recordings.
 - Audio segments are sent to the configured MiMo API; transcripts are sent to the configured GPT API.

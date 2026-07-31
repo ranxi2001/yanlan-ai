@@ -6,6 +6,7 @@ import {
   buildShareHtml,
   correctTranscript,
   formatTimestamp,
+  normalizeMimoBaseUrl,
   publicMeeting,
   summarizeTranscript,
   toMarkdown,
@@ -13,6 +14,7 @@ import {
   transcribeAudioWithRetry,
 } from "./api.js";
 import { MAX_MIMO_FALLBACK_BYTES, MAX_MIMO_UPLOAD_SECONDS, mimoUploadLimitMessage } from "./audio-limits.js";
+import { createKeyBackup, parseKeyBackup } from "./key-backup.js";
 import { deleteRecording, getRecording, getRecordingChunks, saveRecording, saveRecordingChunk } from "./storage.js";
 
 const MEETINGS_KEY = "yanlan.meetings.v1";
@@ -44,11 +46,11 @@ const elements = {
   replaceAudioButton: $("#replaceAudioButton"), fileInput: $("#fileInput"), languageSelect: $("#languageSelect"), retryButton: $("#retryButton"),
   recordingPlayer: $("#recordingPlayer"), audioPlayer: $("#audioPlayer"), settingsDialog: $("#settingsDialog"),
   settingsForm: $("#settingsForm"), asrBaseUrlInput: $("#asrBaseUrlInput"), asrApiKeyInput: $("#asrApiKeyInput"),
-  asrModelInput: $("#asrModelInput"), asrProtocolInput: $("#asrProtocolInput"), asrPathInput: $("#asrPathInput"), chunkSecondsInput: $("#chunkSecondsInput"),
+  asrModelInput: $("#asrModelInput"), chunkSecondsInput: $("#chunkSecondsInput"), mimoHelpButton: $("#mimoHelpButton"), mimoHelpDialog: $("#mimoHelpDialog"),
   chatBaseUrlInput: $("#chatBaseUrlInput"), chatApiKeyInput: $("#chatApiKeyInput"), chatModelInput: $("#chatModelInput"),
   chatProtocolInput: $("#chatProtocolInput"), chatPathInput: $("#chatPathInput"), contextHintInput: $("#contextHintInput"),
   transportModeInput: $("#transportModeInput"), relayPathInput: $("#relayPathInput"), transportHelp: $("#transportHelp"), shareDialog: $("#shareDialog"),
-  clearKeysButton: $("#clearKeysButton"),
+  clearKeysButton: $("#clearKeysButton"), importKeysButton: $("#importKeysButton"), exportKeysButton: $("#exportKeysButton"), importKeysInput: $("#importKeysInput"),
   shareUrlInput: $("#shareUrlInput"), shareHint: $("#shareHint"), copyShareButton: $("#copyShareButton"),
   copySharePrimaryButton: $("#copySharePrimaryButton"), downloadShareButton: $("#downloadShareButton"), toast: $("#toast"),
   interviewDialog: $("#interviewDialog"), interviewForm: $("#interviewForm"), interviewDialogClose: $("#interviewDialogClose"),
@@ -119,9 +121,10 @@ function bindEvents() {
   elements.configNoticeButton.addEventListener("click", openSettings);
   elements.settingsForm.addEventListener("submit", saveSettings);
   elements.clearKeysButton.addEventListener("click", clearStoredKeys);
-  elements.asrProtocolInput.addEventListener("change", () => {
-    elements.asrPathInput.value = elements.asrProtocolInput.value === "mimo-chat" ? "chat/completions" : "audio/transcriptions";
-  });
+  elements.mimoHelpButton.addEventListener("click", () => elements.mimoHelpDialog.showModal());
+  elements.importKeysButton.addEventListener("click", () => elements.importKeysInput.click());
+  elements.importKeysInput.addEventListener("change", importKeys);
+  elements.exportKeysButton.addEventListener("click", exportKeys);
   elements.chatProtocolInput.addEventListener("change", () => {
     elements.chatPathInput.value = elements.chatProtocolInput.value === "responses" ? "responses" : "chat/completions";
   });
@@ -1176,8 +1179,6 @@ function openSettings() {
   elements.asrBaseUrlInput.value = state.config.asrBaseUrl;
   elements.asrApiKeyInput.value = state.config.asrApiKey;
   elements.asrModelInput.value = state.config.asrModel;
-  elements.asrProtocolInput.value = state.config.asrProtocol;
-  elements.asrPathInput.value = state.config.asrPath;
   elements.chunkSecondsInput.value = String(state.config.chunkSeconds);
   elements.chatBaseUrlInput.value = state.config.chatBaseUrl;
   elements.chatApiKeyInput.value = state.config.chatApiKey;
@@ -1196,13 +1197,13 @@ function saveSettings(event) {
   if (event.submitter?.value === "cancel") return;
   event.preventDefault();
   const next = {
-    asrBaseUrl: elements.asrBaseUrlInput.value.trim(), asrApiKey: elements.asrApiKeyInput.value.trim(),
-    asrModel: elements.asrModelInput.value.trim(), asrProtocol: elements.asrProtocolInput.value, asrPath: elements.asrPathInput.value.trim(), chunkSeconds: Number(elements.chunkSecondsInput.value),
+    asrBaseUrl: normalizeMimoBaseUrl(elements.asrBaseUrlInput.value), asrApiKey: elements.asrApiKeyInput.value.trim(),
+    asrModel: elements.asrModelInput.value.trim(), asrProtocol: DEFAULT_CONFIG.asrProtocol, asrPath: DEFAULT_CONFIG.asrPath, chunkSeconds: Number(elements.chunkSecondsInput.value),
     chatBaseUrl: elements.chatBaseUrlInput.value.trim(), chatApiKey: elements.chatApiKeyInput.value.trim(),
     chatModel: elements.chatModelInput.value.trim(), chatProtocol: elements.chatProtocolInput.value, chatPath: elements.chatPathInput.value.trim(),
     transportMode: elements.transportModeInput.value, relayPath: elements.relayPathInput.value.trim(), contextHint: elements.contextHintInput.value.trim(),
   };
-  if (!next.asrBaseUrl || !next.asrApiKey || !next.asrModel || !next.asrPath || !next.chatBaseUrl || !next.chatApiKey || !next.chatModel || !next.chatPath || !next.relayPath) {
+  if (!next.asrBaseUrl || !next.asrApiKey || !next.asrModel || !next.chatBaseUrl || !next.chatApiKey || !next.chatModel || !next.chatPath || !next.relayPath) {
     showToast("请完整填写 MiMo 和 GPT 两组配置", true);
     return;
   }
@@ -1227,6 +1228,39 @@ function clearStoredKeys() {
   showToast("本机保存的 API Key 已清除");
 }
 
+function exportKeys() {
+  const backup = createKeyBackup({
+    mimo: elements.asrApiKeyInput.value,
+    gpt: elements.chatApiKeyInput.value,
+  });
+  if (!backup.keys.mimo && !backup.keys.gpt) {
+    showToast("没有可导出的 API Key", true);
+    return;
+  }
+  if (!window.confirm("导出的 JSON 会以明文保存两组 API Key。请确认下载设备和保存位置安全。")) return;
+  const blob = new Blob([`${JSON.stringify(backup, null, 2)}\n`], { type: "application/json;charset=utf-8" });
+  downloadBlob(blob, `yanlan-api-keys-${formatFileDate(new Date())}.json`);
+  showToast("API Key 备份已导出，请妥善保管");
+}
+
+async function importKeys() {
+  const file = elements.importKeysInput.files?.[0];
+  elements.importKeysInput.value = "";
+  if (!file) return;
+  if (file.size > 64 * 1024) {
+    showToast("Key 备份文件不能超过 64 KiB", true);
+    return;
+  }
+  try {
+    const keys = parseKeyBackup(await file.text());
+    elements.asrApiKeyInput.value = keys.mimo;
+    elements.chatApiKeyInput.value = keys.gpt;
+    showToast("API Key 已填入，请检查后保存设置");
+  } catch (error) {
+    showToast(`导入失败：${error.message}`, true);
+  }
+}
+
 function renderTransportHelp() {
   const relay = elements.transportModeInput.value === "relay";
   elements.relayPathInput.disabled = !relay;
@@ -1239,14 +1273,19 @@ function loadConfig() {
   let stored = {};
   try { stored = JSON.parse(localStorage.getItem(CONFIG_KEY) || "{}"); } catch {}
   const chatProtocol = stored.chatProtocol || (stored.chatPath ? (/\bresponses\/?$/i.test(stored.chatPath) ? "responses" : "chat-completions") : DEFAULT_CONFIG.chatProtocol);
+  const asrBaseUrl = normalizeMimoBaseUrl(stored.asrBaseUrl || DEFAULT_CONFIG.asrBaseUrl);
   const config = {
     ...DEFAULT_CONFIG,
     ...stored,
     chatProtocol,
+    asrBaseUrl,
+    asrProtocol: DEFAULT_CONFIG.asrProtocol,
+    asrPath: DEFAULT_CONFIG.asrPath,
     asrApiKey: stored.asrApiKey || sessionStorage.getItem(LEGACY_ASR_SESSION_KEY) || "",
     chatApiKey: stored.chatApiKey || sessionStorage.getItem(LEGACY_CHAT_SESSION_KEY) || "",
   };
-  if ((!stored.asrApiKey && config.asrApiKey) || (!stored.chatApiKey && config.chatApiKey)) {
+  const migrated = stored.asrBaseUrl !== config.asrBaseUrl || stored.asrProtocol !== config.asrProtocol || stored.asrPath !== config.asrPath;
+  if (migrated || (!stored.asrApiKey && config.asrApiKey) || (!stored.chatApiKey && config.chatApiKey)) {
     try { localStorage.setItem(CONFIG_KEY, JSON.stringify(config)); } catch {}
   }
   sessionStorage.removeItem(LEGACY_ASR_SESSION_KEY);

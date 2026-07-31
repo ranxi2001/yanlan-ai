@@ -7,6 +7,7 @@ import {
   correctTranscript,
   formatTimestamp,
   joinApiUrl,
+  normalizeMimoBaseUrl,
   parseTranscriptionResponse,
   publicMeeting,
   requestUrlForConfig,
@@ -46,7 +47,19 @@ test("joins explicit base URL without changing its version path", () => {
   assert.equal(joinApiUrl("https://api.example", "chat/completions"), "https://api.example/chat/completions");
 });
 
+test("normalizes MiMo base URLs without exposing the ASR endpoint path", () => {
+  assert.equal(normalizeMimoBaseUrl(""), "https://api.xiaomimimo.com");
+  assert.equal(normalizeMimoBaseUrl("https://api.xiaomimimo.com"), "https://api.xiaomimimo.com");
+  assert.equal(normalizeMimoBaseUrl("https://api.xiaomimimo.com/v1/"), "https://api.xiaomimimo.com");
+  assert.equal(normalizeMimoBaseUrl("https://api.xiaomimimo.com/v1/chat/completions"), "https://api.xiaomimimo.com");
+  assert.equal(normalizeMimoBaseUrl("https://gateway.example/openai/v1"), "https://gateway.example/openai");
+});
+
 test("new installs default to GPT-5.6 Luna over Responses", () => {
+  assert.equal(DEFAULT_CONFIG.asrBaseUrl, "https://api.xiaomimimo.com");
+  assert.equal(DEFAULT_CONFIG.asrProtocol, "mimo-chat");
+  assert.equal(DEFAULT_CONFIG.asrPath, "v1/chat/completions");
+  assert.equal(joinApiUrl(DEFAULT_CONFIG.asrBaseUrl, DEFAULT_CONFIG.asrPath), "https://api.xiaomimimo.com/v1/chat/completions");
   assert.equal(DEFAULT_CONFIG.chatModel, "gpt-5.6-luna");
   assert.equal(DEFAULT_CONFIG.chatProtocol, "responses");
   assert.equal(DEFAULT_CONFIG.chatPath, "responses");

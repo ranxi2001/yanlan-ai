@@ -35,12 +35,13 @@
 - 浏览器直连与本地同源网关双模式，兼容不同用户配置的 API Base URL
 - 远程模型端点强制使用 HTTPS；只有 `localhost`、`127.0.0.0/8` 和 `[::1]` 回环地址可使用 HTTP
 - 录音保存在 IndexedDB，会议数据保存在 localStorage
+- 两组 API Key 支持带版本标识的 JSON 导入与导出，导入文件不能修改模型地址或其他配置
 - MiMo 请求具备超时和退避重试；任何实时片段最终失败时停止生成纪要，保留完整录音供重新转写
 - 长逐字稿按有界批次生成纪要和面试证据，问答只检索与问题相关的时间片段，避免把整场会议一次塞入模型上下文
 
-MiMo-V2.5-ASR 的模型能力和部署信息见小米官方的 [MiMo-V2.5-ASR 仓库](https://github.com/XiaomiMiMo/MiMo-V2.5-ASR)。默认调用方式与官方 [MiMo-Code](https://github.com/XiaomiMiMo/MiMo-Code) 一致：通过 Chat Completions 发送 data URL 音频和 `asr_options`；设置中也保留了标准 OpenAI Transcriptions 协议，便于连接兼容网关。
+MiMo-V2.5-ASR 的模型能力和部署信息见小米官方的 [MiMo-V2.5-ASR 仓库](https://github.com/XiaomiMiMo/MiMo-V2.5-ASR)。网页端固定使用官方 Chat Completions ASR 格式，通过 data URL 发送音频和 `asr_options`，不再要求用户选择协议或填写请求路径；CLI 仍保留标准 OpenAI Transcriptions 协议，便于连接兼容网关。
 
-默认 MiMo 网页上传路径最多接受 30 分钟且不超过 128 MiB 的文件，浏览器无法解码时的整文件回退上限为 40 MiB。更长文件请先切分，或使用实时录音；兼容服务支持时，也可切换到标准 OpenAI Transcriptions 协议，由服务端限制实际文件大小。这个边界用于避免浏览器原生解码在长音频上耗尽内存。
+默认 MiMo 网页上传路径最多接受 30 分钟且不超过 128 MiB 的文件，浏览器无法解码时的整文件回退上限为 40 MiB。更长文件请先切分或使用实时录音；CLI 可在兼容服务上切换到标准 OpenAI Transcriptions 协议。这个边界用于避免浏览器原生解码在长音频上耗尽内存。
 
 ## 推荐配置
 
@@ -100,13 +101,13 @@ npm run dev
 
 打开 `http://127.0.0.1:4173`。不配置模型也可以直接录音、播放和导出音频；需要转写与 AI 纪要时，在页面设置中分别填写：
 
-1. MiMo ASR 的 Base URL、API Key、模型名、调用协议和转写路径
+1. MiMo ASR 的 API Key；官方 Base URL、模型和 10 秒实时分段均已预填，可按需调整
 2. GPT 的 Base URL、API Key、模型名、调用协议和相对路径
 3. 可选的通用背景，以及用“术语：”“项目名：”“人名：”等标签明确列出的专有名词
 
 新建记录时选择“面试”，再填写岗位上下文。完整 JD 会随逐字稿发送给配置的 GPT 以完成校正和评估；完整 JD 和面试官姓名都不会进入分享链接或离线分享网页。
 
-Base URL 会按填写内容原样使用；应用不会自动添加或删除 `/v1`。项目没有 `.env` 文件，也不在源码中内置 Key。
+MiMo Base URL 默认使用服务根地址 `https://api.xiaomimimo.com`，版本与接口格式由内部相对路径 `v1/chat/completions` 管理。粘贴带 `/v1` 的旧 Base URL 或完整请求地址时，网页会自动归一化为服务根地址，最终请求仍是 `POST /v1/chat/completions`。GPT Base URL 和相对路径仍按填写内容使用。项目没有 `.env` 文件，也不在源码中内置 Key。
 
 新配置默认使用 Responses API。如果 Base URL 已经包含 `/v1`（例如 `https://api.openai.com/v1`），相对路径填写 `responses`，最终请求就是 `POST /v1/responses`。不支持 Responses 的兼容网关可以在设置中切换回 Chat Completions；已有浏览器配置会继续沿用原协议，不会被静默覆盖。
 
@@ -135,6 +136,7 @@ flowchart LR
 
 - 两个 API Key、端点配置和术语提示保存在当前浏览器的 `localStorage`，刷新或重新打开页面后仍可使用。
 - Key 只在调用时发送给用户填写的模型 API，不发送给言澜托管服务器；可随时在设置中点击“清除本机 Key”。
+- “导出 Key”生成的 JSON 含有明文凭据，应只保存在可信设备和受控位置；导入只读取两组 Key，不接受文件中的 Base URL 或其他配置。
 - 录音分片在录制期间持续提交到本机 IndexedDB，正常结束后合并为完整录音并清理临时分片。
 - 页面意外关闭后可恢复已提交的连续分片；尚未触发保存的最后约一秒仍可能丢失，重要录音应在结束后及时导出备份。
 - 音频片段会发送给配置的 MiMo API；逐字稿会发送给配置的 GPT API。
