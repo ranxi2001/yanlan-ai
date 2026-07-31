@@ -450,8 +450,12 @@ test("semantic joins reject speaker changes, large gaps, and structurally invali
         { start_seconds: 0, end_seconds: 10, speaker: "A", text: "长".repeat(799), join_next: true },
         { start_seconds: 10, end_seconds: 20, speaker: "A", text: "文本" },
       ],
+      [
+        { start_seconds: 0, speaker: "A", text: "缺少结束时间", join_next: true },
+        { start_seconds: 30, end_seconds: 40, speaker: "A", text: "不应被误判为零间隔" },
+      ],
     ];
-    assert.deepEqual(layoutGuards.map((segments) => readableTranscriptSegments(segments).length), [2, 2, 2, 2]);
+    assert.deepEqual(layoutGuards.map((segments) => readableTranscriptSegments(segments).length), [2, 2, 2, 2, 2]);
 
     invalid = true;
     const rejected = await correctTranscript({ config, meeting: source });
@@ -487,12 +491,32 @@ test("correction batches include a bounded following-segment preview for cross-b
     assert.equal(payloads[0].following_segment.id, 1);
     assert.ok(payloads[0].following_segment.text.length <= 500);
     assert.equal(payloads[1].following_segment, undefined);
-    assert.equal(result.segments[0].join_next, true);
+    assert.equal(result.segments[0].join_next, false, "a join rejected by display limits is not persisted");
+    assert.match(result.segments[0].text, /。$/u, "rejected joins preserve their sentence boundary punctuation");
     assert.equal(result.semanticJoins, 0, "joins rejected by display safety limits are not reported as applied");
     assert.equal(readableTranscriptSegments(result.segments).length, 2, "readable output still enforces its 800-character safety limit");
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("readable semantic joins preserve natural spacing across Chinese and English boundaries", () => {
+  const english = readableTranscriptSegments([
+    { start_seconds: 0, end_seconds: 1, speaker: "A", text: "We discussed,", join_next: true },
+    { start_seconds: 1, end_seconds: 2, speaker: "A", text: "the launch." },
+  ]);
+  const chinese = readableTranscriptSegments([
+    { start_seconds: 0, end_seconds: 1, speaker: "A", text: "她现在", join_next: true },
+    { start_seconds: 1, end_seconds: 2, speaker: "A", text: "正在找工作。" },
+  ]);
+  const mixed = readableTranscriptSegments([
+    { start_seconds: 0, end_seconds: 1, speaker: "A", text: "讨论项目", join_next: true },
+    { start_seconds: 1, end_seconds: 2, speaker: "A", text: "launch plan。" },
+  ]);
+
+  assert.equal(english[0].text, "We discussed, the launch.");
+  assert.equal(chinese[0].text, "她现在正在找工作。");
+  assert.equal(mixed[0].text, "讨论项目 launch plan。");
 });
 
 test("GPT correction rejects material rewrites", async () => {

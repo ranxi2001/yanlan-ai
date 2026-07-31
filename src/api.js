@@ -484,21 +484,20 @@ export async function correctTranscript({ config, meeting, signal }) {
           if (normalizedTerm && occurrenceCount(correctionText(correction.text), normalizedTerm) > occurrenceCount(correctionText(source.text), normalizedTerm)) acceptedTerms.add(term);
         }
       }
-      const joinNext = result?.join_next === true && canJoinTranscriptSegments(source, original[globalIndex + 1]);
-      const text = joinNext ? stripArtificialBoundaryPunctuation(correction.text) : correction.text;
       corrected.push({
         ...source,
         // Speaker attribution cannot be proven from a text-only correction response.
         speaker: stringOr(source.speaker, "发言人"),
-        text,
-        join_next: joinNext,
+        text: correction.text,
+        join_next: result?.join_next === true,
       });
     });
     for (const term of acceptedTerms) if (!terminology.includes(term)) terminology.push(term);
     sourceOffset += batch.length;
   }
-  const semanticJoins = corrected.filter((segment) => String(segment.text || "").trim()).length - readableTranscriptSegments(corrected).length;
-  return { segments: corrected, terminology: terminology.slice(0, 60), rejectedCorrections, semanticJoins };
+  const normalized = normalizeSemanticJoins(corrected, original);
+  const semanticJoins = normalized.filter((segment) => segment.join_next === true).length;
+  return { segments: normalized, terminology: terminology.slice(0, 60), rejectedCorrections, semanticJoins };
 }
 
 export function readableTranscriptSegments(segments = []) {
@@ -714,19 +713,66 @@ function splitSegmentBatches(segments, maxCharacters) {
 function canJoinTranscriptSegments(left, right) {
   if (!left || !right) return false;
   if (comparableText(left.speaker || "发言人") !== comparableText(right.speaker || "发言人")) return false;
-  const leftStart = Math.max(0, Number(left.start_seconds) || 0);
-  const rightStart = Math.max(0, Number(right.start_seconds) || 0);
-  if (rightStart < leftStart) return false;
+  const rawLeftStart = Number(left.start_seconds);
+  const rawRightStart = Number(right.start_seconds);
   const explicitEnd = Number(left.end_seconds);
-  const leftEnd = Number.isFinite(explicitEnd) && explicitEnd > leftStart ? explicitEnd : rightStart;
-  const gap = rightStart - leftEnd;
+  if (!Number.isFinite(rawLeftStart) || !Number.isFinite(rawRightStart) || !Number.isFinite(explicitEnd)) return false;
+  const leftStart = Math.max(0, rawLeftStart);
+  const rightStart = Math.max(0, rawRightStart);
+  if (rightStart < leftStart) return false;
+  if (explicitEnd <= leftStart) return false;
+  const gap = rightStart - explicitEnd;
   return gap >= -MAX_SEMANTIC_JOIN_OVERLAP_SECONDS && gap <= MAX_SEMANTIC_JOIN_GAP_SECONDS;
+}
+
+function normalizeSemanticJoins(segments, sourceSegments) {
+  const normalized = segments.map((segment) => ({ ...segment, join_next: false }));
+  if (!normalized.length) return normalized;
+  let groupStart = Math.max(0, Number(normalized[0].start_seconds) || 0);
+  let groupEnd = Math.max(groupStart, Number(normalized[0].end_seconds) || groupStart);
+  let groupText = stringOr(normalized[0].text, "");
+
+  for (let index = 0; index < normalized.length - 1; index += 1) {
+    const current = normalized[index];
+    const next = normalized[index + 1];
+    const sourceCurrent = sourceSegments[index] || current;
+    const sourceNext = sourceSegments[index + 1] || next;
+    const strippedCurrentText = stripArtificialBoundaryPunctuation(current.text);
+    const joinedText = joinTranscriptText(stripArtificialBoundaryPunctuation(groupText), next.text);
+    const joinedEnd = Math.max(groupEnd, Number(next.end_seconds) || Number(next.start_seconds) || groupEnd);
+    const accepted = segments[index]?.join_next === true
+      && canJoinTranscriptSegments(sourceCurrent, sourceNext)
+      && comparableText(current.speaker) === comparableText(next.speaker)
+      && joinedText.length <= MAX_READABLE_SEGMENT_CHARACTERS
+      && joinedEnd - groupStart <= MAX_READABLE_SEGMENT_SECONDS;
+
+    if (accepted) {
+      current.text = strippedCurrentText;
+      current.join_next = true;
+      groupText = joinedText;
+      groupEnd = joinedEnd;
+      continue;
+    }
+
+    if (segments[index]?.join_next === true) current.text = restoreBoundaryPunctuation(current.text, sourceCurrent.text);
+    groupStart = Math.max(0, Number(next.start_seconds) || 0);
+    groupEnd = Math.max(groupStart, Number(next.end_seconds) || groupStart);
+    groupText = stringOr(next.text, "");
+  }
+  return normalized;
 }
 
 function stripArtificialBoundaryPunctuation(value) {
   const text = String(value || "").trim();
   const stripped = text.replace(/[。；;.]+$/u, "").trimEnd();
   return stripped || text;
+}
+
+function restoreBoundaryPunctuation(value, sourceValue) {
+  const text = String(value || "").trimEnd();
+  if (!text || /[。！？!?；;.,，：:]$/u.test(text)) return text;
+  const punctuation = String(sourceValue || "").trim().match(/[。！？!?；;.]+$/u)?.[0];
+  return punctuation ? `${text}${punctuation}` : text;
 }
 
 function joinTranscriptText(leftValue, rightValue) {
@@ -739,7 +785,11 @@ function joinTranscriptText(leftValue, rightValue) {
   const cjkBoundary = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(leftCharacter)
     || /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(rightCharacter);
   const wordBoundary = /[\p{Letter}\p{Number}]$/u.test(leftCharacter) && /^[\p{Letter}\p{Number}]/u.test(rightCharacter);
-  return `${left}${wordBoundary && !cjkBoundary ? " " : ""}${right}`;
+  const latinContinuation = /[\p{Script=Latin}\p{Number}]/u.test(rightCharacter)
+    && /[\p{Script=Latin}\p{Number},:;.!?]/u.test(leftCharacter);
+  const chineseToLatin = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(leftCharacter)
+    && /\p{Script=Latin}/u.test(rightCharacter);
+  return `${left}${(wordBoundary && !cjkBoundary) || latinContinuation || chineseToLatin ? " " : ""}${right}`;
 }
 
 function parseJsonObject(value) {
