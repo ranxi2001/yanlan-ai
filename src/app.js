@@ -865,6 +865,7 @@ function openSettings() {
 }
 
 function saveSettings(event) {
+  if (event.submitter?.value === "cancel") return;
   event.preventDefault();
   const next = {
     asrBaseUrl: elements.asrBaseUrlInput.value.trim(), asrApiKey: elements.asrApiKeyInput.value.trim(),

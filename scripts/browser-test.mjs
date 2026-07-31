@@ -81,6 +81,12 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
 try {
   await page.goto(baseUrl, { waitUntil: "networkidle" });
   await page.locator("#settingsButton").click();
+  await page.locator("#settingsDialog header .icon-button").click();
+  assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.open), false);
+  await page.locator("#settingsButton").click();
+  await page.locator("#settingsDialog footer .secondary-button").click();
+  assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.open), false);
+  await page.locator("#settingsButton").click();
   await page.locator("#asrBaseUrlInput").fill("https://mimo.example/v1");
   await page.locator("#asrApiKeyInput").fill("asr-test-key");
   await page.locator("#chatBaseUrlInput").fill("https://gpt.example/v1");
