@@ -27,11 +27,14 @@ await page.route("https://mimo.example/v1/chat/completions", async (route) => {
   });
 });
 
-await page.route("https://gpt.example/v1/chat/completions", async (route) => {
+await page.route("https://gpt.example/v1/responses", async (route) => {
   assert.match(route.request().headers().authorization || "", /^Bearer gpt-test-key$/);
   const request = route.request().postDataJSON();
-  const system = request.messages[0].content;
-  const user = request.messages[1].content;
+  assert.equal(request.model, "gpt-5.6-luna");
+  assert.equal(request.store, false);
+  assert.equal(request.messages, undefined);
+  const system = request.instructions;
+  const user = request.input;
   let content;
   if (system.includes("逐字稿校对员")) {
     content = user.includes("目标岗位：")
@@ -63,7 +66,7 @@ await page.route("https://gpt.example/v1/chat/completions", async (route) => {
   } else {
     content = "小明负责在明天完成 OneFly 项目（00:00）。";
   }
-  await route.fulfill({ contentType: "application/json", body: JSON.stringify({ choices: [{ message: { content } }] }) });
+  await route.fulfill({ contentType: "application/json", body: JSON.stringify({ output: [{ type: "message", content: [{ type: "output_text", text: content }] }] }) });
 });
 
 try {
@@ -73,6 +76,11 @@ try {
   await page.locator("#asrApiKeyInput").fill("asr-test-key");
   await page.locator("#chatBaseUrlInput").fill("https://gpt.example/v1");
   await page.locator("#chatApiKeyInput").fill("gpt-test-key");
+  assert.equal(await page.locator("#chatModelInput").inputValue(), "gpt-5.6-luna");
+  assert.equal(await page.locator("#chatProtocolInput").inputValue(), "responses");
+  assert.equal(await page.locator("#chatPathInput").inputValue(), "responses");
+  await page.screenshot({ path: new URL("../artifacts/responses-settings-desktop.png", import.meta.url).pathname, fullPage: true });
+  assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);
   await page.locator("#contextHintInput").fill("项目名 OneFly；负责人小明");
   await page.locator("#saveSettingsButton").click();
 
@@ -190,8 +198,24 @@ try {
   assert.equal(await interviewMobile.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
   await interviewMobile.close();
 
+  const legacy = await context.newPage();
+  await legacy.setViewportSize({ width: 390, height: 844 });
+  await legacy.addInitScript(() => localStorage.setItem("yanlan.config.v1", JSON.stringify({
+    chatModel: "gpt-4o-mini", chatPath: "chat/completions",
+  })));
+  await legacy.goto(baseUrl, { waitUntil: "networkidle" });
+  await legacy.locator("#sidebarOpen").click();
+  await legacy.locator("#openSettingsButton").click();
+  assert.equal(await legacy.locator("#chatModelInput").inputValue(), "gpt-4o-mini");
+  assert.equal(await legacy.locator("#chatProtocolInput").inputValue(), "chat-completions");
+  assert.equal(await legacy.locator("#chatPathInput").inputValue(), "chat/completions");
+  await legacy.locator("#chatProtocolInput").scrollIntoViewIfNeeded();
+  await legacy.screenshot({ path: new URL("../artifacts/responses-settings-mobile.png", import.meta.url).pathname, fullPage: true });
+  assert.equal(await legacy.locator("#settingsDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);
+  await legacy.close();
+
   assert.deepEqual(browserErrors, []);
-  console.log("Browser flow passed: meeting and interview uploads, live recording, dual-model correction, evidence report, Q&A, exports, share, responsive layout.");
+  console.log("Browser flow passed: Responses API, meeting and interview uploads, live recording, dual-model correction, evidence report, Q&A, exports, share, responsive layout.");
 } finally {
   await browser.close();
 }

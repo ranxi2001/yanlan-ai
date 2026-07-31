@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  DEFAULT_CONFIG,
   buildShareHtml,
   correctTranscript,
   formatTimestamp,
@@ -22,6 +23,7 @@ const config = {
   chatBaseUrl: "https://gpt.example/v1",
   chatApiKey: "gpt-secret",
   chatModel: "gpt-4o-mini",
+  chatProtocol: "chat-completions",
   chatPath: "chat/completions",
   contextHint: "项目名 OneFly",
 };
@@ -39,6 +41,12 @@ const meeting = {
 test("joins explicit base URL without changing its version path", () => {
   assert.equal(joinApiUrl("https://api.example/v1/", "/audio/transcriptions"), "https://api.example/v1/audio/transcriptions");
   assert.equal(joinApiUrl("https://api.example", "chat/completions"), "https://api.example/chat/completions");
+});
+
+test("new installs default to GPT-5.6 Luna over Responses", () => {
+  assert.equal(DEFAULT_CONFIG.chatModel, "gpt-5.6-luna");
+  assert.equal(DEFAULT_CONFIG.chatProtocol, "responses");
+  assert.equal(DEFAULT_CONFIG.chatPath, "responses");
 });
 
 test("normalizes verbose and plain transcription responses", () => {
@@ -106,6 +114,30 @@ test("GPT summary parses structured JSON", async () => {
     const result = await summarizeTranscript({ config, meeting });
     assert.equal(result.title, "OneFly 周会");
     assert.equal(result.action_items[0].owner, "小明");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Responses API uses instructions/input and parses typed output", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, "https://gpt.example/v1/responses");
+    const body = JSON.parse(options.body);
+    assert.equal(body.model, "gpt-5.6-luna");
+    assert.match(body.instructions, /会议纪要助手/);
+    assert.match(body.input, /今天讨论万福来/);
+    assert.equal(body.store, false);
+    assert.equal(body.messages, undefined);
+    assert.equal(body.temperature, undefined);
+    return new Response(JSON.stringify({ output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({
+      title: "Responses 周会", summary: "已完成协议迁移", keywords: ["Responses"], decisions: [], action_items: [],
+    }) }] }] }), { headers: { "content-type": "application/json" } });
+  };
+  try {
+    const result = await summarizeTranscript({ config: { ...config, chatModel: "gpt-5.6-luna", chatProtocol: "responses", chatPath: "responses" }, meeting });
+    assert.equal(result.title, "Responses 周会");
+    assert.equal(result.summary, "已完成协议迁移");
   } finally {
     globalThis.fetch = originalFetch;
   }

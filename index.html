@@ -137,8 +137,9 @@
           <div class="settings-fields">
             <label class="field field-wide"><span>GPT Base URL</span><input id="chatBaseUrlInput" type="url" placeholder="https://example.com/v1" autocomplete="url" /></label>
             <label class="field field-wide"><span>GPT API Key</span><span class="secret-input"><input id="chatApiKeyInput" type="password" placeholder="仅保存在当前标签页" autocomplete="off" /><button class="toggle-key-button" data-key-input="chatApiKeyInput" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏 GPT 密钥"><i data-lucide="eye"></i></button></span></label>
-            <label class="field"><span>文本模型</span><input id="chatModelInput" value="gpt-4o-mini" /></label>
-            <label class="field"><span>对话路径</span><input id="chatPathInput" value="chat/completions" /></label>
+            <label class="field"><span>文本模型</span><input id="chatModelInput" value="gpt-5.6-luna" /></label>
+            <label class="field"><span>调用协议</span><select id="chatProtocolInput"><option value="responses" selected>Responses（推荐）</option><option value="chat-completions">Chat Completions（兼容）</option></select></label>
+            <label class="field"><span>相对路径</span><input id="chatPathInput" value="responses" /></label>
             <label class="field field-wide"><span>会议背景 / 专有名词</span><textarea id="contextHintInput" rows="3" placeholder="例如：项目名 OneFly；参会人小明、Alice；术语 Karmada、OpenSandbox"></textarea></label>
           </div>
         </section>

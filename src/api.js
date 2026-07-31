@@ -6,8 +6,9 @@ export const DEFAULT_CONFIG = Object.freeze({
   asrPath: "chat/completions",
   chatBaseUrl: "",
   chatApiKey: "",
-  chatModel: "gpt-4o-mini",
-  chatPath: "chat/completions",
+  chatModel: "gpt-5.6-luna",
+  chatProtocol: "responses",
+  chatPath: "responses",
   contextHint: "",
   chunkSeconds: 10,
 });
@@ -196,19 +197,39 @@ export async function askTranscript({ config, meeting, question, signal }) {
 
 async function chatCompletion({ config, system, user, signal }) {
   if (!config.chatModel?.trim()) throw new Error("请先填写文本模型名称");
+  const protocol = config.chatProtocol || (/\bresponses\/?$/i.test(config.chatPath || "") ? "responses" : "chat-completions");
+  const requestBody = protocol === "responses" ? {
+    model: config.chatModel.trim(),
+    instructions: system,
+    input: user,
+    store: false,
+  } : {
+    model: config.chatModel.trim(),
+    messages: [{ role: "system", content: system }, { role: "user", content: user }],
+    temperature: 0.2,
+  };
   const body = await apiFetch(joinApiUrl(config.chatBaseUrl, config.chatPath), {
     method: "POST",
     headers: authHeaders(config.chatApiKey),
-    body: JSON.stringify({
-      model: config.chatModel.trim(),
-      messages: [{ role: "system", content: system }, { role: "user", content: user }],
-      temperature: 0.2,
-    }),
+    body: JSON.stringify(requestBody),
     signal,
   });
-  const content = body?.choices?.[0]?.message?.content ?? body?.output_text ?? body?.text;
-  if (typeof content !== "string" || !content.trim()) throw new Error("文本模型没有返回内容");
-  return content.trim();
+  const content = responseText(body);
+  if (!content) throw new Error("文本模型没有返回内容");
+  return content;
+}
+
+function responseText(body) {
+  const direct = body?.output_text ?? body?.choices?.[0]?.message?.content ?? body?.text;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const chunks = [];
+  for (const item of Array.isArray(body?.output) ? body.output : []) {
+    for (const content of Array.isArray(item?.content) ? item.content : []) {
+      const text = content?.text?.value ?? content?.text;
+      if ((content?.type === "output_text" || typeof text === "string") && String(text || "").trim()) chunks.push(String(text).trim());
+    }
+  }
+  return chunks.join("\n").trim();
 }
 
 function transcriptForPrompt(meeting) {

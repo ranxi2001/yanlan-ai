@@ -41,7 +41,7 @@ const elements = {
   settingsForm: $("#settingsForm"), asrBaseUrlInput: $("#asrBaseUrlInput"), asrApiKeyInput: $("#asrApiKeyInput"),
   asrModelInput: $("#asrModelInput"), asrProtocolInput: $("#asrProtocolInput"), asrPathInput: $("#asrPathInput"), chunkSecondsInput: $("#chunkSecondsInput"),
   chatBaseUrlInput: $("#chatBaseUrlInput"), chatApiKeyInput: $("#chatApiKeyInput"), chatModelInput: $("#chatModelInput"),
-  chatPathInput: $("#chatPathInput"), contextHintInput: $("#contextHintInput"), shareDialog: $("#shareDialog"),
+  chatProtocolInput: $("#chatProtocolInput"), chatPathInput: $("#chatPathInput"), contextHintInput: $("#contextHintInput"), shareDialog: $("#shareDialog"),
   shareUrlInput: $("#shareUrlInput"), shareHint: $("#shareHint"), copyShareButton: $("#copyShareButton"),
   copySharePrimaryButton: $("#copySharePrimaryButton"), downloadShareButton: $("#downloadShareButton"), toast: $("#toast"),
   interviewDialog: $("#interviewDialog"), interviewForm: $("#interviewForm"), interviewDialogClose: $("#interviewDialogClose"),
@@ -111,6 +111,9 @@ function bindEvents() {
   elements.settingsForm.addEventListener("submit", saveSettings);
   elements.asrProtocolInput.addEventListener("change", () => {
     elements.asrPathInput.value = elements.asrProtocolInput.value === "mimo-chat" ? "chat/completions" : "audio/transcriptions";
+  });
+  elements.chatProtocolInput.addEventListener("change", () => {
+    elements.chatPathInput.value = elements.chatProtocolInput.value === "responses" ? "responses" : "chat/completions";
   });
   document.querySelectorAll(".toggle-key-button").forEach((button) => button.addEventListener("click", toggleSecret));
   elements.searchInput.addEventListener("input", (event) => { state.query = event.target.value.trim().toLocaleLowerCase(); renderTranscript(activeMeeting()); });
@@ -823,6 +826,7 @@ function openSettings() {
   elements.chatBaseUrlInput.value = state.config.chatBaseUrl;
   elements.chatApiKeyInput.value = state.config.chatApiKey;
   elements.chatModelInput.value = state.config.chatModel;
+  elements.chatProtocolInput.value = state.config.chatProtocol;
   elements.chatPathInput.value = state.config.chatPath;
   elements.contextHintInput.value = state.config.contextHint;
   elements.settingsDialog.showModal();
@@ -835,7 +839,7 @@ function saveSettings(event) {
     asrBaseUrl: elements.asrBaseUrlInput.value.trim(), asrApiKey: elements.asrApiKeyInput.value.trim(),
     asrModel: elements.asrModelInput.value.trim(), asrProtocol: elements.asrProtocolInput.value, asrPath: elements.asrPathInput.value.trim(), chunkSeconds: Number(elements.chunkSecondsInput.value),
     chatBaseUrl: elements.chatBaseUrlInput.value.trim(), chatApiKey: elements.chatApiKeyInput.value.trim(),
-    chatModel: elements.chatModelInput.value.trim(), chatPath: elements.chatPathInput.value.trim(), contextHint: elements.contextHintInput.value.trim(),
+    chatModel: elements.chatModelInput.value.trim(), chatProtocol: elements.chatProtocolInput.value, chatPath: elements.chatPathInput.value.trim(), contextHint: elements.contextHintInput.value.trim(),
   };
   if (!next.asrBaseUrl || !next.asrApiKey || !next.asrModel || !next.asrPath || !next.chatBaseUrl || !next.chatApiKey || !next.chatModel || !next.chatPath) {
     showToast("请完整填写 MiMo 和 GPT 两组配置", true);
@@ -854,7 +858,8 @@ function saveSettings(event) {
 function loadConfig() {
   let stored = {};
   try { stored = JSON.parse(localStorage.getItem(CONFIG_KEY) || "{}"); } catch {}
-  return { ...DEFAULT_CONFIG, ...stored, asrApiKey: sessionStorage.getItem(ASR_KEY) || "", chatApiKey: sessionStorage.getItem(CHAT_KEY) || "" };
+  const chatProtocol = stored.chatProtocol || (stored.chatPath ? (/\bresponses\/?$/i.test(stored.chatPath) ? "responses" : "chat-completions") : DEFAULT_CONFIG.chatProtocol);
+  return { ...DEFAULT_CONFIG, ...stored, chatProtocol, asrApiKey: sessionStorage.getItem(ASR_KEY) || "", chatApiKey: sessionStorage.getItem(CHAT_KEY) || "" };
 }
 
 function requireConfig() {
