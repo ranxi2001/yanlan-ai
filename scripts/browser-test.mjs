@@ -79,7 +79,7 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
   assert.equal(request.messages, undefined);
   const system = request.instructions;
   const user = request.input;
-  const correctionRequest = system.includes("逐字稿校对员");
+  const correctionRequest = system.includes("逐字稿校对");
   const summaryRequest = system.includes("会议纪要助手") || system.includes("面试证据提取助手");
   if (correctionRequest) correctionRequestCount += 1;
   if (summaryRequest) summaryRequestCount += 1;
@@ -99,10 +99,10 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, delay));
   }
   let content;
-  if (system.includes("逐字稿校对员")) {
+  if (correctionRequest) {
     content = user.includes("目标岗位：")
-      ? JSON.stringify({ segments: [{ id: 0, speaker: "候选人", text: "我会先做服务降级，再通过日志和指标定位故障。" }], terminology: ["服务降级"] })
-      : JSON.stringify({ segments: [{ id: 0, speaker: "小明", text: "今天讨论 OneFly 项目，由小明明天完成。" }], terminology: ["OneFly"] });
+      ? JSON.stringify({ segments: [{ id: 0, speaker: "候选人", text: "我会先做服务降级，再通过日志和指标定位故障。", join_next: false }], terminology: ["服务降级"] })
+      : JSON.stringify({ segments: [{ id: 0, speaker: "小明", text: "今天讨论 OneFly 项目，由小明明天完成。", join_next: false }], terminology: ["OneFly"] });
   } else if (system.includes("面试证据提取助手")) {
     assert.match(system, /不得根据声音、口音/);
     assert.match(user, /目标岗位：平台工程师/);
@@ -444,7 +444,7 @@ try {
   const retrySummary = page.locator('[data-retry-insight="summary"]');
   await retryCorrection.waitFor({ timeout: 15000 });
   await retrySummary.waitFor();
-  assert.equal(await retryCorrection.getAttribute("aria-label"), "重试术语校正");
+  assert.equal(await retryCorrection.getAttribute("aria-label"), "重试逐字稿校正");
   assert.equal(await retrySummary.getAttribute("aria-label"), "重试生成智能纪要");
   await page.getByText("本次未生成关键词；摘要与关键词将随智能纪要一并重新生成", { exact: true }).waitFor();
   assert.equal(await page.getByText("无关键词", { exact: true }).count(), 0);
@@ -485,6 +485,38 @@ try {
   const mobileOverflow = await mobile.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   assert.equal(mobileOverflow, false);
   await mobile.close();
+
+  const semanticContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const semanticPage = await semanticContext.newPage();
+  await semanticPage.addInitScript(() => {
+    localStorage.setItem("yanlan.meetings.v1", JSON.stringify([{
+      id: "semantic-fixture",
+      title: "会议记录 08-01_01-29",
+      createdAt: "2026-08-01T01:29:00.000Z",
+      duration: 53,
+      status: "done",
+      mode: "meeting",
+      semanticJoins: 4,
+      terminology: [],
+      segments: [
+        { start_seconds: 0, end_seconds: 10, speaker: "发言人 1", text: "赵丽蓉是一个非常漂亮、非常美丽的研究生宝宝，她是", join_next: true },
+        { start_seconds: 10, end_seconds: 20, speaker: "发言人 1", text: "合肥工业大学物流和工程与管理的研究生，他现在", join_next: true },
+        { start_seconds: 20, end_seconds: 30, speaker: "发言人 1", text: "正在找工作，投递了拼多多和百度的管培生，他一定会找到", join_next: true },
+        { start_seconds: 30, end_seconds: 40, speaker: "发言人 1", text: "非常好的工作的，孩子一定能考上公务员。我们敬请期待他的", join_next: true },
+        { start_seconds: 40, end_seconds: 50, speaker: "发言人 1", text: "的收获吧。\n这个断句不太好，是不是？对。" },
+        { start_seconds: 50, end_seconds: 53, speaker: "发言人 1", text: "你发现没有花的。" },
+      ],
+    }]));
+  });
+  await semanticPage.goto(baseUrl, { waitUntil: "networkidle" });
+  assert.equal(await semanticPage.locator(".transcript-segment").count(), 2);
+  assert.deepEqual(await semanticPage.locator(".segment-time").allTextContents(), ["00:00", "00:50"]);
+  await semanticPage.getByText(/她是合肥工业大学物流和工程与管理的研究生/).waitFor();
+  await semanticPage.getByText("优化 4 处断句", { exact: true }).waitFor();
+  assert.equal(await semanticPage.locator(".segment-text").first().evaluate((element) => getComputedStyle(element).whiteSpace), "pre-line");
+  assert.equal(await semanticPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
+  await semanticPage.screenshot({ path: new URL("../artifacts/semantic-transcript-desktop.png", import.meta.url).pathname, fullPage: true });
+  await semanticContext.close();
 
   await page.locator("#newMeetingButton").click();
   await page.locator("#startRecordButton").click();
@@ -647,7 +679,7 @@ try {
 
   assert.ok(browserErrors.some((message) => /status of 503/.test(message)));
   assert.deepEqual(browserErrors.filter((message) => !/Failed to load resource: the server responded with a status of 503/.test(message)), []);
-  console.log("Browser flow passed: connection tests, key JSON backup, crash recovery, ASR retries, meeting/interview workflows, sharing, and responsive layout.");
+  console.log("Browser flow passed: connection tests, key JSON backup, semantic Chinese segmentation, crash recovery, ASR retries, meeting/interview workflows, sharing, and responsive layout.");
 } finally {
   await browser.close();
   await developmentServer?.close();

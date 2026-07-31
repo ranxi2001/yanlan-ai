@@ -37,6 +37,8 @@ Yanlan is an open-source, self-hostable AI audio workspace that runs entirely in
 - Store recordings in IndexedDB and workspace data in localStorage
 - Import and export both API keys as versioned JSON; imports cannot change model endpoints or other settings
 - Test each MiMo or GPT base URL, key, and model before saving, with distinct guidance for authentication, quota, endpoint, network, and CORS failures
+- Retry GPT terminology correction or the complete insight bundle after failure; when correction changes the transcript, Yanlan refreshes every downstream insight instead of mixing result versions
+- Use GPT context to detect sentences continued across fixed audio chunks, grouping them for the workspace, Markdown, and offline shares while summaries, Q&A, evidence timestamps, and WebVTT keep the atomic timeline
 - Retry transient MiMo failures with timeouts and backoff; if any live segment still fails, stop before generating incomplete notes and keep the recording for retranscription
 - Process long transcripts in bounded summary/interview batches and retrieve question-relevant time ranges for Q&A instead of sending the whole meeting in one prompt
 
@@ -58,13 +60,13 @@ When you only need text from one recording, there is no need to start the web ap
 
 ```bash
 export MIMO_API_KEY="your-key"
-npx --yes github:ranxi2001/yanlan-ai#v0.4.6 transcribe recording.mp3 -o recording.txt
+npx --yes github:ranxi2001/yanlan-ai#v0.5.0 transcribe recording.mp3 -o recording.txt
 ```
 
 You can also install the CLI globally:
 
 ```bash
-npm install --global github:ranxi2001/yanlan-ai#v0.4.6
+npm install --global github:ranxi2001/yanlan-ai#v0.5.0
 yanlan transcribe interview.m4a -o interview.md --language en
 ```
 
@@ -175,7 +177,7 @@ npm run test:browser
 
 ## Project Status
 
-`v0.4.6` adds incremental recording persistence and crash recovery, ASR retries and completeness gating, bounded GPT corrections, transcript-backed evidence validation, long-content batching, audio memory boundaries, protected CLI outputs, and browser E2E coverage in CI. `v0.4.5` introduced the audio transcription CLI and Agent Skill. `v0.4.4` added the teal brand identity. `v0.4.3` enabled keyless local recording and persistent browser API settings. `v0.4.0` added meeting highlights, speaker summaries, traceable decisions, and the local same-origin relay. `v0.3.0` adopted `gpt-5.6-luna` and the Responses API by default. `v0.2.0` introduced the interview workflow, competency evidence, follow-up questions, and privacy-trimmed interview shares.
+`v0.5.0` simplifies MiMo setup and migrates legacy base URLs, adds JSON key backup, independent MiMo/GPT connection tests, CORS guidance for the recommended provider, GPT retry controls, and Chinese semantic segmentation without collapsing the atomic timeline. `v0.4.6` added incremental recording persistence and crash recovery, ASR retries and completeness gating, bounded GPT corrections, transcript-backed evidence validation, long-content batching, audio memory boundaries, protected CLI outputs, and browser E2E coverage in CI. `v0.4.5` introduced the audio transcription CLI and Agent Skill. `v0.4.4` added the teal brand identity. `v0.4.3` enabled keyless local recording and persistent browser API settings. `v0.4.0` added meeting highlights, speaker summaries, traceable decisions, and the local same-origin relay.
 
 The next priorities include speaker diarization, transcript editing, collaborative annotations, team permissions, and more model integrations. Roadmap discussions and priorities are maintained in GitHub Issues.
 

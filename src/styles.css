@@ -1035,6 +1035,7 @@ textarea:focus-visible {
   font-size: 14px;
   line-height: 1.8;
   overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 
 .no-results {

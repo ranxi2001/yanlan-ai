@@ -37,6 +37,8 @@
 - 录音保存在 IndexedDB，会议数据保存在 localStorage
 - 两组 API Key 支持带版本标识的 JSON 导入与导出，导入文件不能修改模型地址或其他配置
 - MiMo 与 GPT 均可在保存前测试当前 Base URL、Key 和模型，并区分鉴权、额度、接口路径、网络/CORS 等常见错误
+- GPT 术语校正和整份智能纪要失败后可分别重试；校正改变逐字稿时自动刷新全部下游洞察，不会混用新旧结果
+- GPT 根据中文上下文识别固定音频分片间的续句关系，阅读区、Markdown 和离线分享按自然段组合；摘要、问答、证据时间与 WebVTT 仍使用原子时间片
 - MiMo 请求具备超时和退避重试；任何实时片段最终失败时停止生成纪要，保留完整录音供重新转写
 - 长逐字稿按有界批次生成纪要和面试证据，问答只检索与问题相关的时间片段，避免把整场会议一次塞入模型上下文
 
@@ -56,13 +58,13 @@ MiMo-V2.5-ASR 的模型能力和部署信息见小米官方的 [MiMo-V2.5-ASR �
 
 ```bash
 export MIMO_API_KEY="你的 Key"
-npx --yes github:ranxi2001/yanlan-ai#v0.4.6 transcribe recording.mp3 -o recording.txt
+npx --yes github:ranxi2001/yanlan-ai#v0.5.0 transcribe recording.mp3 -o recording.txt
 ```
 
 也可以全局安装：
 
 ```bash
-npm install --global github:ranxi2001/yanlan-ai#v0.4.6
+npm install --global github:ranxi2001/yanlan-ai#v0.5.0
 yanlan transcribe interview.m4a -o interview.md --language zh
 ```
 
@@ -173,7 +175,7 @@ npm run test:browser
 
 ## 项目状态
 
-`v0.4.6` 强化录音增量持久化与崩溃恢复、ASR 重试和完整性阻断、模型改写限制、逐字稿证据验证、长内容分批处理、音频内存边界、CLI 输出保护及 CI 浏览器验收；`v0.4.5` 发布音频转文字 CLI 与 Agent Skill；`v0.4.4` 发布青绿色品牌 Logo；`v0.4.3` 支持无 Key 本地录音与持久保存浏览器 API 配置；`v0.4.0` 增加会议金句、发言人总结、可追溯关键决策和本地同源网关；`v0.3.0` 默认使用 `gpt-5.6-luna` 和 Responses API；`v0.2.0` 增加面试专用模式、岗位能力证据、面试追问和隐私裁剪后的分享稿。下一阶段重点包括说话人分离、逐字稿编辑、协作批注、团队权限和更多模型适配。路线和优先级通过 GitHub Issues 公开维护。
+`v0.5.0` 简化 MiMo 配置并自动迁移旧 Base URL，增加 Key JSON 导入导出、MiMo/GPT 连接测试、推荐服务 CORS 说明、GPT 失败重试，以及不破坏原子时间轴的中文语义断句；`v0.4.6` 强化录音增量持久化与崩溃恢复、ASR 重试和完整性阻断、模型改写限制、逐字稿证据验证、长内容分批处理、音频内存边界、CLI 输出保护及 CI 浏览器验收；`v0.4.5` 发布音频转文字 CLI 与 Agent Skill；`v0.4.4` 发布青绿色品牌 Logo；`v0.4.3` 支持无 Key 本地录音与持久保存浏览器 API 配置；`v0.4.0` 增加会议金句、发言人总结、可追溯关键决策和本地同源网关。下一阶段重点包括说话人分离、逐字稿编辑、协作批注、团队权限和更多模型适配。路线和优先级通过 GitHub Issues 公开维护。
 
 ## 开源协议
 

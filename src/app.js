@@ -9,6 +9,7 @@ import {
   formatTimestamp,
   normalizeMimoBaseUrl,
   publicMeeting,
+  readableTranscriptSegments,
   summarizeTranscript,
   testAsrConnection,
   testChatConnection,
@@ -246,7 +247,7 @@ function renderMain(meeting) {
 
 function renderTranscript(meeting) {
   if (!meeting) return;
-  const segments = (meeting.segments || []).filter((segment) => !state.query || `${segment.speaker} ${segment.text}`.toLocaleLowerCase().includes(state.query));
+  const segments = readableTranscriptSegments(meeting.segments || []).filter((segment) => !state.query || `${segment.speaker} ${segment.text}`.toLocaleLowerCase().includes(state.query));
   if (!segments.length) {
     if (meeting.status === "recorded") {
       elements.transcriptList.innerHTML = '<div class="recording-only-state"><i data-lucide="file-audio"></i><strong>录音已保存在本机</strong><span>现在可以播放或导出音频，配置模型后可继续生成逐字稿。</span><button class="secondary-button" type="button" data-transcribe-recording><i data-lucide="captions"></i><span>生成逐字稿</span></button></div>';
@@ -781,6 +782,7 @@ async function enrichMeeting(meeting) {
     meeting.segments = corrected.segments;
     meeting.terminology = corrected.terminology;
     meeting.rejectedCorrections = corrected.rejectedCorrections;
+    meeting.semanticJoins = corrected.semanticJoins;
   } catch (error) {
     meeting.correctionError = error.message;
     meeting.segments = (meeting.rawSegments || meeting.segments).map((segment) => ({ ...segment }));
@@ -823,6 +825,7 @@ async function retryInsightProcessing(step) {
       meeting.segments = corrected.segments;
       meeting.terminology = corrected.terminology;
       meeting.rejectedCorrections = corrected.rejectedCorrections;
+      meeting.semanticJoins = corrected.semanticJoins;
       meeting.correctionError = "";
       if (transcriptContentSignature(corrected.segments) !== previousTranscript) {
         resetSummaryResult(meeting);
@@ -851,12 +854,12 @@ async function retryInsightProcessing(step) {
   }
   if (requestError) {
     focusInsightRetryButton(meeting.id, step);
-    showToast(`${step === "correction" ? "术语校正" : (meeting.mode === "interview" ? "面试证据整理" : "智能纪要生成")}仍未完成：${requestError.message}`, true);
+    showToast(`${step === "correction" ? "逐字稿校正" : (meeting.mode === "interview" ? "面试证据整理" : "智能纪要生成")}仍未完成：${requestError.message}`, true);
   } else if (downstreamError) {
     focusInsightRetryButton(meeting.id, "summary");
-    showToast(`术语校正已完成，但智能纪要刷新失败：${downstreamError.message}`, true);
+    showToast(`逐字稿校正已完成，但智能纪要刷新失败：${downstreamError.message}`, true);
   } else if (succeeded) {
-    showToast(step === "correction" ? "术语校正及相关纪要已更新" : (meeting.mode === "interview" ? "面试证据已重新整理" : "智能纪要已重新生成"));
+    showToast(step === "correction" ? "逐字稿校正及相关纪要已更新" : (meeting.mode === "interview" ? "面试证据已重新整理" : "智能纪要已重新生成"));
   }
 }
 
@@ -870,6 +873,7 @@ function resetCorrectionResult(meeting) {
   meeting.correctionError = "";
   meeting.terminology = [];
   meeting.rejectedCorrections = 0;
+  meeting.semanticJoins = 0;
 }
 
 function resetSummaryResult(meeting) {
@@ -885,7 +889,7 @@ function resetSummaryResult(meeting) {
 }
 
 function transcriptContentSignature(segments) {
-  return JSON.stringify((segments || []).map((segment) => [segment.start_seconds, segment.end_seconds, segment.speaker, segment.text]));
+  return JSON.stringify((segments || []).map((segment) => [segment.start_seconds, segment.end_seconds, segment.speaker, segment.text, segment.join_next === true]));
 }
 
 function focusInsightRetryButton(meetingId, step) {
@@ -1791,7 +1795,7 @@ function insightRetryButton(meeting, step) {
   const busy = Boolean(runningStep);
   const interview = meeting.mode === "interview";
   const label = step === "correction" ? (retrying ? "正在处理" : "重试校正") : (retrying ? "正在生成" : (interview ? "重试整理" : "重试生成"));
-  const ariaLabel = step === "correction" ? "重试术语校正" : (interview ? "重试整理面试证据" : "重试生成智能纪要");
+  const ariaLabel = step === "correction" ? "重试逐字稿校正" : (interview ? "重试整理面试证据" : "重试生成智能纪要");
   return `<button class="insight-retry-button${retrying ? " is-retrying" : ""}" type="button" data-retry-insight="${step}" aria-label="${ariaLabel}" aria-disabled="${busy}" aria-busy="${retrying}"><i data-lucide="${retrying ? "loader-circle" : "refresh-cw"}"></i><span>${label}</span></button>`;
 }
 function summaryRetryNotice(meeting) {
@@ -1802,14 +1806,18 @@ function summaryRetryState(meeting) {
   return `<div class="insight-empty insight-error-state" role="status" aria-live="polite" aria-atomic="true"><i data-lucide="circle-alert"></i><span><strong>${label}</strong><br>${escapeHtml(meeting.summaryError)}</span>${insightRetryButton(meeting, "summary")}</div>`;
 }
 function correctionNotice(meeting) {
-  if (meeting.correctionError) return `<div class="inline-warning insight-retry-notice" role="status" aria-live="polite" aria-atomic="true"><span>术语校正未完成：${escapeHtml(meeting.correctionError)}</span>${insightRetryButton(meeting, "correction")}</div>`;
-  const accepted = meeting.terminology?.length ? `<p class="correction-note"><i data-lucide="spell-check-2"></i>已统一 ${meeting.terminology.length} 个术语</p>` : "";
+  if (meeting.correctionError) return `<div class="inline-warning insight-retry-notice" role="status" aria-live="polite" aria-atomic="true"><span>逐字稿校正未完成：${escapeHtml(meeting.correctionError)}</span>${insightRetryButton(meeting, "correction")}</div>`;
+  const correctionDetails = [
+    meeting.terminology?.length ? `已统一 ${meeting.terminology.length} 个术语` : "",
+    meeting.semanticJoins ? `优化 ${meeting.semanticJoins} 处断句` : "",
+  ].filter(Boolean).join(" · ");
+  const accepted = correctionDetails ? `<p class="correction-note"><i data-lucide="spell-check-2"></i>${correctionDetails}</p>` : "";
   const rejected = meeting.rejectedCorrections ? `<p class="inline-warning">已保留原始文本：${meeting.rejectedCorrections} 个片段未应用模型校正（未通过安全边界）</p>` : "";
   return `${accepted}${rejected}`;
 }
 function ratingLabel(value) { return ({ strong: "突出", adequate: "符合", mixed: "有待确认", weak: "不足", insufficient: "证据不足" })[value] || "证据不足"; }
 function statusIcon(status, mode) { return ["recording", "recovering", "transcribing", "correcting", "summarizing"].includes(status) ? "loader-circle" : status === "error" ? "circle-alert" : mode === "interview" ? "briefcase-business" : "file-audio"; }
-function statusLabel(status, mode) { return ({ recording: state.recorder?.transcriptionEnabled ? "实时转写中" : "录音中", recovering: "正在恢复录音", recorded: "仅录音", transcribing: "正在转写", correcting: "GPT 正在校正术语", summarizing: mode === "interview" ? "GPT 正在整理面试证据" : "GPT 正在生成纪要", done: "已完成", error: "处理失败" })[status] || ""; }
+function statusLabel(status, mode) { return ({ recording: state.recorder?.transcriptionEnabled ? "实时转写中" : "录音中", recovering: "正在恢复录音", recorded: "仅录音", transcribing: "正在转写", correcting: "GPT 正在校正与优化断句", summarizing: mode === "interview" ? "GPT 正在整理面试证据" : "GPT 正在生成纪要", done: "已完成", error: "处理失败" })[status] || ""; }
 
 function formatHistoryDate(value) {
   const date = new Date(value); if (Number.isNaN(date.getTime())) return "刚刚";

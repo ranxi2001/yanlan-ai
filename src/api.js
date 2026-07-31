@@ -26,6 +26,11 @@ const SUMMARY_MERGE_GROUP_SIZE = 4;
 const SUMMARY_MERGE_ITEM_CHARACTERS = 3_500;
 const MAX_CORRECTION_CONTEXT_CHARACTERS = 2_000;
 const MAX_CORRECTION_BATCH_JSON_CHARACTERS = 10_000;
+const MAX_BOUNDARY_PREVIEW_CHARACTERS = 500;
+const MAX_READABLE_SEGMENT_CHARACTERS = 800;
+const MAX_READABLE_SEGMENT_SECONDS = 90;
+const MAX_SEMANTIC_JOIN_GAP_SECONDS = 3;
+const MAX_SEMANTIC_JOIN_OVERLAP_SECONDS = 0.25;
 
 export function joinApiUrl(baseUrl, endpointPath) {
   const base = String(baseUrl || "").trim().replace(/\/+$/, "");
@@ -407,7 +412,7 @@ async function summarizeInterviewTranscript({ config, meeting, signal }) {
 
 export async function correctTranscript({ config, meeting, signal }) {
   const original = meeting.rawSegments?.length ? meeting.rawSegments : meeting.segments || [];
-  if (!original.length) return { segments: [], terminology: [], rejectedCorrections: 0 };
+  if (!original.length) return { segments: [], terminology: [], rejectedCorrections: 0, semanticJoins: 0 };
   const batches = splitSegmentBatches(original, 8_000);
   const corrected = [];
   const terminology = [];
@@ -417,37 +422,61 @@ export async function correctTranscript({ config, meeting, signal }) {
     trustedTermsFromUser.push(meeting.interviewContext?.role || "", ...stringArray(meeting.interviewContext?.competencies));
   }
   let rejectedCorrections = 0;
+  let sourceOffset = 0;
   for (const batch of batches) {
     const input = batch.map((segment, localIndex) => ({
-      id: corrected.length + localIndex,
+      id: sourceOffset + localIndex,
       speaker: segment.speaker || "发言人",
       text: segment.text,
     }));
-    const serializedInput = JSON.stringify(input);
+    const following = original[sourceOffset + batch.length];
+    const payload = { segments: input };
+    if (following) {
+      payload.following_segment = {
+        id: sourceOffset + batch.length,
+        speaker: following.speaker || "发言人",
+        text: truncateText(following.text, MAX_BOUNDARY_PREVIEW_CHARACTERS),
+      };
+    }
+    const serializedInput = JSON.stringify(payload);
     if (serializedInput.length > MAX_CORRECTION_BATCH_JSON_CHARACTERS) {
-      corrected.push(...batch.map((segment) => ({ ...segment, speaker: stringOr(segment.speaker, "发言人") })));
+      corrected.push(...batch.map((segment) => ({
+        ...segment,
+        speaker: stringOr(segment.speaker, "发言人"),
+        join_next: false,
+      })));
       rejectedCorrections += batch.length;
+      sourceOffset += batch.length;
       continue;
     }
     const interviewRules = meeting.mode === "interview" ? "这是面试逐字稿。不得依据声音、口音、姓名或敏感个人属性推断角色。" : "";
-    const system = `你是逐字稿校对员。根据背景和上下文，仅纠正明显的语音识别错误、专有名词、人名、同音词、标点和前后不一致。不得总结、改写、删减或添加事实，speaker 必须原样返回。${interviewRules}必须返回纯 JSON：{"segments":[{"id":数字,"speaker":"...","text":"..."}],"terminology":["统一后的术语"]}。segments 数量、顺序和 id 必须与输入完全一致。`;
+    const system = `你是逐字稿校对与中文断句助手。音频按固定时长切片，片尾标点可能不代表真实句末。根据背景和相邻上下文，仅纠正明显的语音识别错误、专有名词、人名、同音词、标点和前后不一致。不得总结、改写、删减或添加事实，speaker 必须原样返回。${interviewRules}
+每个片段必须返回 join_next 布尔值：只有当前片段末尾语义明显未完成、下一相邻片段是同一句的直接续接时才为 true；完整句、同一话题但不同句、不同发言人都必须为 false。例如“她现在。”接“正在找工作”应删除假句号并设为 true。可在单个片段内部的明确新话题边界插入换行，但不得在句中机械换行。
+必须返回纯 JSON：{"segments":[{"id":数字,"speaker":"...","text":"...","join_next":布尔值}],"terminology":["统一后的术语"]}。segments 数量、顺序和 id 必须与输入完全一致。following_segment 只用于判断本批最后一项，不能在结果中新增对应片段。`;
     const context = meeting.mode === "interview"
       ? `${truncateText(interviewContextForPrompt(meeting), 3_000)}\n\n通用背景 / 专有名词：\n${sharedContext || "未提供"}`
       : `会议背景 / 术语表：\n${sharedContext || "未提供"}`;
     const user = `${context}\n\n前序已统一术语：\n${terminology.join("、") || "无"}\n\n待校对片段：\n${serializedInput}`;
     const content = await chatCompletion({ config, system, user, signal });
     const parsed = parseJsonObject(content);
-    const batchTerms = stringArray(parsed.terminology);
+    const responseSegments = Array.isArray(parsed.segments) ? parsed.segments : [];
+    const responseIsComplete = responseSegments.length === input.length
+      && responseSegments.every((item, index) => Number(item?.id) === input[index].id);
+    const batchTerms = responseIsComplete ? stringArray(parsed.terminology) : [];
     const trustedTerms = batchTerms.filter((term) => (
       correctionText(term).length >= 2
       && trustedTermsFromUser.some((trustedTerm) => comparableText(trustedTerm) === comparableText(term))
     ));
     const acceptedTerms = new Set();
-    const byId = new Map((Array.isArray(parsed.segments) ? parsed.segments : []).map((item) => [Number(item?.id), item]));
+    const byId = new Map(responseIsComplete ? responseSegments.map((item) => [Number(item.id), item]) : []);
+    if (!responseIsComplete) rejectedCorrections += batch.length;
     input.forEach((item, localIndex) => {
       const source = batch[localIndex];
+      const globalIndex = sourceOffset + localIndex;
       const result = byId.get(item.id);
-      const correction = safeCorrection(source.text, result?.text, trustedTerms);
+      const correction = responseIsComplete
+        ? safeCorrection(source.text, result?.text, trustedTerms)
+        : { text: stringOr(source.text, ""), rejected: false };
       if (correction.rejected) rejectedCorrections += 1;
       else {
         for (const term of trustedTerms) {
@@ -455,16 +484,61 @@ export async function correctTranscript({ config, meeting, signal }) {
           if (normalizedTerm && occurrenceCount(correctionText(correction.text), normalizedTerm) > occurrenceCount(correctionText(source.text), normalizedTerm)) acceptedTerms.add(term);
         }
       }
+      const joinNext = result?.join_next === true && canJoinTranscriptSegments(source, original[globalIndex + 1]);
+      const text = joinNext ? stripArtificialBoundaryPunctuation(correction.text) : correction.text;
       corrected.push({
         ...source,
         // Speaker attribution cannot be proven from a text-only correction response.
         speaker: stringOr(source.speaker, "发言人"),
-        text: correction.text,
+        text,
+        join_next: joinNext,
       });
     });
     for (const term of acceptedTerms) if (!terminology.includes(term)) terminology.push(term);
+    sourceOffset += batch.length;
   }
-  return { segments: corrected, terminology: terminology.slice(0, 60), rejectedCorrections };
+  const semanticJoins = corrected.filter((segment) => String(segment.text || "").trim()).length - readableTranscriptSegments(corrected).length;
+  return { segments: corrected, terminology: terminology.slice(0, 60), rejectedCorrections, semanticJoins };
+}
+
+export function readableTranscriptSegments(segments = []) {
+  const readable = [];
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index] || {};
+    const clean = {
+      start_seconds: Math.max(0, Number(segment.start_seconds) || 0),
+      end_seconds: Math.max(0, Number(segment.end_seconds) || 0),
+      speaker: stringOr(segment.speaker, "发言人"),
+      text: stringOr(segment.text, ""),
+    };
+    const previousSource = segments[index - 1];
+    const previous = readable[readable.length - 1];
+    const joinedText = previous ? joinTranscriptText(previous.text, clean.text) : clean.text;
+    const joinedEnd = Math.max(previous?.end_seconds || 0, clean.end_seconds || clean.start_seconds);
+    const joinsPrevious = previous
+      && previousSource?.join_next === true
+      && canJoinTranscriptSegments(previousSource, segment)
+      && comparableText(previous.speaker) === comparableText(clean.speaker)
+      && joinedText.length <= MAX_READABLE_SEGMENT_CHARACTERS
+      && joinedEnd - previous.start_seconds <= MAX_READABLE_SEGMENT_SECONDS;
+    if (!joinsPrevious) {
+      readable.push(clean);
+      continue;
+    }
+    previous.text = joinedText;
+    previous.end_seconds = joinedEnd;
+  }
+  return readable.filter((segment) => segment.text);
+}
+
+function publicTranscriptSegments(segments = []) {
+  return segments.map((segment) => ({
+    start_seconds: Math.max(0, Number(segment?.start_seconds) || 0),
+    end_seconds: Math.max(0, Number(segment?.end_seconds) || 0),
+    speaker: stringOr(segment?.speaker, "发言人"),
+    text: stringOr(segment?.text, ""),
+    ...(segment?.join_next === true ? { join_next: true } : {}),
+  })).filter((segment) => segment.text);
 }
 
 export async function askTranscript({ config, meeting, question, signal }) {
@@ -635,6 +709,37 @@ function splitSegmentBatches(segments, maxCharacters) {
   }
   if (batch.length) batches.push(batch);
   return batches;
+}
+
+function canJoinTranscriptSegments(left, right) {
+  if (!left || !right) return false;
+  if (comparableText(left.speaker || "发言人") !== comparableText(right.speaker || "发言人")) return false;
+  const leftStart = Math.max(0, Number(left.start_seconds) || 0);
+  const rightStart = Math.max(0, Number(right.start_seconds) || 0);
+  if (rightStart < leftStart) return false;
+  const explicitEnd = Number(left.end_seconds);
+  const leftEnd = Number.isFinite(explicitEnd) && explicitEnd > leftStart ? explicitEnd : rightStart;
+  const gap = rightStart - leftEnd;
+  return gap >= -MAX_SEMANTIC_JOIN_OVERLAP_SECONDS && gap <= MAX_SEMANTIC_JOIN_GAP_SECONDS;
+}
+
+function stripArtificialBoundaryPunctuation(value) {
+  const text = String(value || "").trim();
+  const stripped = text.replace(/[。；;.]+$/u, "").trimEnd();
+  return stripped || text;
+}
+
+function joinTranscriptText(leftValue, rightValue) {
+  const left = String(leftValue || "").trimEnd();
+  const right = String(rightValue || "").trimStart();
+  if (!left) return right;
+  if (!right) return left;
+  const leftCharacter = [...left].at(-1) || "";
+  const rightCharacter = [...right][0] || "";
+  const cjkBoundary = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(leftCharacter)
+    || /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(rightCharacter);
+  const wordBoundary = /[\p{Letter}\p{Number}]$/u.test(leftCharacter) && /^[\p{Letter}\p{Number}]/u.test(rightCharacter);
+  return `${left}${wordBoundary && !cjkBoundary ? " " : ""}${right}`;
 }
 
 function parseJsonObject(value) {
@@ -1040,6 +1145,7 @@ export function formatTimestamp(seconds, vtt = false) {
 export function toMarkdown(meeting) {
   meeting = publicMeeting(meeting);
   if (meeting.mode === "interview") return toInterviewMarkdown(meeting);
+  const transcriptSegments = readableTranscriptSegments(meeting.segments);
   const actions = meeting.action_items?.length ? meeting.action_items.map((item) => `- [ ] ${item.task}${item.owner ? ` · ${item.owner}` : ""}${item.due ? ` · ${item.due}` : ""}`).join("\n") : "无";
   const highlights = meeting.highlights?.length ? meeting.highlights.flatMap((item) => [
     `### ${formatTimestamp(item.start_seconds)} · ${item.speaker || "发言人"}`,
@@ -1071,13 +1177,14 @@ export function toMarkdown(meeting) {
     "## 发言人总结", "", ...speakers,
     "## 关键决策", "", ...decisions, "",
     "## 行动项", "", actions, "",
-    "## 逐字稿", "", ...(meeting.segments || []).flatMap((segment) => [`### ${formatTimestamp(segment.start_seconds)} · ${segment.speaker || "发言人"}`, "", segment.text, ""]),
+    "## 逐字稿", "", ...transcriptSegments.flatMap((segment) => [`### ${formatTimestamp(segment.start_seconds)} · ${segment.speaker || "发言人"}`, "", segment.text, ""]),
   ].join("\n").trimEnd() + "\n";
 }
 
 function toInterviewMarkdown(meeting) {
   const context = meeting.interviewContext || {};
   const report = meeting.interviewReport || {};
+  const transcriptSegments = readableTranscriptSegments(meeting.segments);
   const coverage = report.competencies?.filter((item) => item.evidence?.length).map((item) => (
     `- ${item.name}：${item.evidence.length} 条候选原话，需人工判断`
   )) || [];
@@ -1104,7 +1211,7 @@ function toInterviewMarkdown(meeting) {
     "## 风险与待核实项", "", ...(report.risks?.length ? report.risks.map((item) => `- ${item}`) : ["无"]), "",
     "## 建议追问", "", ...(report.follow_ups?.length ? report.follow_ups.map((item) => `- ${item}`) : ["无"]), "",
     "## 逐字稿", "",
-    ...(meeting.segments || []).flatMap((segment) => [`### ${formatTimestamp(segment.start_seconds)} · ${segment.speaker || "发言人"}`, "", segment.text, ""]),
+    ...transcriptSegments.flatMap((segment) => [`### ${formatTimestamp(segment.start_seconds)} · ${segment.speaker || "发言人"}`, "", segment.text, ""]),
   ].join("\n").trimEnd() + "\n";
 }
 
@@ -1126,7 +1233,7 @@ export function publicMeeting(meeting) {
     language: meeting.language || "", summary: meeting.summary || "", keywords: meeting.keywords || [],
     highlights: normalizeHighlights(meeting.highlights, meeting.segments, meeting.rawSegments, meeting.terminology), speaker_summaries: normalizeSpeakerSummaries(meeting.speaker_summaries),
     decisions: decisionRecords.map((item) => item.decision), decision_records: decisionRecords,
-    action_items: meeting.action_items || [], segments: meeting.segments || [],
+    action_items: meeting.action_items || [], segments: publicTranscriptSegments(meeting.segments || []),
   };
   if (meeting.mode === "interview") {
     result.mode = "interview";
@@ -1153,8 +1260,10 @@ export function buildShareHtml(meeting) {
 }
 
 function buildShareHtmlDocument(meeting) {
-  const payload = JSON.stringify(publicMeeting(meeting)).replace(/</g, "\\u003c");
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(meeting.title)} · 言澜</title><style>body{margin:0;color:#182230;background:#f7f8fa;font:14px/1.75 system-ui,-apple-system,"PingFang SC",sans-serif}main{width:min(820px,calc(100% - 32px));margin:auto;padding:40px 0 70px}header{padding-bottom:24px;border-bottom:1px solid #dfe3e8}h1{margin:0 0 6px;font-size:26px}h2{margin:28px 0 10px;font-size:17px}h3{margin:16px 0 4px;font-size:14px}.meta,time{color:#667085;font-size:12px}.summary{margin:26px 0;padding-left:16px;border-left:3px solid #087e8b}.notice{padding:12px 14px;color:#7a2e0e;background:#fff5eb;border:1px solid #fed7aa;border-radius:7px}.result{display:flex;gap:16px;align-items:center;margin:16px 0}.pill{padding:3px 8px;border-radius:999px;background:#eef4ff;color:#1849a9;font-weight:650}.competency,.insight-row{padding:14px 0;border-bottom:1px solid #e4e7ec}.competency strong{margin-right:8px}.evidence,.reason{margin:6px 0;color:#475467}.quote{margin:4px 0;font-size:16px}.points{margin:6px 0;padding-left:20px}.decision-time{margin-right:8px;color:#2864dc}article{display:grid;grid-template-columns:62px 1fr;padding:18px 0;border-bottom:1px solid #e4e7ec}article p{margin:2px 0 0;overflow-wrap:anywhere}.speaker{font-weight:650}footer{margin-top:32px;color:#98a2b3;font-size:11px}@media(max-width:560px){main{padding-top:24px}article{grid-template-columns:1fr;gap:5px}.result{align-items:flex-start;flex-direction:column;gap:5px}}</style></head><body><main id="app"></main><script>const m=${payload};const e=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));const t=n=>{n=Math.max(0,Number(n)||0);const h=Math.floor(n/3600),x=Math.floor(n%3600/60),s=Math.floor(n%60);return(h?String(h).padStart(2,"0")+":":"")+String(x).padStart(2,"0")+":"+String(s).padStart(2,"0")};const rl={advance:"建议推进",follow_up:"补充追问",hold:"暂不推进",insufficient:"证据不足"},cl={high:"高",medium:"中",low:"低"},gl={strong:"突出",adequate:"符合",mixed:"有待确认",weak:"不足",insufficient:"证据不足"};const interview=m.mode==="interview"&&m.interviewReport?'<section><p class="notice">AI 辅助评估仅供面试官复核，不用于自动录用决定；请忽略敏感个人属性并核对原始证据。</p><h2>辅助结论</h2><div class="result"><span class="pill">'+e(rl[m.interviewReport.recommendation]||"证据不足")+'</span><span>置信度 '+e(cl[m.interviewReport.confidence]||"低")+'</span></div><p>'+e(m.interviewReport.overview||m.summary||"证据不足")+'</p><h2>能力证据</h2>'+(m.interviewReport.competencies||[]).map(c=>'<div class="competency"><strong>'+e(c.name)+'</strong><span>'+e(gl[c.rating]||"证据不足")+'</span><div>'+e(c.assessment)+'</div>'+(c.evidence||[]).map(v=>'<div class="evidence">['+t(v.start_seconds)+'] “'+e(v.quote)+'”</div>').join("")+'</div>').join("")+'</section>':'';const generic=m.mode!=="interview"?'<section class="summary"><strong>AI 摘要</strong><div>'+e(m.summary||"无")+'</div></section>'+((m.highlights||[]).length?'<section><h2>会议金句</h2>'+m.highlights.map(v=>'<div class="insight-row"><time>'+t(v.start_seconds)+'</time> · <strong>'+e(v.speaker)+'</strong><p class="quote">“'+e(v.quote)+'”</p>'+(v.reason?'<p class="reason">'+e(v.reason)+'</p>':'')+'</div>').join("")+'</section>':'')+((m.speaker_summaries||[]).length?'<section><h2>发言人总结</h2>'+m.speaker_summaries.map(v=>'<div class="insight-row"><h3>'+e(v.speaker)+'</h3><div>'+e(v.summary)+'</div>'+((v.key_points||[]).length?'<ul class="points">'+v.key_points.map(p=>'<li>'+e(p)+'</li>').join("")+'</ul>':'')+'</div>').join("")+'</section>':'')+(((m.decision_records||[]).length||(m.decisions||[]).length)?'<section><h2>关键决策</h2>'+((m.decision_records||[]).length?m.decision_records.map(v=>'<div class="insight-row">'+(v.start_seconds==null?'':'<span class="decision-time">['+t(v.start_seconds)+']</span>')+'<strong>'+e(v.decision)+'</strong>'+(v.evidence?'<p class="evidence">“'+e(v.evidence)+'”</p>':'')+'</div>').join(""):(m.decisions||[]).map(v=>'<div class="insight-row">'+e(v)+'</div>').join(""))+'</section>':''):'';document.querySelector("#app").innerHTML='<header><h1>'+e(m.title)+'</h1><div class="meta">'+e(new Date(m.createdAt).toLocaleString("zh-CN"))+' · '+t(m.duration)+'</div></header>'+interview+generic+'<section><h2>逐字稿</h2>'+m.segments.map(s=>'<article><time>'+t(s.start_seconds)+'</time><div><div class="speaker">'+e(s.speaker||"发言人")+'</div><p>'+e(s.text)+'</p></div></article>').join("")+'</section><footer>由言澜 Yanlan 生成</footer>';<\/script></body></html>`;
+  const publicData = publicMeeting(meeting);
+  publicData.segments = readableTranscriptSegments(publicData.segments);
+  const payload = JSON.stringify(publicData).replace(/</g, "\\u003c");
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(meeting.title)} · 言澜</title><style>body{margin:0;color:#182230;background:#f7f8fa;font:14px/1.75 system-ui,-apple-system,"PingFang SC",sans-serif}main{width:min(820px,calc(100% - 32px));margin:auto;padding:40px 0 70px}header{padding-bottom:24px;border-bottom:1px solid #dfe3e8}h1{margin:0 0 6px;font-size:26px}h2{margin:28px 0 10px;font-size:17px}h3{margin:16px 0 4px;font-size:14px}.meta,time{color:#667085;font-size:12px}.summary{margin:26px 0;padding-left:16px;border-left:3px solid #087e8b}.notice{padding:12px 14px;color:#7a2e0e;background:#fff5eb;border:1px solid #fed7aa;border-radius:7px}.result{display:flex;gap:16px;align-items:center;margin:16px 0}.pill{padding:3px 8px;border-radius:999px;background:#eef4ff;color:#1849a9;font-weight:650}.competency,.insight-row{padding:14px 0;border-bottom:1px solid #e4e7ec}.competency strong{margin-right:8px}.evidence,.reason{margin:6px 0;color:#475467}.quote{margin:4px 0;font-size:16px}.points{margin:6px 0;padding-left:20px}.decision-time{margin-right:8px;color:#2864dc}article{display:grid;grid-template-columns:62px 1fr;padding:18px 0;border-bottom:1px solid #e4e7ec}article p{margin:2px 0 0;overflow-wrap:anywhere;white-space:pre-line}.speaker{font-weight:650}footer{margin-top:32px;color:#98a2b3;font-size:11px}@media(max-width:560px){main{padding-top:24px}article{grid-template-columns:1fr;gap:5px}.result{align-items:flex-start;flex-direction:column;gap:5px}}</style></head><body><main id="app"></main><script>const m=${payload};const e=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));const t=n=>{n=Math.max(0,Number(n)||0);const h=Math.floor(n/3600),x=Math.floor(n%3600/60),s=Math.floor(n%60);return(h?String(h).padStart(2,"0")+":":"")+String(x).padStart(2,"0")+":"+String(s).padStart(2,"0")};const rl={advance:"建议推进",follow_up:"补充追问",hold:"暂不推进",insufficient:"证据不足"},cl={high:"高",medium:"中",low:"低"},gl={strong:"突出",adequate:"符合",mixed:"有待确认",weak:"不足",insufficient:"证据不足"};const interview=m.mode==="interview"&&m.interviewReport?'<section><p class="notice">AI 辅助评估仅供面试官复核，不用于自动录用决定；请忽略敏感个人属性并核对原始证据。</p><h2>辅助结论</h2><div class="result"><span class="pill">'+e(rl[m.interviewReport.recommendation]||"证据不足")+'</span><span>置信度 '+e(cl[m.interviewReport.confidence]||"低")+'</span></div><p>'+e(m.interviewReport.overview||m.summary||"证据不足")+'</p><h2>能力证据</h2>'+(m.interviewReport.competencies||[]).map(c=>'<div class="competency"><strong>'+e(c.name)+'</strong><span>'+e(gl[c.rating]||"证据不足")+'</span><div>'+e(c.assessment)+'</div>'+(c.evidence||[]).map(v=>'<div class="evidence">['+t(v.start_seconds)+'] “'+e(v.quote)+'”</div>').join("")+'</div>').join("")+'</section>':'';const generic=m.mode!=="interview"?'<section class="summary"><strong>AI 摘要</strong><div>'+e(m.summary||"无")+'</div></section>'+((m.highlights||[]).length?'<section><h2>会议金句</h2>'+m.highlights.map(v=>'<div class="insight-row"><time>'+t(v.start_seconds)+'</time> · <strong>'+e(v.speaker)+'</strong><p class="quote">“'+e(v.quote)+'”</p>'+(v.reason?'<p class="reason">'+e(v.reason)+'</p>':'')+'</div>').join("")+'</section>':'')+((m.speaker_summaries||[]).length?'<section><h2>发言人总结</h2>'+m.speaker_summaries.map(v=>'<div class="insight-row"><h3>'+e(v.speaker)+'</h3><div>'+e(v.summary)+'</div>'+((v.key_points||[]).length?'<ul class="points">'+v.key_points.map(p=>'<li>'+e(p)+'</li>').join("")+'</ul>':'')+'</div>').join("")+'</section>':'')+(((m.decision_records||[]).length||(m.decisions||[]).length)?'<section><h2>关键决策</h2>'+((m.decision_records||[]).length?m.decision_records.map(v=>'<div class="insight-row">'+(v.start_seconds==null?'':'<span class="decision-time">['+t(v.start_seconds)+']</span>')+'<strong>'+e(v.decision)+'</strong>'+(v.evidence?'<p class="evidence">“'+e(v.evidence)+'”</p>':'')+'</div>').join(""):(m.decisions||[]).map(v=>'<div class="insight-row">'+e(v)+'</div>').join(""))+'</section>':''):'';document.querySelector("#app").innerHTML='<header><h1>'+e(m.title)+'</h1><div class="meta">'+e(new Date(m.createdAt).toLocaleString("zh-CN"))+' · '+t(m.duration)+'</div></header>'+interview+generic+'<section><h2>逐字稿</h2>'+m.segments.map(s=>'<article><time>'+t(s.start_seconds)+'</time><div><div class="speaker">'+e(s.speaker||"发言人")+'</div><p>'+e(s.text)+'</p></div></article>').join("")+'</section><footer>由言澜 Yanlan 生成</footer>';<\/script></body></html>`;
 }
 
 function ratingLabel(value) {

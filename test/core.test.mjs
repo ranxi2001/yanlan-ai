@@ -11,6 +11,7 @@ import {
   normalizeMimoBaseUrl,
   parseTranscriptionResponse,
   publicMeeting,
+  readableTranscriptSegments,
   requestUrlForConfig,
   summarizeTranscript,
   testAsrConnection,
@@ -345,6 +346,155 @@ test("GPT correction preserves timestamps while applying corrected text", async 
   }
 });
 
+test("GPT correction converts fixed Chinese chunks into readable semantic paragraphs without merging the canonical timeline", async () => {
+  const source = {
+    ...meeting,
+    duration: 53,
+    segments: [
+      { start_seconds: 0, end_seconds: 10, speaker: "发言人 1", text: "赵丽蓉是一个非常漂亮、非常美丽的研究生宝宝，她是。", provider_debug: "private" },
+      { start_seconds: 10, end_seconds: 20, speaker: "发言人 1", text: "合肥工业大学物流和工程与管理的研究生，他现在。" },
+      { start_seconds: 20, end_seconds: 30, speaker: "发言人 1", text: "正在找工作，投递了拼多多和百度的管培生，他一定会找到。" },
+      { start_seconds: 30, end_seconds: 40, speaker: "发言人 1", text: "非常好的工作的，孩子一定能考上公务员。我们敬请期待他的。" },
+      { start_seconds: 40, end_seconds: 50, speaker: "发言人 1", text: "的收获吧。这个断句不太好，是不是？对。" },
+      { start_seconds: 50, end_seconds: 53, speaker: "发言人 1", text: "你发现没有花的。" },
+    ],
+  };
+  const correctedText = [
+    "赵丽蓉是一个非常漂亮、非常美丽的研究生宝宝，她是",
+    "合肥工业大学物流和工程与管理的研究生，他现在",
+    "正在找工作，投递了拼多多和百度的管培生，他一定会找到",
+    "非常好的工作的，孩子一定能考上公务员。我们敬请期待他的",
+    "的收获吧。\n这个断句不太好，是不是？对。",
+    "你发现没有花的。",
+  ];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    assert.match(body.messages[0].content, /固定时长切片|join_next/);
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      segments: correctedText.map((text, id) => ({ id, speaker: "发言人 1", text, join_next: id < 4 })),
+      terminology: [],
+    }) } }] }));
+  };
+  try {
+    const result = await correctTranscript({ config, meeting: source });
+    assert.equal(result.segments.length, source.segments.length);
+    assert.deepEqual(result.segments.map((segment) => [segment.start_seconds, segment.end_seconds]), source.segments.map((segment) => [segment.start_seconds, segment.end_seconds]));
+    assert.equal(result.semanticJoins, 4);
+    assert.deepEqual(result.segments.map((segment) => segment.join_next), [true, true, true, true, false, false]);
+
+    const readable = readableTranscriptSegments(result.segments);
+    assert.equal(readable.length, 2);
+    assert.deepEqual([readable[0].start_seconds, readable[0].end_seconds], [0, 50]);
+    assert.match(readable[0].text, /她是合肥工业大学/);
+    assert.match(readable[0].text, /他现在正在找工作/);
+    assert.match(readable[0].text, /他一定会找到非常好的工作/);
+    assert.match(readable[0].text, /收获吧。\n这个断句不太好/);
+    assert.equal(readable[1].start_seconds, 50);
+
+    const completed = { ...source, rawSegments: source.segments, segments: result.segments };
+    const publicData = publicMeeting(completed);
+    assert.equal(publicData.segments.length, 6);
+    assert.equal(publicData.segments.filter((segment) => segment.join_next).length, 4);
+    assert.doesNotMatch(JSON.stringify(publicData), /provider_debug|private/);
+    const markdown = toMarkdown(completed);
+    assert.match(markdown, /她是合肥工业大学/);
+    assert.doesNotMatch(markdown, /### 00:10/);
+    assert.match(markdown, /### 00:50/);
+    assert.equal((toVtt(completed).match(/-->/g) || []).length, 6);
+    const shareHtml = buildShareHtml(completed);
+    assert.match(shareHtml, /她是合肥工业大学/);
+    assert.doesNotMatch(shareHtml, /join_next|provider_debug/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("semantic joins reject speaker changes, large gaps, and structurally invalid model output", async () => {
+  const source = {
+    ...meeting,
+    segments: [
+      { start_seconds: 0, end_seconds: 10, speaker: "A", text: "她现在。" },
+      { start_seconds: 10, end_seconds: 20, speaker: "B", text: "正在找工作。" },
+      { start_seconds: 30, end_seconds: 40, speaker: "B", text: "还在投递。" },
+    ],
+  };
+  const originalFetch = globalThis.fetch;
+  let invalid = false;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    segments: invalid
+      ? [{ id: 0, text: "恶意改写", join_next: true }, { id: 0, text: "重复 ID", join_next: true }, { id: 2, text: "还在投递", join_next: true }]
+      : source.segments.map((segment, id) => ({ id, speaker: "A", text: segment.text, join_next: true })),
+  }) } }] }));
+  try {
+    const guarded = await correctTranscript({ config, meeting: source });
+    assert.equal(guarded.semanticJoins, 0);
+    assert.deepEqual(guarded.segments.map((segment) => segment.join_next), [false, false, false]);
+    assert.deepEqual(guarded.segments.map((segment) => segment.text), source.segments.map((segment) => segment.text));
+    assert.equal(readableTranscriptSegments(guarded.segments).length, 3);
+
+    const layoutGuards = [
+      [
+        { start_seconds: 0, end_seconds: 10, speaker: "A", text: "重叠前段", join_next: true },
+        { start_seconds: 9, end_seconds: 20, speaker: "A", text: "重叠后段" },
+      ],
+      [
+        { start_seconds: 10, end_seconds: 20, speaker: "A", text: "逆序前段", join_next: true },
+        { start_seconds: 5, end_seconds: 10, speaker: "A", text: "逆序后段" },
+      ],
+      [
+        { start_seconds: 0, end_seconds: 60, speaker: "A", text: "超时前段", join_next: true },
+        { start_seconds: 60, end_seconds: 100, speaker: "A", text: "超时后段" },
+      ],
+      [
+        { start_seconds: 0, end_seconds: 10, speaker: "A", text: "长".repeat(799), join_next: true },
+        { start_seconds: 10, end_seconds: 20, speaker: "A", text: "文本" },
+      ],
+    ];
+    assert.deepEqual(layoutGuards.map((segments) => readableTranscriptSegments(segments).length), [2, 2, 2, 2]);
+
+    invalid = true;
+    const rejected = await correctTranscript({ config, meeting: source });
+    assert.equal(rejected.rejectedCorrections, 3);
+    assert.equal(rejected.semanticJoins, 0);
+    assert.deepEqual(rejected.segments.map((segment) => segment.text), source.segments.map((segment) => segment.text));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("correction batches include a bounded following-segment preview for cross-batch sentence decisions", async () => {
+  const source = {
+    ...meeting,
+    segments: [
+      { start_seconds: 0, end_seconds: 10, speaker: "A", text: `${"前".repeat(7_500)}。` },
+      { start_seconds: 10, end_seconds: 20, speaker: "A", text: `${"后".repeat(700)}。` },
+    ],
+  };
+  const payloads = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const user = JSON.parse(options.body).messages[1].content;
+    const payload = JSON.parse(user.slice(user.indexOf("待校对片段：\n") + "待校对片段：\n".length));
+    payloads.push(payload);
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      segments: payload.segments.map((segment) => ({ ...segment, join_next: segment.id === 0 })),
+    }) } }] }));
+  };
+  try {
+    const result = await correctTranscript({ config, meeting: source });
+    assert.equal(payloads.length, 2);
+    assert.equal(payloads[0].following_segment.id, 1);
+    assert.ok(payloads[0].following_segment.text.length <= 500);
+    assert.equal(payloads[1].following_segment, undefined);
+    assert.equal(result.segments[0].join_next, true);
+    assert.equal(result.semanticJoins, 0, "joins rejected by display safety limits are not reported as applied");
+    assert.equal(readableTranscriptSegments(result.segments).length, 2, "readable output still enforces its 800-character safety limit");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("GPT correction rejects material rewrites", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
@@ -498,6 +648,39 @@ test("GPT summary parses structured JSON", async () => {
     assert.equal(result.highlights[0].start_seconds, 3);
     assert.equal(result.speaker_summaries[0].key_points[0], "明天完成");
     assert.equal(result.decision_records[0].evidence, "由小明明天完成");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("semantic display joins do not move evidence timestamps or collapse VTT cues", async () => {
+  const rawSegments = [
+    { start_seconds: 0, end_seconds: 10, speaker: "A", text: "她现在。" },
+    { start_seconds: 10, end_seconds: 20, speaker: "A", text: "正在找工作。" },
+  ];
+  const source = {
+    ...meeting,
+    duration: 20,
+    rawSegments,
+    segments: [
+      { ...rawSegments[0], text: "她现在", join_next: true },
+      { ...rawSegments[1], join_next: false },
+    ],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    title: "求职讨论",
+    summary: "讨论了求职进展。",
+    highlights: [{ start_seconds: 10, speaker: "A", quote: "正在找工作", reason: "明确进展" }],
+    decision_records: [],
+  }) } }] }));
+  try {
+    const result = await summarizeTranscript({ config, meeting: source });
+    assert.equal(result.highlights[0].start_seconds, 10);
+    assert.equal(publicMeeting({ ...source, ...result }).highlights[0].start_seconds, 10);
+    assert.equal(readableTranscriptSegments(source.segments).length, 1);
+    assert.equal((toVtt(source).match(/-->/g) || []).length, 2);
+    assert.match(toVtt(source), /00:00:10\.000 --> 00:00:20\.000/);
   } finally {
     globalThis.fetch = originalFetch;
   }
