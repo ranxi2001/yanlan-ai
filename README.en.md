@@ -46,7 +46,7 @@ The default MiMo browser upload path accepts files up to 30 minutes and 128 MiB;
 
 ## Recommended Providers
 
-- Text model: the OpenAI-compatible endpoint provided by [ai.tosky.top](https://ai.tosky.top/) is recommended.
+- Text model: the OpenAI-compatible endpoint provided by [ai.tosky.top](https://ai.tosky.top/) is recommended; it explicitly allows the `https://onefly.top` origin for browser CORS requests.
 - Speech model: register through the [dedicated Xiaomi MiMo link](https://platform.xiaomimimo.com?ref=6ENEDG) and select `mimo-v2.5-asr`.
 - MiMo referral code: `6ENEDG`. Registration through the dedicated link gives both parties RMB 10 in API trial credit and provides 10% off the first purchase. Trial credit is valid for 40 days.
 

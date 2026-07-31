@@ -34,6 +34,7 @@ const connectionTestRuns = {
   asr: { token: 0, controller: null },
   chat: { token: 0, controller: null },
 };
+const insightRetryRuns = new Map();
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
@@ -154,6 +155,7 @@ function bindEvents() {
   elements.historyList.addEventListener("click", handleHistoryClick);
   document.querySelectorAll("[data-insight]").forEach((button) => button.addEventListener("click", () => selectInsight(button.dataset.insight)));
   elements.insightContent.addEventListener("submit", handleQuestion);
+  elements.insightContent.addEventListener("click", handleInsightAction);
   elements.insightContent.addEventListener("click", seekToSegment);
   elements.transcriptList.addEventListener("click", seekToSegment);
   elements.transcriptList.addEventListener("click", handleTranscriptAction);
@@ -285,7 +287,7 @@ function renderInterviewAssessment(meeting) {
   }
   const report = meeting.interviewReport;
   if (!report) {
-    elements.insightContent.innerHTML = `<div class="insight-empty"><i data-lucide="circle-alert"></i><span>${escapeHtml(meeting.summaryError || "面试证据尚未整理")}</span></div>`;
+    elements.insightContent.innerHTML = `${correctionNotice(meeting)}${meeting.summaryError ? summaryRetryState(meeting) : '<div class="insight-empty"><i data-lucide="circle-alert"></i><span>面试证据尚未整理</span></div>'}`;
     return;
   }
   const correction = correctionNotice(meeting);
@@ -297,6 +299,10 @@ function renderInterviewAssessment(meeting) {
 }
 
 function renderInterviewEvidence(meeting) {
+  if (meeting.summaryError) {
+    elements.insightContent.innerHTML = summaryRetryState(meeting);
+    return;
+  }
   const report = meeting.interviewReport;
   if (!report?.competencies?.length) {
     elements.insightContent.innerHTML = '<div class="insight-empty"><i data-lucide="scan-search"></i><span>没有可展示的能力证据</span></div>';
@@ -315,12 +321,23 @@ function renderSummary(meeting) {
     elements.insightContent.innerHTML = `<div class="insight-empty"><span class="inline-loader"></span><span>${meeting.status === "recording" ? "结束录音后校正并总结" : statusLabel(meeting.status)}</span></div>`;
     return;
   }
-  const keywords = meeting.keywords?.length ? `<div class="keyword-list">${meeting.keywords.map((item) => `<span class="keyword">${escapeHtml(item)}</span>`).join("")}</div>` : '<p class="summary-text">无关键词</p>';
+  const keywords = meeting.summaryError
+    ? '<p class="summary-text">本次未生成关键词；摘要与关键词将随智能纪要一并重新生成</p>'
+    : meeting.keywords?.length
+    ? `<div class="keyword-list">${meeting.keywords.map((item) => `<span class="keyword">${escapeHtml(item)}</span>`).join("")}</div>`
+    : '<p class="summary-text">无关键词</p>';
   const correction = correctionNotice(meeting);
-  elements.insightContent.innerHTML = `${correction}<section class="insight-section"><h2 class="insight-label"><i data-lucide="align-left"></i><span>内容摘要</span></h2><p class="summary-text">${escapeHtml(meeting.summary || meeting.summaryError || "暂无摘要")}</p></section><section class="insight-section"><h2 class="insight-label"><i data-lucide="tags"></i><span>关键词</span></h2>${keywords}</section>`;
+  const summary = meeting.summaryError
+    ? summaryRetryNotice(meeting)
+    : `<p class="summary-text">${escapeHtml(meeting.summary || "暂无摘要")}</p>`;
+  elements.insightContent.innerHTML = `${correction}<section class="insight-section"><h2 class="insight-label"><i data-lucide="align-left"></i><span>内容摘要</span></h2>${summary}</section><section class="insight-section"><h2 class="insight-label"><i data-lucide="tags"></i><span>关键词</span></h2>${keywords}</section>`;
 }
 
 function renderHighlights(meeting) {
+  if (meeting.summaryError) {
+    elements.insightContent.innerHTML = summaryRetryState(meeting);
+    return;
+  }
   if (!meeting.highlights?.length) {
     elements.insightContent.innerHTML = '<div class="insight-empty"><i data-lucide="quote"></i><span>没有识别到可核验的会议金句</span></div>';
     return;
@@ -329,6 +346,10 @@ function renderHighlights(meeting) {
 }
 
 function renderSpeakerSummaries(meeting) {
+  if (meeting.summaryError) {
+    elements.insightContent.innerHTML = summaryRetryState(meeting);
+    return;
+  }
   if (!meeting.speaker_summaries?.length) {
     elements.insightContent.innerHTML = '<div class="insight-empty"><i data-lucide="users"></i><span>没有足够发言内容生成发言人总结</span></div>';
     return;
@@ -337,6 +358,10 @@ function renderSpeakerSummaries(meeting) {
 }
 
 function renderActions(meeting) {
+  if (meeting.summaryError) {
+    elements.insightContent.innerHTML = summaryRetryState(meeting);
+    return;
+  }
   const records = meeting.decision_records || [];
   if (!records.length && !meeting.action_items?.length) {
     elements.insightContent.innerHTML = '<div class="insight-empty"><i data-lucide="gavel"></i><span>没有识别到明确决策或行动项</span></div>';
@@ -663,6 +688,9 @@ async function processStoredAudio(meeting, blob, fileName) {
   meeting.status = "transcribing";
   meeting.error = "";
   meeting.transcriptIncomplete = false;
+  resetCorrectionResult(meeting);
+  resetSummaryResult(meeting);
+  meeting.qa = [];
   meeting.rawSegments = [];
   meeting.segments = [];
   saveAndRender();
@@ -746,7 +774,7 @@ function mimoUploadLimitError(blob, duration) {
 
 async function enrichMeeting(meeting) {
   meeting.status = "correcting";
-  meeting.correctionError = "";
+  resetCorrectionResult(meeting);
   saveAndRender();
   try {
     const corrected = await correctTranscript({ config: state.config, meeting });
@@ -759,18 +787,110 @@ async function enrichMeeting(meeting) {
   }
 
   meeting.status = "summarizing";
+  resetSummaryResult(meeting);
   saveAndRender();
   try {
     const summary = await summarizeTranscript({ config: state.config, meeting });
-    Object.assign(meeting, summary);
-    if (meeting.autoTitle && summary.title) meeting.title = summary.title.slice(0, 120);
-    meeting.summaryError = "";
+    applySummaryResult(meeting, summary);
   } catch (error) {
     meeting.summaryError = error.message;
   }
   meeting.status = "done";
   saveAndRender();
   showToast(meeting.correctionError || meeting.summaryError ? "转写已保存，部分 GPT 处理未完成" : (meeting.mode === "interview" ? "逐字稿已校正，面试证据已整理" : "逐字稿已校正，智能纪要已生成"));
+}
+
+function handleInsightAction(event) {
+  const button = event.target.closest("[data-retry-insight]");
+  if (!button || button.getAttribute("aria-disabled") === "true") return;
+  retryInsightProcessing(button.dataset.retryInsight);
+}
+
+async function retryInsightProcessing(step) {
+  const meeting = activeMeeting();
+  if (!meeting || meeting.readOnly || !["correction", "summary"].includes(step) || insightRetryRuns.has(meeting.id)) return;
+  if (!requireChatConfig()) return;
+  insightRetryRuns.set(meeting.id, step);
+  render();
+  focusInsightRetryButton(meeting.id, step);
+  let succeeded = false;
+  let downstreamError = null;
+  let requestError = null;
+  try {
+    if (step === "correction") {
+      const previousTranscript = transcriptContentSignature(meeting.segments);
+      const corrected = await correctTranscript({ config: state.config, meeting });
+      meeting.segments = corrected.segments;
+      meeting.terminology = corrected.terminology;
+      meeting.rejectedCorrections = corrected.rejectedCorrections;
+      meeting.correctionError = "";
+      if (transcriptContentSignature(corrected.segments) !== previousTranscript) {
+        resetSummaryResult(meeting);
+        try {
+          const summary = await summarizeTranscript({ config: state.config, meeting });
+          applySummaryResult(meeting, summary);
+        } catch (error) {
+          meeting.summaryError = error.message;
+          downstreamError = error;
+        }
+      }
+    } else {
+      resetSummaryResult(meeting);
+      const summary = await summarizeTranscript({ config: state.config, meeting });
+      applySummaryResult(meeting, summary);
+    }
+    succeeded = true;
+  } catch (error) {
+    if (step === "correction") meeting.correctionError = error.message;
+    else meeting.summaryError = error.message;
+    requestError = error;
+  } finally {
+    saveMeetings();
+    insightRetryRuns.delete(meeting.id);
+    render();
+  }
+  if (requestError) {
+    focusInsightRetryButton(meeting.id, step);
+    showToast(`${step === "correction" ? "术语校正" : (meeting.mode === "interview" ? "面试证据整理" : "智能纪要生成")}仍未完成：${requestError.message}`, true);
+  } else if (downstreamError) {
+    focusInsightRetryButton(meeting.id, "summary");
+    showToast(`术语校正已完成，但智能纪要刷新失败：${downstreamError.message}`, true);
+  } else if (succeeded) {
+    showToast(step === "correction" ? "术语校正及相关纪要已更新" : (meeting.mode === "interview" ? "面试证据已重新整理" : "智能纪要已重新生成"));
+  }
+}
+
+function applySummaryResult(meeting, summary) {
+  Object.assign(meeting, summary);
+  if (meeting.autoTitle && summary.title) meeting.title = summary.title.slice(0, 120);
+  meeting.summaryError = "";
+}
+
+function resetCorrectionResult(meeting) {
+  meeting.correctionError = "";
+  meeting.terminology = [];
+  meeting.rejectedCorrections = 0;
+}
+
+function resetSummaryResult(meeting) {
+  meeting.summary = "";
+  meeting.keywords = [];
+  meeting.highlights = [];
+  meeting.speaker_summaries = [];
+  meeting.decisions = [];
+  meeting.decision_records = [];
+  meeting.action_items = [];
+  meeting.summaryError = "";
+  delete meeting.interviewReport;
+}
+
+function transcriptContentSignature(segments) {
+  return JSON.stringify((segments || []).map((segment) => [segment.start_seconds, segment.end_seconds, segment.speaker, segment.text]));
+}
+
+function focusInsightRetryButton(meetingId, step) {
+  if (activeMeeting()?.id !== meetingId) return;
+  elements.insightContent.querySelector(`[data-retry-insight="${step}"]`)?.focus();
 }
 
 async function retryActiveMeeting() {
@@ -1382,6 +1502,13 @@ function requireConfig() {
   return false;
 }
 
+function requireChatConfig() {
+  if (state.config.chatBaseUrl && state.config.chatApiKey) return true;
+  openSettings();
+  showToast("请先配置 GPT API", true);
+  return false;
+}
+
 function hasCompleteConfig() {
   return Boolean(state.config.asrBaseUrl && state.config.asrApiKey && state.config.chatBaseUrl && state.config.chatApiKey);
 }
@@ -1657,8 +1784,25 @@ function normalizeDraftTitle(value) {
 function safeFilename(value) { return String(value || "会议记录").replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 100) || "会议记录"; }
 function speakerInitial(speaker, index) { return String(speaker || "").match(/\d+/)?.[0] || String(speaker || "S").trim().charAt(0).toUpperCase() || String(index + 1); }
 function splitCompetencies(value) { return [...new Set(String(value || "").split(/[、,，;；\n]+/).map((item) => item.trim()).filter(Boolean))].slice(0, 20); }
+function insightRetryButton(meeting, step) {
+  if (meeting.readOnly) return "";
+  const runningStep = insightRetryRuns.get(meeting.id);
+  const retrying = runningStep === step;
+  const busy = Boolean(runningStep);
+  const interview = meeting.mode === "interview";
+  const label = step === "correction" ? (retrying ? "正在处理" : "重试校正") : (retrying ? "正在生成" : (interview ? "重试整理" : "重试生成"));
+  const ariaLabel = step === "correction" ? "重试术语校正" : (interview ? "重试整理面试证据" : "重试生成智能纪要");
+  return `<button class="insight-retry-button${retrying ? " is-retrying" : ""}" type="button" data-retry-insight="${step}" aria-label="${ariaLabel}" aria-disabled="${busy}" aria-busy="${retrying}"><i data-lucide="${retrying ? "loader-circle" : "refresh-cw"}"></i><span>${label}</span></button>`;
+}
+function summaryRetryNotice(meeting) {
+  return `<div class="inline-warning insight-retry-notice" role="status" aria-live="polite" aria-atomic="true"><span>${escapeHtml(meeting.summaryError)}</span>${insightRetryButton(meeting, "summary")}</div>`;
+}
+function summaryRetryState(meeting) {
+  const label = meeting.mode === "interview" ? "面试证据整理未完成" : "智能纪要生成未完成";
+  return `<div class="insight-empty insight-error-state" role="status" aria-live="polite" aria-atomic="true"><i data-lucide="circle-alert"></i><span><strong>${label}</strong><br>${escapeHtml(meeting.summaryError)}</span>${insightRetryButton(meeting, "summary")}</div>`;
+}
 function correctionNotice(meeting) {
-  if (meeting.correctionError) return `<p class="inline-warning">术语校正未完成：${escapeHtml(meeting.correctionError)}</p>`;
+  if (meeting.correctionError) return `<div class="inline-warning insight-retry-notice" role="status" aria-live="polite" aria-atomic="true"><span>术语校正未完成：${escapeHtml(meeting.correctionError)}</span>${insightRetryButton(meeting, "correction")}</div>`;
   const accepted = meeting.terminology?.length ? `<p class="correction-note"><i data-lucide="spell-check-2"></i>已统一 ${meeting.terminology.length} 个术语</p>` : "";
   const rejected = meeting.rejectedCorrections ? `<p class="inline-warning">已保留原始文本：${meeting.rejectedCorrections} 个片段未应用模型校正（未通过安全边界）</p>` : "";
   return `${accepted}${rejected}`;

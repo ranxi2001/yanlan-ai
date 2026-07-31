@@ -32,10 +32,17 @@ let transientAsrFailures = 0;
 let successfulAsrResponsesRemaining = Number.POSITIVE_INFINITY;
 let asrTranscript = "今天讨论万福来项目，由小明明天完成。";
 let asrResponseDelayMs = 0;
+let transientCorrectionFailures = 0;
+let transientSummaryFailures = 0;
+let correctionResponseDelayMs = 0;
+let asrRequestCount = 0;
+let correctionRequestCount = 0;
+let summaryRequestCount = 0;
 page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
 page.on("pageerror", (error) => browserErrors.push(error.message));
 
 await page.route("https://mimo.example/v1/chat/completions", async (route) => {
+  asrRequestCount += 1;
   assert.equal(route.request().method(), "POST");
   assert.match(route.request().headers().authorization || "", /^Bearer asr-test-key$/);
   const request = route.request().postDataJSON();
@@ -72,6 +79,25 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
   assert.equal(request.messages, undefined);
   const system = request.instructions;
   const user = request.input;
+  const correctionRequest = system.includes("逐字稿校对员");
+  const summaryRequest = system.includes("会议纪要助手") || system.includes("面试证据提取助手");
+  if (correctionRequest) correctionRequestCount += 1;
+  if (summaryRequest) summaryRequestCount += 1;
+  if (correctionRequest && transientCorrectionFailures > 0) {
+    transientCorrectionFailures -= 1;
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "temporary correction failure" } }) });
+    return;
+  }
+  if (summaryRequest && transientSummaryFailures > 0) {
+    transientSummaryFailures -= 1;
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "temporary summary failure" } }) });
+    return;
+  }
+  if (correctionRequest && correctionResponseDelayMs) {
+    const delay = correctionResponseDelayMs;
+    correctionResponseDelayMs = 0;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
   let content;
   if (system.includes("逐字稿校对员")) {
     content = user.includes("目标岗位：")
@@ -125,6 +151,7 @@ try {
   assert.equal(await page.locator("#testAsrButton").getAttribute("aria-label"), "测试 MiMo 连接");
   assert.equal(await page.locator("#testChatButton").getAttribute("aria-label"), "测试 GPT 连接");
   assert.equal(await page.locator('.provider-link[href="https://ai.tosky.top/"]').getAttribute("target"), "_blank");
+  await page.getByText("OpenAI 兼容接口 · 已为本站（onefly.top）配置跨域白名单", { exact: true }).waitFor();
   assert.equal(await page.locator('.provider-link[href="https://platform.xiaomimimo.com?ref=6ENEDG"]').getAttribute("target"), "_blank");
   await page.getByText("专属链接注册，双方各得 10 元 API 体验金", { exact: true }).waitFor();
   assert.equal(await page.locator("#asrBaseUrlInput").inputValue(), "https://api.xiaomimimo.com");
@@ -403,10 +430,49 @@ try {
   const desktopOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   assert.equal(desktopOverflow, false);
 
+  await page.locator("#newMeetingButton").click();
+  transientCorrectionFailures = 1;
+  transientSummaryFailures = 1;
+  await page.locator("#fileInput").setInputFiles(fixture);
+  const retryCorrection = page.locator('[data-retry-insight="correction"]');
+  const retrySummary = page.locator('[data-retry-insight="summary"]');
+  await retryCorrection.waitFor({ timeout: 15000 });
+  await retrySummary.waitFor();
+  assert.equal(await retryCorrection.getAttribute("aria-label"), "重试术语校正");
+  assert.equal(await retrySummary.getAttribute("aria-label"), "重试生成智能纪要");
+  await page.getByText("本次未生成关键词；摘要与关键词将随智能纪要一并重新生成", { exact: true }).waitFor();
+  assert.equal(await page.getByText("无关键词", { exact: true }).count(), 0);
+  await page.screenshot({ path: new URL("../artifacts/insight-retry-desktop.png", import.meta.url).pathname, fullPage: true });
+  const asrRequestsBeforeRetries = asrRequestCount;
+  const summariesBeforeRetry = summaryRequestCount;
+  await retrySummary.click();
+  await page.getByText("会议明确了 OneFly 项目的近期交付安排。", { exact: true }).waitFor();
+  assert.equal(summaryRequestCount, summariesBeforeRetry + 1);
+  assert.equal(asrRequestCount, asrRequestsBeforeRetries);
+  assert.equal(await page.locator('[data-retry-insight="summary"]').count(), 0);
+  const correctionsBeforeRetry = correctionRequestCount;
+  const summariesBeforeCorrection = summaryRequestCount;
+  correctionResponseDelayMs = 250;
+  await retryCorrection.focus();
+  await retryCorrection.click();
+  await page.waitForFunction(() => document.querySelector('[data-retry-insight="correction"]')?.getAttribute("aria-busy") === "true");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-retry-insight")), "correction");
+  await page.locator('[data-retry-insight="correction"]').dispatchEvent("click");
+  await page.getByText("已统一 1 个术语", { exact: true }).waitFor();
+  assert.equal(correctionRequestCount, correctionsBeforeRetry + 1);
+  assert.equal(summaryRequestCount, summariesBeforeCorrection + 1);
+  assert.equal(asrRequestCount, asrRequestsBeforeRetries);
+  assert.equal(await page.locator('[data-retry-insight="correction"]').count(), 0);
+  const retriedMeeting = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0]);
+  assert.equal(retriedMeeting.correctionError, "");
+  assert.equal(retriedMeeting.summaryError, "");
+  assert.deepEqual(retriedMeeting.keywords, ["OneFly", "交付"]);
+
   const mobile = await context.newPage();
   await mobile.setViewportSize({ width: 390, height: 844 });
   await mobile.goto(shareUrl, { waitUntil: "networkidle" });
   await mobile.getByText("这是只读分享稿，不包含原始录音与 API 配置").waitFor();
+  assert.equal(await mobile.locator("[data-retry-insight]").count(), 0);
   await mobile.locator("#insightsButton").click();
   await mobile.waitForTimeout(250);
   await mobile.screenshot({ path: new URL("../artifacts/mobile-share.png", import.meta.url).pathname, fullPage: true });

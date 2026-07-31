@@ -1132,6 +1132,53 @@ textarea:focus-visible {
   background: #fff7ed;
 }
 
+.insight-retry-notice {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.insight-retry-notice > span {
+  min-width: 0;
+  flex: 1 1 180px;
+  overflow-wrap: anywhere;
+}
+
+.insight-retry-button {
+  display: inline-flex;
+  min-width: 88px;
+  min-height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  gap: 6px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.insight-retry-button:hover:not([aria-disabled="true"]) {
+  color: var(--accent-strong);
+  border-color: #9cb7ec;
+}
+
+.insight-retry-button[aria-disabled="true"] {
+  color: var(--text-faint);
+  cursor: wait;
+}
+
+.insight-retry-button svg,
+.insight-empty .insight-retry-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.insight-retry-button[aria-busy="true"] svg {
+  animation: spin 800ms linear infinite;
+}
+
 .correction-note {
   color: #066b72;
   background: var(--teal-soft);
@@ -1843,6 +1890,16 @@ textarea:focus-visible {
 .insight-empty svg {
   width: 25px;
   height: 25px;
+}
+
+.insight-error-state span {
+  max-width: 320px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.insight-error-state strong {
+  color: var(--text-secondary);
 }
 
 .insight-section {
