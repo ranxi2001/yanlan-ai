@@ -14,6 +14,7 @@
 ## 功能
 
 - 浏览器录音，分段实时转写，结束后保存完整录音
+- 无需 API Key 也可作为纯本地录音器使用，结束后直接播放或导出音频
 - 上传常见格式的音频并转写
 - 保留原始 ASR 片段，GPT 校正不改变时间轴
 - 会议概览、关键词、可回听金句、发言人总结、带原话证据的关键决策、行动项和逐字稿问答
@@ -28,6 +29,12 @@
 
 MiMo-V2.5-ASR 的模型能力和部署信息见小米官方的 [MiMo-V2.5-ASR 仓库](https://github.com/XiaomiMiMo/MiMo-V2.5-ASR)。默认调用方式与官方 [MiMo-Code](https://github.com/XiaomiMiMo/MiMo-Code) 一致：通过 Chat Completions 发送 data URL 音频和 `asr_options`；设置中也保留了标准 OpenAI Transcriptions 协议，便于连接兼容网关。
 
+## 推荐配置
+
+- 文本模型：推荐使用 [ai.tosky.top](https://ai.tosky.top/) 提供的 OpenAI 兼容接口。
+- 语音模型：推荐使用 [小米 MiMo 开放平台专属注册链接](https://platform.xiaomimimo.com?ref=6ENEDG)，ASR 模型为 `mimo-v2.5-asr`。
+- MiMo 邀请码：`6ENEDG`。通过专属链接注册，双方各得 10 元 API 体验金，首单 9 折；体验金有效期 40 天。
+
 ## 本地运行
 
 需要 Node.js 20 或更高版本。
@@ -37,7 +44,7 @@ npm install
 npm run dev
 ```
 
-打开 `http://127.0.0.1:4173`。第一次录音或上传前，在页面设置中分别填写：
+打开 `http://127.0.0.1:4173`。不配置模型也可以直接录音、播放和导出音频；需要转写与 AI 纪要时，在页面设置中分别填写：
 
 1. MiMo ASR 的 Base URL、API Key、模型名、调用协议和转写路径
 2. GPT 的 Base URL、API Key、模型名、调用协议和相对路径
@@ -72,8 +79,8 @@ flowchart LR
 
 ## 数据与安全
 
-- 两个 API Key 仅写入 `sessionStorage`，关闭标签页后清除。
-- 非敏感端点配置和术语提示保存在 `localStorage`。
+- 两个 API Key、端点配置和术语提示保存在当前浏览器的 `localStorage`，刷新或重新打开页面后仍可使用。
+- Key 只在调用时发送给用户填写的模型 API，不发送给言澜托管服务器；可随时在设置中点击“清除本机 Key”。
 - 完整录音保存在本机浏览器的 IndexedDB。
 - 音频片段会发送给配置的 MiMo API；逐字稿会发送给配置的 GPT API。
 - Responses 请求显式设置 `store: false`，不使用服务端会话状态；第三方网关仍以其自身隐私政策为准。
@@ -107,7 +114,7 @@ npm run test:browser
 
 ## 项目状态
 
-`v0.4.0` 增加会议金句、发言人总结、可追溯关键决策和本地同源网关；`v0.3.0` 默认使用 `gpt-5.6-luna` 和 Responses API；`v0.2.0` 增加面试专用模式、岗位能力证据、面试追问和隐私裁剪后的分享稿。下一阶段重点包括说话人分离、逐字稿编辑、协作批注、团队权限和更多模型适配。路线和优先级通过 GitHub Issues 公开维护。
+`v0.4.3` 支持无 Key 本地录音与持久保存浏览器 API 配置；`v0.4.0` 增加会议金句、发言人总结、可追溯关键决策和本地同源网关；`v0.3.0` 默认使用 `gpt-5.6-luna` 和 Responses API；`v0.2.0` 增加面试专用模式、岗位能力证据、面试追问和隐私裁剪后的分享稿。下一阶段重点包括说话人分离、逐字稿编辑、协作批注、团队权限和更多模型适配。路线和优先级通过 GitHub Issues 公开维护。
 
 ## 开源协议
 

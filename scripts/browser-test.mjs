@@ -81,11 +81,35 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
 try {
   await page.goto(baseUrl, { waitUntil: "networkidle" });
   await page.locator("#settingsButton").click();
+  assert.equal(await page.locator('.provider-link[href="https://ai.tosky.top/"]').getAttribute("target"), "_blank");
+  assert.equal(await page.locator('.provider-link[href="https://platform.xiaomimimo.com?ref=6ENEDG"]').getAttribute("target"), "_blank");
+  await page.getByText("专属链接注册，双方各得 10 元 API 体验金", { exact: true }).waitFor();
+  await page.screenshot({ path: new URL("../artifacts/recommended-providers-desktop.png", import.meta.url).pathname, fullPage: true });
   await page.locator("#settingsDialog header .icon-button").click();
   assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.open), false);
   await page.locator("#settingsButton").click();
-  await page.locator("#settingsDialog footer .secondary-button").click();
+  await page.locator('#settingsDialog footer [value="cancel"]').click();
   assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.open), false);
+
+  await page.locator("#startRecordButton").click();
+  await page.locator("#liveRecorder:not(.hidden)").waitFor();
+  await page.getByText("音频仅保存在本机", { exact: true }).waitFor();
+  await page.waitForTimeout(1200);
+  await page.locator("#stopRecordButton").click();
+  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("仅录音"));
+  await page.locator("#recordingPlayer:not(.hidden)").waitFor();
+  await page.getByText("录音已保存在本机", { exact: true }).waitFor();
+  assert.equal(await page.locator("#copyButton").isDisabled(), true);
+  assert.equal(await page.locator("#shareButton").isDisabled(), true);
+  assert.equal(await page.locator("#exportButton").isEnabled(), true);
+  await page.locator("#exportButton").click();
+  assert.equal(await page.locator('[data-export="markdown"]').isDisabled(), true);
+  const recorderDownload = page.waitForEvent("download");
+  await page.locator('[data-export="audio"]').click();
+  assert.match((await recorderDownload).suggestedFilename(), /\.(webm|ogg|m4a)$/);
+  await page.screenshot({ path: new URL("../artifacts/recorder-only-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.locator("#newMeetingButton").click();
+
   await page.locator("#settingsButton").click();
   await page.locator("#asrBaseUrlInput").fill("https://mimo.example/v1");
   await page.locator("#asrApiKeyInput").fill("asr-test-key");
@@ -102,8 +126,13 @@ try {
   await page.locator("#saveSettingsButton").click();
 
   const persisted = await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } }));
-  assert.doesNotMatch(JSON.stringify(persisted.local), /asr-test-key|gpt-test-key/);
-  assert.match(JSON.stringify(persisted.session), /asr-test-key/);
+  assert.match(JSON.stringify(persisted.local), /asr-test-key|gpt-test-key/);
+  assert.doesNotMatch(JSON.stringify(persisted.session), /asr-test-key|gpt-test-key/);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator("#settingsButton").click();
+  assert.equal(await page.locator("#asrApiKeyInput").inputValue(), "asr-test-key");
+  assert.equal(await page.locator("#chatApiKeyInput").inputValue(), "gpt-test-key");
+  await page.locator("#settingsDialog header .icon-button").click();
 
   await page.locator("#fileInput").setInputFiles(fixture);
   await page.getByText("OneFly 项目周会", { exact: true }).first().waitFor({ timeout: 15000 });
@@ -247,6 +276,7 @@ try {
   await legacy.goto(baseUrl, { waitUntil: "networkidle" });
   await legacy.locator("#sidebarOpen").click();
   await legacy.locator("#openSettingsButton").click();
+  await legacy.screenshot({ path: new URL("../artifacts/recommended-providers-mobile.png", import.meta.url).pathname, fullPage: true });
   assert.equal(await legacy.locator("#chatModelInput").inputValue(), "gpt-4o-mini");
   assert.equal(await legacy.locator("#chatProtocolInput").inputValue(), "chat-completions");
   assert.equal(await legacy.locator("#chatPathInput").inputValue(), "chat/completions");
@@ -255,8 +285,36 @@ try {
   assert.equal(await legacy.locator("#settingsDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);
   await legacy.close();
 
+  const migrationContext = await browser.newContext();
+  const migrationPage = await migrationContext.newPage();
+  await migrationPage.addInitScript(() => {
+    sessionStorage.setItem("yanlan.asr-key.v1", "legacy-asr-key");
+    sessionStorage.setItem("yanlan.chat-key.v1", "legacy-chat-key");
+  });
+  await migrationPage.goto(baseUrl, { waitUntil: "networkidle" });
+  const migrated = await migrationPage.evaluate(() => ({
+    config: JSON.parse(localStorage.getItem("yanlan.config.v1") || "{}"),
+    legacyAsr: sessionStorage.getItem("yanlan.asr-key.v1"),
+    legacyChat: sessionStorage.getItem("yanlan.chat-key.v1"),
+  }));
+  assert.equal(migrated.config.asrApiKey, "legacy-asr-key");
+  assert.equal(migrated.config.chatApiKey, "legacy-chat-key");
+  assert.equal(migrated.legacyAsr, null);
+  assert.equal(migrated.legacyChat, null);
+  await migrationContext.close();
+
+  await page.locator("#settingsButton").click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator("#clearKeysButton").click();
+  assert.equal(await page.locator("#asrApiKeyInput").inputValue(), "");
+  assert.equal(await page.locator("#chatApiKeyInput").inputValue(), "");
+  const cleared = await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } }));
+  assert.doesNotMatch(JSON.stringify(cleared), /asr-test-key|gpt-test-key/);
+  assert.doesNotMatch(JSON.stringify(cleared.session), /asr-test-key|gpt-test-key/);
+  await page.locator("#settingsDialog header .icon-button").click();
+
   assert.deepEqual(browserErrors, []);
-  console.log("Browser flow passed: Responses API, meeting and interview uploads, live recording, dual-model correction, evidence report, Q&A, exports, share, responsive layout.");
+  console.log("Browser flow passed: keyless recorder, persistent local keys, Responses API, meeting and interview workflows, exports, share, and responsive layout.");
 } finally {
   await browser.close();
 }

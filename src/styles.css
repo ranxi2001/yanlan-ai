@@ -1030,6 +1030,40 @@ textarea:focus-visible {
   font-size: 13px;
 }
 
+.recording-only-state {
+  display: flex;
+  min-height: 300px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.recording-only-state > svg {
+  width: 30px;
+  height: 30px;
+  margin-bottom: 14px;
+  color: var(--teal);
+}
+
+.recording-only-state strong {
+  margin-bottom: 6px;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.recording-only-state > span {
+  max-width: 360px;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.recording-only-state .secondary-button {
+  margin-top: 18px;
+}
+
 .insights-pane {
   display: flex;
   flex-direction: column;
@@ -1231,6 +1265,16 @@ textarea:focus-visible {
   background: var(--surface-muted);
 }
 
+.menu-popover button:disabled {
+  color: var(--text-faint);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.menu-popover button:disabled:hover {
+  background: transparent;
+}
+
 .menu-popover svg {
   width: 15px;
   height: 15px;
@@ -1302,6 +1346,82 @@ textarea:focus-visible {
   width: 15px;
   height: 15px;
   color: var(--teal);
+}
+
+.provider-links {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.provider-link {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 16px;
+  align-items: center;
+  min-height: 54px;
+  padding: 8px 10px;
+  gap: 9px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.provider-link + .provider-link {
+  border-top: 1px solid var(--line);
+}
+
+.provider-link:hover {
+  background: var(--surface-muted);
+}
+
+.provider-link > span:nth-child(2),
+.provider-link strong,
+.provider-link small {
+  display: block;
+  min-width: 0;
+}
+
+.provider-link strong {
+  margin-bottom: 2px;
+  font-size: 11px;
+}
+
+.provider-link small {
+  color: var(--text-faint);
+  font-size: 9px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.provider-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 7px;
+}
+
+.provider-icon.mimo {
+  color: var(--teal);
+  background: var(--teal-soft);
+}
+
+.provider-icon svg,
+.provider-link > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.provider-link > svg {
+  color: var(--text-faint);
+}
+
+.referral-note {
+  margin: 7px 0 0;
+  color: var(--text-faint);
+  font-size: 9px;
+  line-height: 1.5;
 }
 
 .settings-fields {
@@ -1435,6 +1555,11 @@ textarea:focus-visible {
   justify-content: flex-end;
   margin-top: 20px;
   gap: 8px;
+}
+
+.dialog footer .clear-keys-button {
+  margin-right: auto;
+  color: var(--danger);
 }
 
 .dialog footer button svg {
