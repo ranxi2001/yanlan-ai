@@ -180,7 +180,7 @@ try {
   await page.getByText("音频正在增量保存在本机", { exact: true }).waitFor();
   await page.waitForTimeout(1200);
   await page.locator("#stopRecordButton").click();
-  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("仅录音"));
+  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("录音已保存"));
   await page.locator("#recordingPlayer:not(.hidden)").waitFor();
   await page.getByText("录音已保存在本机", { exact: true }).waitFor();
   const completedMeetingId = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].id);
@@ -211,6 +211,7 @@ try {
       meetings: JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]"),
       activeSession: sessionStorage.getItem("yanlan.active-recording.v1"),
       meta: document.querySelector("#meetingMeta")?.textContent,
+      task: document.querySelector("#meetingTaskLabel")?.textContent,
       transcript: document.querySelector("#transcriptList")?.textContent,
     }));
     const recoveryStorageAfterReload = await recordingStorageState(page, interruptedMeetingId);
@@ -251,7 +252,7 @@ try {
   await page.locator("#startRecordButton").click();
   await page.waitForTimeout(1200);
   await page.locator("#stopRecordButton").click();
-  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("处理失败"));
+  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("处理失败"));
   await page.locator("#errorMessage").filter({ hasText: /录音分片未能保存到本机/ }).waitFor();
   assert.equal(await page.locator("#retryButton").isEnabled(), true);
   await page.evaluate(() => {
@@ -259,7 +260,7 @@ try {
     delete window.__yanlanOriginalIdbPut;
   });
   await page.locator("#retryButton").click();
-  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("仅录音"));
+  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("录音已保存"));
   await page.getByText("录音已保存在本机", { exact: true }).waitFor();
   await page.locator("#newMeetingButton").click();
 
@@ -274,7 +275,7 @@ try {
   await page.waitForTimeout(1200);
   const finalSaveFailureMeetingId = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].id);
   await page.locator("#stopRecordButton").click();
-  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("处理失败"));
+  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("处理失败"));
   await page.locator("#errorMessage").filter({ hasText: /simulated final save failure/ }).waitFor();
   assert.equal(await page.locator("#retryButton").isEnabled(), true);
   assert.ok(await recordingChunkCount(page, finalSaveFailureMeetingId) > 0);
@@ -300,7 +301,7 @@ try {
   await page.waitForTimeout(2200);
   const partialFailureMeetingId = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].id);
   await page.locator("#stopRecordButton").click();
-  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("处理失败"));
+  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("处理失败"));
   const expectedPartialChunks = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].recordingChunkCount);
   assert.ok(expectedPartialChunks > 1);
   assert.equal(await recordingChunkCount(page, partialFailureMeetingId), 1);
@@ -379,10 +380,40 @@ try {
   assert.equal(await page.locator("#chatApiKeyInput").inputValue(), "gpt-test-key");
   await page.locator("#settingsDialog header .icon-button").click();
 
+  asrResponseDelayMs = 500;
+  correctionResponseDelayMs = 1_600;
   await page.locator("#fileInput").setInputFiles(fixture);
+  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("正在转写音频"));
+  assert.equal(await page.locator("#meetingTaskStatus").getAttribute("data-state"), "working");
+  assert.equal(await page.locator("#meetingTaskMark").textContent(), "ING");
+  assert.equal(await page.locator("#newMeetingButton").isDisabled(), true);
+  assert.equal(await page.evaluate(() => {
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  }), true);
+  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("Agent 正在校正逐字稿与断句"));
+  await page.screenshot({ path: new URL("../artifacts/task-status-ing-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(250);
+  assert.ok(await page.locator("#sidebar").evaluate((element) => element.getBoundingClientRect().right <= 1));
+  assert.equal(await page.locator("#meetingTaskStatus").getAttribute("data-state"), "working");
+  const mobileTaskLayout = await page.locator("#meetingTaskStatus").evaluate((element) => {
+    const status = element.getBoundingClientRect();
+    const topbar = element.closest(".topbar").getBoundingClientRect();
+    return { left: status.left, right: status.right, topbarLeft: topbar.left, topbarRight: topbar.right };
+  });
+  assert.ok(mobileTaskLayout.left >= mobileTaskLayout.topbarLeft && mobileTaskLayout.right <= mobileTaskLayout.topbarRight);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
+  await page.screenshot({ path: new URL("../artifacts/task-status-ing-mobile.png", import.meta.url).pathname, fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 960 });
   await page.getByText("OneFly 项目周会", { exact: true }).first().waitFor({ timeout: 15000 });
   await page.getByText("今天讨论 OneFly 项目，由小明明天完成。", { exact: true }).waitFor();
   await page.locator("#recordingPlayer:not(.hidden)").waitFor();
+  assert.equal(await page.locator("#meetingTaskStatus").getAttribute("data-state"), "done");
+  assert.equal(await page.locator("#meetingTaskLabel").textContent(), "已完成");
+  assert.equal(await page.locator("#newMeetingButton").isEnabled(), true);
+  assert.doesNotMatch(await page.locator("#meetingMeta").textContent(), /已完成|正在/);
   assert.equal(await page.locator(".correction-note").textContent().then((text) => text.trim()), "已统一 1 个术语");
 
   await page.locator('[data-insight="highlights"]').click();
@@ -444,6 +475,8 @@ try {
   const retrySummary = page.locator('[data-retry-insight="summary"]');
   await retryCorrection.waitFor({ timeout: 15000 });
   await retrySummary.waitFor();
+  assert.equal(await page.locator("#meetingTaskStatus").getAttribute("data-state"), "warning");
+  assert.equal(await page.locator("#meetingTaskLabel").textContent(), "部分 Agent 任务待重试");
   assert.equal(await retryCorrection.getAttribute("aria-label"), "重试逐字稿校正");
   assert.equal(await retrySummary.getAttribute("aria-label"), "重试生成智能纪要");
   await page.getByText("本次未生成关键词；摘要与关键词将随智能纪要一并重新生成", { exact: true }).waitFor();
@@ -463,6 +496,10 @@ try {
   await retryCorrection.click();
   await page.waitForFunction(() => document.querySelector('[data-retry-insight="correction"]')?.getAttribute("aria-busy") === "true");
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-retry-insight")), "correction");
+  assert.equal(await page.locator("#meetingTaskStatus").getAttribute("data-state"), "working");
+  assert.equal(await page.locator("#meetingTaskMark").textContent(), "ING");
+  assert.equal(await page.locator("#meetingTaskLabel").textContent(), "Agent 正在重新校正逐字稿");
+  assert.equal(await page.locator("#newMeetingButton").isDisabled(), true);
   await page.locator('[data-retry-insight="correction"]').dispatchEvent("click");
   await page.getByText("已统一 1 个术语", { exact: true }).waitFor();
   assert.equal(correctionRequestCount, correctionsBeforeRetry + 1);
@@ -473,6 +510,7 @@ try {
   assert.equal(retriedMeeting.correctionError, "");
   assert.equal(retriedMeeting.summaryError, "");
   assert.deepEqual(retriedMeeting.keywords, ["OneFly", "交付"]);
+  assert.equal(await page.locator("#meetingTaskStatus").getAttribute("data-state"), "done");
 
   const mobile = await context.newPage();
   await mobile.setViewportSize({ width: 390, height: 844 });
@@ -523,7 +561,7 @@ try {
   await page.locator("#liveRecorder:not(.hidden)").waitFor();
   await page.waitForTimeout(1200);
   await page.locator("#stopRecordButton").click();
-  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("已完成"), null, { timeout: 15000 });
+  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("已完成"), null, { timeout: 15000 });
   await page.locator("#recordingPlayer:not(.hidden)").waitFor();
 
   await page.locator("#newMeetingButton").click();
@@ -532,7 +570,7 @@ try {
   await page.locator("#liveRecorder:not(.hidden)").waitFor();
   await page.waitForTimeout(5600);
   await page.locator("#stopRecordButton").click();
-  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("处理失败"), null, { timeout: 20000 });
+  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("处理失败"), null, { timeout: 20000 });
   await page.locator("#errorMessage").filter({ hasText: /仍有 1 个实时转写片段失败/ }).waitFor();
   assert.equal(await page.locator("#shareButton").isDisabled(), true);
   assert.equal(await page.locator("#copyButton").isDisabled(), true);
@@ -542,7 +580,7 @@ try {
   assert.equal(await page.locator('[data-export="audio"]').isEnabled(), true);
   successfulAsrResponsesRemaining = Number.POSITIVE_INFINITY;
   await page.locator("#retryButton").click();
-  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("已完成"), null, { timeout: 20000 });
+  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("已完成"), null, { timeout: 20000 });
 
   await page.locator("#newMeetingButton").click();
   asrTranscript = "我会先做服务降机，再通过日志和指标定位故障。";

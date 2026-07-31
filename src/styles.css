@@ -161,6 +161,18 @@ textarea:focus-visible {
   background: var(--accent-strong);
 }
 
+.new-meeting-button:disabled {
+  color: #475467;
+  background: #dfe4eb;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.new-meeting-button[data-task-running="true"] svg {
+  color: var(--accent);
+  animation: spin 1s linear infinite;
+}
+
 .new-meeting-button svg,
 .primary-button svg,
 .secondary-button svg {
@@ -239,6 +251,31 @@ textarea:focus-visible {
 .history-icon.interview {
   color: #854d0e;
   background: #fef9c3;
+}
+
+.history-icon.is-working {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.history-icon.is-working svg {
+  animation: spin 1s linear infinite;
+}
+
+.history-icon.is-done {
+  color: #067647;
+  background: #ecfdf3;
+}
+
+.history-icon.is-warning {
+  color: #b54708;
+  background: #fffaeb;
+}
+
+.history-icon.is-error,
+.history-icon.is-recording {
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 .history-text {
@@ -373,7 +410,9 @@ textarea:focus-visible {
 }
 
 .meeting-heading {
+  display: grid;
   min-width: 0;
+  gap: 1px;
 }
 
 .meeting-title {
@@ -397,14 +436,132 @@ textarea:focus-visible {
   border-color: var(--line);
 }
 
+.meeting-subline {
+  display: flex;
+  min-width: 0;
+  min-height: 24px;
+  align-items: center;
+  padding: 1px 4px 0;
+  gap: 8px;
+}
+
 .meeting-meta {
-  min-height: 16px;
-  padding: 1px 5px 0;
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   color: var(--text-faint);
   font-size: 11px;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.task-status {
+  display: inline-flex;
+  min-width: 0;
+  max-width: min(460px, 60vw);
+  height: 23px;
+  flex: 0 1 auto;
+  align-items: center;
+  padding: 2px 7px 2px 3px;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 680;
+  white-space: nowrap;
+}
+
+.task-status-mark {
+  display: inline-flex;
+  min-width: 24px;
+  height: 17px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  gap: 4px;
+  color: #ffffff;
+  background: #667085;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.task-status-mark svg {
+  width: 12px;
+  height: 12px;
+}
+
+.task-status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-status[data-state="working"] {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-color: #b2ccff;
+}
+
+.task-status[data-state="working"] .task-status-mark {
+  min-width: 43px;
+  background: var(--accent);
+}
+
+.task-status[data-state="working"] .task-status-mark::after {
+  width: 4px;
+  height: 4px;
+  content: "";
+  background: #ffffff;
+  border-radius: 50%;
+  animation: pulse 900ms ease-in-out infinite;
+}
+
+.task-status[data-state="recording"],
+.task-status[data-state="error"] {
+  color: #b42318;
+  background: var(--danger-soft);
+  border-color: #fecdca;
+}
+
+.task-status[data-state="recording"] .task-status-mark,
+.task-status[data-state="error"] .task-status-mark {
+  background: var(--danger);
+}
+
+.task-status[data-state="done"] {
+  color: #067647;
+  background: #ecfdf3;
+  border-color: #abefc6;
+}
+
+.task-status[data-state="done"] .task-status-mark {
+  background: #079455;
+}
+
+.task-status[data-state="warning"] {
+  color: #b54708;
+  background: #fffaeb;
+  border-color: #fedf89;
+}
+
+.task-status[data-state="warning"] .task-status-mark {
+  background: #dc6803;
+}
+
+.task-status[data-state="saved"] {
+  color: var(--teal);
+  background: var(--teal-soft);
+  border-color: #a6e3dc;
+}
+
+.task-status[data-state="saved"] .task-status-mark {
+  background: var(--teal);
 }
 
 .topbar-actions {
@@ -2464,7 +2621,7 @@ textarea:focus-visible {
 
   .topbar {
     grid-template-columns: 36px minmax(0, 1fr) auto;
-    min-height: 64px;
+    min-height: 68px;
     padding: 8px 10px;
     gap: 7px;
   }
@@ -2472,6 +2629,23 @@ textarea:focus-visible {
   .meeting-title {
     height: 25px;
     font-size: 14px;
+  }
+
+  .meeting-subline {
+    min-height: 22px;
+    padding-right: 0;
+    gap: 0;
+  }
+
+  .meeting-meta {
+    display: none;
+  }
+
+  .task-status {
+    width: 100%;
+    max-width: 100%;
+    height: 21px;
+    font-size: 10px;
   }
 
   .topbar-actions {

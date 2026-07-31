@@ -30,6 +30,7 @@ const MAX_MEETINGS = 40;
 const MAX_RECORDING_SECONDS = 4 * 60 * 60;
 const RECORDING_HEARTBEAT_MS = 1_000;
 const RECORDING_STALE_MS = 4_000;
+const ACTIVE_TASK_STATUSES = new Set(["recording", "recovering", "transcribing", "correcting", "summarizing"]);
 const recoveringMeetingIds = new Set();
 const connectionTestRuns = {
   asr: { token: 0, controller: null },
@@ -41,7 +42,8 @@ const $ = (selector) => document.querySelector(selector);
 const elements = {
   sidebar: $("#sidebar"), sidebarOpen: $("#sidebarOpen"), sidebarClose: $("#sidebarClose"), sidebarScrim: $("#sidebarScrim"),
   historyList: $("#historyList"), historyCount: $("#historyCount"), newMeetingButton: $("#newMeetingButton"),
-  meetingTitle: $("#meetingTitle"), meetingMeta: $("#meetingMeta"), copyButton: $("#copyButton"), shareButton: $("#shareButton"),
+  meetingTitle: $("#meetingTitle"), meetingMeta: $("#meetingMeta"), meetingTaskStatus: $("#meetingTaskStatus"),
+  meetingTaskMark: $("#meetingTaskMark"), meetingTaskLabel: $("#meetingTaskLabel"), copyButton: $("#copyButton"), shareButton: $("#shareButton"),
   exportButton: $("#exportButton"), exportMenu: $("#exportMenu"), settingsButton: $("#settingsButton"), insightsButton: $("#insightsButton"),
   insightsClose: $("#insightsClose"), insightsPane: $("#insightsPane"), configNotice: $("#configNotice"),
   configNoticeButton: $("#configNoticeButton"), configDot: $("#configDot"), configModel: $("#configModel"), configHost: $("#configHost"),
@@ -192,12 +194,15 @@ function renderHistory() {
     elements.historyList.innerHTML = '<div class="history-empty">暂无记录</div>';
     return;
   }
-  elements.historyList.innerHTML = state.meetings.map((meeting) => `
+  elements.historyList.innerHTML = state.meetings.map((meeting) => {
+    const task = meetingTaskState(meeting);
+    return `
     <div class="history-item ${meeting.id === state.activeId ? "active" : ""}" data-meeting-id="${escapeHtml(meeting.id)}">
-      <span class="history-icon ${meeting.mode === "interview" ? "interview" : ""}"><i data-lucide="${statusIcon(meeting.status, meeting.mode)}"></i></span>
+      <span class="history-icon ${meeting.mode === "interview" ? "interview" : ""} is-${task.state}"><i data-lucide="${statusIcon(meeting.status, meeting.mode, task.state)}"></i></span>
       <span class="history-text"><span class="history-title">${escapeHtml(meeting.title)}</span><span class="history-date">${escapeHtml(formatHistoryDate(meeting.createdAt))}</span></span>
       ${meeting.readOnly ? "" : `<button class="history-delete" data-delete-id="${escapeHtml(meeting.id)}" title="删除记录" aria-label="删除记录"${state.recorder?.meeting.id === meeting.id ? " disabled" : ""}><i data-lucide="trash-2"></i></button>`}
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 
 function renderHeader(meeting) {
@@ -213,13 +218,26 @@ function renderHeader(meeting) {
   });
   if (!meeting) {
     elements.meetingMeta.textContent = "尚未开始";
+    elements.meetingTaskStatus.classList.add("hidden");
+    delete elements.meetingTaskStatus.dataset.signature;
     return;
   }
   const parts = [formatFullDate(meeting.createdAt)];
   if (meeting.mode === "interview") parts.push(`${meeting.interviewContext?.stage || "面试"} · ${meeting.interviewContext?.role || "岗位待补充"}`);
   if (meeting.duration) parts.push(formatDurationLabel(meeting.duration));
-  parts.push(statusLabel(meeting.status, meeting.mode));
   elements.meetingMeta.textContent = parts.filter(Boolean).join(" · ");
+  renderMeetingTaskStatus(meeting);
+}
+
+function renderMeetingTaskStatus(meeting) {
+  const task = meetingTaskState(meeting);
+  const signature = `${task.state}|${task.mark || ""}|${task.icon || ""}|${task.label}`;
+  elements.meetingTaskStatus.classList.remove("hidden");
+  elements.meetingTaskStatus.dataset.state = task.state;
+  if (elements.meetingTaskStatus.dataset.signature === signature) return;
+  elements.meetingTaskStatus.dataset.signature = signature;
+  elements.meetingTaskMark.innerHTML = task.icon ? `<i data-lucide="${task.icon}"></i>` : escapeHtml(task.mark || "");
+  elements.meetingTaskLabel.textContent = task.label;
 }
 
 function renderMain(meeting) {
@@ -234,7 +252,7 @@ function renderMain(meeting) {
   elements.errorStage.classList.toggle("hidden", meeting?.status !== "error");
   if (showProcessing) {
     elements.processingTitle.textContent = statusLabel(meeting.status, meeting.mode);
-    elements.processingFile.textContent = meeting.sourceName || "正在处理音频";
+    elements.processingFile.textContent = processingDisplayText(meeting);
   }
   if (meeting?.status === "error") {
     elements.errorMessage.textContent = meeting.error || "处理失败，请稍后重试。";
@@ -408,7 +426,14 @@ function renderConfig() {
 
 function renderSharedMode() {
   elements.sharedBanner.classList.toggle("hidden", !state.sharedMode);
-  elements.newMeetingButton.disabled = state.sharedMode;
+  const taskRunning = hasRunningTask();
+  elements.newMeetingButton.disabled = state.sharedMode || taskRunning;
+  elements.newMeetingButton.dataset.taskRunning = String(taskRunning);
+  elements.newMeetingButton.title = taskRunning ? "当前任务处理完成后可新建记录" : "新建记录";
+  elements.newMeetingButton.setAttribute("aria-label", taskRunning ? "当前任务处理中，暂不可新建记录" : "新建记录");
+  elements.newMeetingButton.innerHTML = taskRunning
+    ? '<i data-lucide="loader-circle"></i><span>当前任务处理中</span>'
+    : '<i data-lucide="plus"></i><span>新建记录</span>';
   elements.settingsButton.classList.toggle("hidden", state.sharedMode);
   elements.openSettingsButton.disabled = state.sharedMode;
 }
@@ -542,10 +567,11 @@ function cleanupPlayerUrl() {
 }
 
 function handleBeforeUnload(event) {
-  cleanupPlayerUrl();
-  if (!state.recorder) return;
-  state.recorder.meeting.recordingHeartbeat = 0;
-  saveMeetings();
+  if (!hasRunningTask()) return;
+  if (state.recorder) {
+    state.recorder.meeting.recordingHeartbeat = 0;
+    saveMeetings();
+  }
   event.preventDefault();
   event.returnValue = "";
 }
@@ -687,6 +713,7 @@ async function handleFileSelection(event) {
 
 async function processStoredAudio(meeting, blob, fileName) {
   meeting.status = "transcribing";
+  meeting.processingDetail = "正在准备音频";
   meeting.error = "";
   meeting.transcriptIncomplete = false;
   resetCorrectionResult(meeting);
@@ -703,6 +730,7 @@ async function processStoredAudio(meeting, blob, fileName) {
 
 async function transcribeStoredBlob(meeting, blob, fileName) {
   if (state.config.asrProtocol === "openai-transcriptions") {
+    updateMeetingTaskProgress(meeting, "正在上传并转写音频");
     const result = await transcribeAudioWithRetry({ config: state.config, blob, fileName, language: meeting.language });
     return normalizeSegments(result.segments, meeting.duration);
   }
@@ -717,8 +745,8 @@ async function transcribeStoredBlob(meeting, blob, fileName) {
       const pcm = mixAudioRange(decoded.buffer, offset, end);
       const start = offset / decoded.sampleRate;
       const duration = pcm.length / decoded.sampleRate;
-      meeting.sourceName = `${fileName} · 转写 ${Math.min(100, Math.round((end / decoded.length) * 100))}%`;
-      elements.processingFile.textContent = meeting.sourceName;
+      const progress = Math.min(100, Math.round((end / decoded.length) * 100));
+      updateMeetingTaskProgress(meeting, `正在转写音频 · ${progress}%`);
       const result = await transcribeAudioWithRetry({ config: state.config, blob: encodeWav(pcm, decoded.sampleRate), fileName: `part-${String(index).padStart(4, "0")}.wav`, language: meeting.language });
       segments.push(...normalizeSegments(result.segments, duration).map((segment) => ({
         ...segment,
@@ -726,14 +754,13 @@ async function transcribeStoredBlob(meeting, blob, fileName) {
         end_seconds: segment.end_seconds > segment.start_seconds ? segment.end_seconds + start : start + duration,
       })));
     }
-    meeting.sourceName = fileName;
     return segments;
   } catch (error) {
-    meeting.sourceName = fileName;
     if (error.name !== "EncodingError" && !/decode|解码/i.test(error.message)) throw error;
     if (blob.size > MAX_MIMO_FALLBACK_BYTES) {
       throw new Error("浏览器无法分段解码该音频，且原文件超过 40 MiB，已停止整文件 data URL 上传；请切分文件或改用标准 Transcriptions 协议");
     }
+    updateMeetingTaskProgress(meeting, "正在使用兼容方式转写音频");
     const result = await transcribeAudioWithRetry({ config: state.config, blob, fileName, language: meeting.language });
     return normalizeSegments(result.segments, meeting.duration);
   }
@@ -775,6 +802,7 @@ function mimoUploadLimitError(blob, duration) {
 
 async function enrichMeeting(meeting) {
   meeting.status = "correcting";
+  delete meeting.processingDetail;
   resetCorrectionResult(meeting);
   saveAndRender();
   try {
@@ -798,6 +826,7 @@ async function enrichMeeting(meeting) {
     meeting.summaryError = error.message;
   }
   meeting.status = "done";
+  delete meeting.processingDetail;
   saveAndRender();
   showToast(meeting.correctionError || meeting.summaryError ? "转写已保存，部分 GPT 处理未完成" : (meeting.mode === "interview" ? "逐字稿已校正，面试证据已整理" : "逐字稿已校正，智能纪要已生成"));
 }
@@ -1199,12 +1228,20 @@ function createMeeting(values) {
 function failMeeting(meeting, error) {
   meeting.status = "error";
   meeting.error = error?.message || String(error);
+  delete meeting.processingDetail;
   saveAndRender();
   showToast(meeting.error, true);
 }
 
 function newMeeting() {
   if (state.recording || state.sharedMode) return;
+  const runningMeeting = state.meetings.find((meeting) => isRunningTask(meeting));
+  if (runningMeeting) {
+    state.activeId = runningMeeting.id;
+    render();
+    showToast("当前任务仍在处理，请等待完成后再新建记录", true);
+    return;
+  }
   if (state.recorder) {
     showToast("请先重试保存上一段录音", true);
     return;
@@ -1706,6 +1743,26 @@ function activeMeeting() { return state.meetings.find((meeting) => meeting.id ==
 
 function saveAndRender() { saveMeetings(); render(); }
 
+function updateMeetingTaskProgress(meeting, detail) {
+  meeting.processingDetail = detail;
+  saveMeetings();
+  if (activeMeeting()?.id !== meeting.id) return;
+  renderHeader(meeting);
+  if (!elements.processingStage.classList.contains("hidden")) elements.processingFile.textContent = processingDisplayText(meeting);
+}
+
+function processingDisplayText(meeting) {
+  return [meeting?.sourceName, meeting?.processingDetail].filter(Boolean).join(" · ") || "正在处理音频";
+}
+
+function isRunningTask(meeting) {
+  return Boolean(meeting && (ACTIVE_TASK_STATUSES.has(meeting.status) || insightRetryRuns.has(meeting.id)));
+}
+
+function hasRunningTask() {
+  return Boolean(state.recorder) || state.meetings.some((meeting) => isRunningTask(meeting));
+}
+
 function loadMeetings() {
   try {
     const parsed = JSON.parse(localStorage.getItem(MEETINGS_KEY) || "[]");
@@ -1816,8 +1873,48 @@ function correctionNotice(meeting) {
   return `${accepted}${rejected}`;
 }
 function ratingLabel(value) { return ({ strong: "突出", adequate: "符合", mixed: "有待确认", weak: "不足", insufficient: "证据不足" })[value] || "证据不足"; }
-function statusIcon(status, mode) { return ["recording", "recovering", "transcribing", "correcting", "summarizing"].includes(status) ? "loader-circle" : status === "error" ? "circle-alert" : mode === "interview" ? "briefcase-business" : "file-audio"; }
-function statusLabel(status, mode) { return ({ recording: state.recorder?.transcriptionEnabled ? "实时转写中" : "录音中", recovering: "正在恢复录音", recorded: "仅录音", transcribing: "正在转写", correcting: "GPT 正在校正与优化断句", summarizing: mode === "interview" ? "GPT 正在整理面试证据" : "GPT 正在生成纪要", done: "已完成", error: "处理失败" })[status] || ""; }
+
+function meetingTaskState(meeting) {
+  if (!meeting) return { state: "idle", icon: "clock-3", label: "等待开始" };
+  if (meeting.readOnly) return { state: "readonly", icon: "lock-keyhole", label: "只读分享稿" };
+  const retryStep = insightRetryRuns.get(meeting.id);
+  if (retryStep === "correction") return { state: "working", mark: "ING", label: "Agent 正在重新校正逐字稿" };
+  if (retryStep === "summary") return { state: "working", mark: "ING", label: meeting.mode === "interview" ? "Agent 正在重新整理面试证据" : "Agent 正在重新生成智能纪要" };
+  if (meeting.status === "recording") {
+    const realtime = state.recorder?.meeting.id === meeting.id && state.recorder.transcriptionEnabled;
+    return { state: "recording", mark: "REC", label: realtime ? "正在录音并实时转写" : "正在录音并保存" };
+  }
+  if (meeting.status === "recovering") return { state: "working", mark: "ING", label: "正在恢复本地录音" };
+  if (meeting.status === "transcribing") return { state: "working", mark: "ING", label: meeting.processingDetail || "正在转写音频" };
+  if (meeting.status === "correcting") return { state: "working", mark: "ING", label: "Agent 正在校正逐字稿与断句" };
+  if (meeting.status === "summarizing") return { state: "working", mark: "ING", label: meeting.mode === "interview" ? "Agent 正在分析并整理面试证据" : "Agent 正在分析并生成智能纪要" };
+  if (meeting.status === "recorded") return { state: "saved", icon: "file-audio", label: "录音已保存" };
+  if (meeting.status === "error") return { state: "error", icon: "circle-alert", label: "处理失败" };
+  if (meeting.status === "done" && (meeting.correctionError || meeting.summaryError)) return { state: "warning", icon: "triangle-alert", label: "部分 Agent 任务待重试" };
+  if (meeting.status === "done") return { state: "done", icon: "circle-check", label: "已完成" };
+  return { state: "idle", icon: "clock-3", label: "等待处理" };
+}
+
+function statusIcon(status, mode, taskState) {
+  if (taskState === "working") return "loader-circle";
+  if (status === "recording") return "mic";
+  if (status === "error") return "circle-alert";
+  if (status === "done") return taskState === "warning" ? "triangle-alert" : "circle-check";
+  return mode === "interview" ? "briefcase-business" : "file-audio";
+}
+
+function statusLabel(status, mode) {
+  return ({
+    recording: state.recorder?.transcriptionEnabled ? "正在录音并实时转写" : "正在录音并保存",
+    recovering: "正在恢复本地录音",
+    recorded: "录音已保存",
+    transcribing: "正在转写音频",
+    correcting: "Agent 正在校正逐字稿与断句",
+    summarizing: mode === "interview" ? "Agent 正在分析并整理面试证据" : "Agent 正在分析并生成智能纪要",
+    done: "已完成",
+    error: "处理失败",
+  })[status] || "";
+}
 
 function formatHistoryDate(value) {
   const date = new Date(value); if (Number.isNaN(date.getTime())) return "刚刚";

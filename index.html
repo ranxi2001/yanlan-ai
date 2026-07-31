@@ -32,7 +32,14 @@
           <button class="icon-button sidebar-open" id="sidebarOpen" title="打开侧栏" aria-label="打开侧栏"><i data-lucide="panel-left-open"></i></button>
           <div class="meeting-heading">
             <input id="meetingTitle" class="meeting-title" value="新的会议记录" aria-label="记录标题" />
-            <div class="meeting-meta" id="meetingMeta">尚未开始</div>
+            <div class="meeting-subline">
+              <div class="task-status hidden" id="meetingTaskStatus" role="status" aria-live="polite" aria-atomic="true" data-state="idle">
+                <span class="visually-hidden">当前任务：</span>
+                <span class="task-status-mark" id="meetingTaskMark" aria-hidden="true"></span>
+                <span class="task-status-label" id="meetingTaskLabel"></span>
+              </div>
+              <div class="meeting-meta" id="meetingMeta">尚未开始</div>
+            </div>
           </div>
           <div class="topbar-actions">
             <button class="icon-button" id="copyButton" title="复制逐字稿" aria-label="复制逐字稿" disabled><i data-lucide="copy"></i></button>
