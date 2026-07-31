@@ -39,6 +39,47 @@ MiMo-V2.5-ASR 的模型能力和部署信息见小米官方的 [MiMo-V2.5-ASR �
 - 语音模型：推荐使用 [小米 MiMo 开放平台专属注册链接](https://platform.xiaomimimo.com?ref=6ENEDG)，ASR 模型为 `mimo-v2.5-asr`。
 - MiMo 邀请码：`6ENEDG`。通过专属链接注册，双方各得 10 元 API 体验金，首单 9 折；体验金有效期 40 天。
 
+## CLI：音频文件转文字
+
+只需要把一个录音文件转成文字时，不必启动网页。Node.js 20 或更高版本可以直接运行：
+
+```bash
+export MIMO_API_KEY="你的 Key"
+npx --yes github:ranxi2001/yanlan-ai#v0.4.5 transcribe recording.mp3 -o recording.txt
+```
+
+也可以全局安装：
+
+```bash
+npm install --global github:ranxi2001/yanlan-ai#v0.4.5
+yanlan transcribe interview.m4a -o interview.md --language zh
+```
+
+CLI 默认调用 `https://api.xiaomimimo.com/v1` 的 `mimo-v2.5-asr`，支持 MP3、WAV、M4A、WebM、OGG、Opus、AAC、FLAC 和 MP4。输出格式为 `text`、`markdown` 或 `json`，可通过 `MIMO_BASE_URL` 连接兼容网关。使用环境变量保存 Key，避免将真实 Key 写进命令历史。
+
+```bash
+yanlan transcribe --help
+yanlan transcribe meeting.wav -o meeting.json --format json --language auto
+```
+
+音频仅发送给用户配置的 MiMo 兼容 API，不经过言澜托管服务器。CLI 不做总结、术语校正或说话人推断，适合脚本、流水线和一次性转写。
+
+## Agent Skill
+
+支持 Agent Skills 的客户端可以直接安装仓库内的 `yanlan-transcribe`：
+
+```bash
+npx skills add ranxi2001/yanlan-ai
+```
+
+安装后可在 Agent 中使用：
+
+```text
+Use $yanlan-transcribe to transcribe /absolute/path/interview.m4a and save Markdown beside it.
+```
+
+Skill 会检查 Node.js 与本机 `MIMO_API_KEY`，调用固定版本的 Yanlan CLI，并在输出后验证文件非空。Skill 本体位于 [`skills/yanlan-transcribe/SKILL.md`](./skills/yanlan-transcribe/SKILL.md)。
+
 ## 本地运行
 
 需要 Node.js 20 或更高版本。
@@ -118,7 +159,7 @@ npm run test:browser
 
 ## 项目状态
 
-`v0.4.4` 发布青绿色品牌 Logo；`v0.4.3` 支持无 Key 本地录音与持久保存浏览器 API 配置；`v0.4.0` 增加会议金句、发言人总结、可追溯关键决策和本地同源网关；`v0.3.0` 默认使用 `gpt-5.6-luna` 和 Responses API；`v0.2.0` 增加面试专用模式、岗位能力证据、面试追问和隐私裁剪后的分享稿。下一阶段重点包括说话人分离、逐字稿编辑、协作批注、团队权限和更多模型适配。路线和优先级通过 GitHub Issues 公开维护。
+`v0.4.5` 发布音频转文字 CLI 与 Agent Skill；`v0.4.4` 发布青绿色品牌 Logo；`v0.4.3` 支持无 Key 本地录音与持久保存浏览器 API 配置；`v0.4.0` 增加会议金句、发言人总结、可追溯关键决策和本地同源网关；`v0.3.0` 默认使用 `gpt-5.6-luna` 和 Responses API；`v0.2.0` 增加面试专用模式、岗位能力证据、面试追问和隐私裁剪后的分享稿。下一阶段重点包括说话人分离、逐字稿编辑、协作批注、团队权限和更多模型适配。路线和优先级通过 GitHub Issues 公开维护。
 
 ## 开源协议
 

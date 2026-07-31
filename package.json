@@ -1,18 +1,35 @@
 {
   "name": "yanlan-ai",
-  "version": "0.4.4",
-  "private": true,
+  "version": "0.4.5",
   "type": "module",
-  "description": "Yanlan: an open-source, local-first, dual-model AI meeting workspace.",
+  "description": "Yanlan: an open-source AI meeting workspace, MiMo transcription CLI, and Agent Skill.",
+  "license": "MIT",
+  "homepage": "https://onefly.top/yanlan-ai/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ranxi2001/yanlan-ai.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ranxi2001/yanlan-ai/issues"
+  },
+  "keywords": ["audio", "transcription", "asr", "mimo", "agent-skill", "meeting"],
+  "bin": {
+    "yanlan": "./bin/yanlan.mjs"
+  },
+  "files": ["bin/", "src/api.js", "src/cli.js", "skills/yanlan-transcribe/", "LICENSE", "README.md"],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "start": "vite --host 127.0.0.1 --port 4173",
     "dev": "vite --host 127.0.0.1 --port 4173",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "local": "npm run build && node server/local.mjs",
+    "cli": "node bin/yanlan.mjs",
     "test": "node --test test/*.test.mjs",
     "test:browser": "node scripts/browser-test.mjs",
-    "check": "node --check src/app.js && node --check src/api.js && node --check src/storage.js && node --check server/local.mjs && npm test && npm run build"
+    "check": "node --check src/app.js && node --check src/api.js && node --check src/cli.js && node --check bin/yanlan.mjs && node --check src/storage.js && node --check server/local.mjs && npm test && npm run build"
   },
   "dependencies": {
     "lucide": "^0.468.0"

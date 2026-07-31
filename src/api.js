@@ -42,7 +42,7 @@ async function apiFetch(url, options, config = DEFAULT_CONFIG) {
   } catch (error) {
     if (error instanceof TypeError) {
       if (config.transportMode === "relay") throw new Error("本地同源网关不可用，请使用 npm run local 启动言澜");
-      throw new Error("浏览器无法访问 API，请检查 Base URL、网络或服务端 CORS；也可用 npm run local 切换本地网关");
+      throw new Error("无法访问 API，请检查 Base URL 与网络连接；浏览器直连时还需检查服务端 CORS");
     }
     throw error;
   }

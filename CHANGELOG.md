@@ -2,6 +2,13 @@
 
 本项目遵循语义化版本号。
 
+## 0.4.5 - 2026-07-31
+
+- 发布零新增运行时依赖的 `yanlan transcribe` CLI，支持常见音频文件转为纯文本、Markdown 或 JSON
+- CLI 默认使用 MiMo-V2.5-ASR，支持语言、Base URL、模型、协议、请求路径和超时配置
+- 发布 `yanlan-transcribe` Agent Skill，支持通过标准 Agent Skills 客户端安装和调用
+- 增加 CLI 参数、输出、安全失败和 MiMo 请求协议测试
+
 ## 0.4.4 - 2026-07-31
 
 - 发布言澜全新青绿色品牌 Logo，融合声纹、字母 Y 与水波涟漪

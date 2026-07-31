@@ -1,0 +1,4 @@
+interface:
+  display_name: "Yanlan Transcribe"
+  short_description: "Transcribe local audio files with MiMo ASR"
+  default_prompt: "Use $yanlan-transcribe to transcribe this local audio file and save a plain-text transcript beside it."
