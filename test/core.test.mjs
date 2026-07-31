@@ -8,6 +8,7 @@ import {
   joinApiUrl,
   parseTranscriptionResponse,
   publicMeeting,
+  requestUrlForConfig,
   summarizeTranscript,
   toMarkdown,
   toVtt,
@@ -47,6 +48,15 @@ test("new installs default to GPT-5.6 Luna over Responses", () => {
   assert.equal(DEFAULT_CONFIG.chatModel, "gpt-5.6-luna");
   assert.equal(DEFAULT_CONFIG.chatProtocol, "responses");
   assert.equal(DEFAULT_CONFIG.chatPath, "responses");
+  assert.equal(DEFAULT_CONFIG.transportMode, "direct");
+});
+
+test("local relay keeps arbitrary provider URLs in the same-origin request", () => {
+  assert.equal(requestUrlForConfig("https://provider.example/v1/responses", config), "https://provider.example/v1/responses");
+  assert.equal(
+    requestUrlForConfig("https://provider.example/v1/responses", { ...config, transportMode: "relay", relayPath: "/api/relay" }, "http://127.0.0.1:4173/"),
+    "http://127.0.0.1:4173/api/relay?url=https%3A%2F%2Fprovider.example%2Fv1%2Fresponses",
+  );
 });
 
 test("normalizes verbose and plain transcription responses", () => {
@@ -81,10 +91,29 @@ test("formats transcript exports with timestamps", () => {
   assert.match(toVtt(meeting), /00:00:03\.000 --> 00:00:08\.000/);
 });
 
-test("offline share HTML includes public content but no secrets", () => {
-  const html = buildShareHtml({ ...meeting, rawSegments: meeting.segments, qa: [{ role: "user", content: "secret question" }] });
+test("offline share HTML includes meeting insights but no secrets", () => {
+  const html = buildShareHtml({
+    ...meeting,
+    summary: "确定交付计划",
+    highlights: [{ start_seconds: 3, speaker: "发言人 2", quote: "由小明明天完成", reason: "明确承诺" }],
+    speaker_summaries: [{ speaker: "发言人 2", summary: "确认交付", key_points: ["明天完成"] }],
+    decision_records: [{ decision: "明天交付", start_seconds: 3, evidence: "由小明明天完成" }],
+    rawSegments: meeting.segments,
+    qa: [{ role: "user", content: "secret question" }],
+  });
   assert.match(html, /周会/);
+  assert.match(html, /会议金句|发言人总结|关键决策/);
   assert.doesNotMatch(html, /secret question|asr-secret|rawSegments/);
+});
+
+test("public insights omit incomplete timestamp evidence", () => {
+  const data = publicMeeting({
+    ...meeting,
+    highlights: [{ start_seconds: null, speaker: "发言人 1", quote: "缺少时间", reason: "" }],
+    decision_records: [{ decision: "缺少证据", start_seconds: null, evidence: "" }],
+  });
+  assert.deepEqual(data.highlights, []);
+  assert.deepEqual(data.decision_records, []);
 });
 
 test("GPT correction preserves timestamps while applying corrected text", async () => {
@@ -109,11 +138,14 @@ test("GPT correction preserves timestamps while applying corrected text", async 
 
 test("GPT summary parses structured JSON", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: "```json\n{\"title\":\"OneFly 周会\",\"summary\":\"确定了交付计划\",\"keywords\":[\"OneFly\"],\"decisions\":[\"明天交付\"],\"action_items\":[{\"task\":\"完成交付\",\"owner\":\"小明\",\"due\":\"明天\"}]}\n```" } }] }), { headers: { "content-type": "application/json" } });
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: "```json\n{\"title\":\"OneFly 周会\",\"summary\":\"确定了交付计划\",\"keywords\":[\"OneFly\"],\"highlights\":[{\"start_seconds\":3,\"speaker\":\"发言人 2\",\"quote\":\"由小明明天完成\",\"reason\":\"明确承诺\"}],\"speaker_summaries\":[{\"speaker\":\"发言人 2\",\"summary\":\"确认交付\",\"key_points\":[\"明天完成\"]}],\"decisions\":[\"明天交付\"],\"decision_records\":[{\"decision\":\"明天交付\",\"start_seconds\":3,\"evidence\":\"由小明明天完成\"}],\"action_items\":[{\"task\":\"完成交付\",\"owner\":\"小明\",\"due\":\"明天\"}]}\n```" } }] }), { headers: { "content-type": "application/json" } });
   try {
     const result = await summarizeTranscript({ config, meeting });
     assert.equal(result.title, "OneFly 周会");
     assert.equal(result.action_items[0].owner, "小明");
+    assert.equal(result.highlights[0].start_seconds, 3);
+    assert.equal(result.speaker_summaries[0].key_points[0], "明天完成");
+    assert.equal(result.decision_records[0].evidence, "由小明明天完成");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -187,7 +219,7 @@ test("interview mode generates evidence-based report and privacy-safe exports", 
 
     const completed = { ...interview, ...result, qa: [{ role: "user", content: "内部问题" }], rawSegments: interview.segments };
     const publicData = publicMeeting(completed);
-    assert.equal(publicData.schema, 2);
+    assert.equal(publicData.schema, 3);
     assert.equal(publicData.interviewContext.role, "平台工程师");
     assert.equal(publicData.interviewReport.recommendation, "follow_up");
     assert.doesNotMatch(JSON.stringify(publicData), /机密平台|Alice|内部问题|rawSegments/);

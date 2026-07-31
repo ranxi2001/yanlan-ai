@@ -62,7 +62,16 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
       },
     });
   } else if (system.includes("会议纪要助手")) {
-    content = JSON.stringify({ title: "OneFly 项目周会", summary: "会议明确了 OneFly 项目的近期交付安排。", keywords: ["OneFly", "交付"], decisions: ["项目明天完成"], action_items: [{ task: "完成 OneFly 项目", owner: "小明", due: "明天" }] });
+    content = JSON.stringify({
+      title: "OneFly 项目周会",
+      summary: "会议明确了 OneFly 项目的近期交付安排。",
+      keywords: ["OneFly", "交付"],
+      highlights: [{ start_seconds: 0, speaker: "小明", quote: "由小明明天完成", reason: "明确了负责人和交付时间" }],
+      speaker_summaries: [{ speaker: "小明", summary: "确认了 OneFly 项目的交付安排。", key_points: ["明天完成项目"] }],
+      decisions: ["项目明天完成"],
+      decision_records: [{ decision: "OneFly 项目明天完成", start_seconds: 0, evidence: "由小明明天完成" }],
+      action_items: [{ task: "完成 OneFly 项目", owner: "小明", due: "明天" }],
+    });
   } else {
     content = "小明负责在明天完成 OneFly 项目（00:00）。";
   }
@@ -79,6 +88,8 @@ try {
   assert.equal(await page.locator("#chatModelInput").inputValue(), "gpt-5.6-luna");
   assert.equal(await page.locator("#chatProtocolInput").inputValue(), "responses");
   assert.equal(await page.locator("#chatPathInput").inputValue(), "responses");
+  assert.equal(await page.locator("#transportModeInput").inputValue(), "direct");
+  assert.equal(await page.locator("#relayPathInput").isDisabled(), true);
   await page.screenshot({ path: new URL("../artifacts/responses-settings-desktop.png", import.meta.url).pathname, fullPage: true });
   assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);
   await page.locator("#contextHintInput").fill("项目名 OneFly；负责人小明");
@@ -93,6 +104,16 @@ try {
   await page.getByText("今天讨论 OneFly 项目，由小明明天完成。", { exact: true }).waitFor();
   await page.locator("#recordingPlayer:not(.hidden)").waitFor();
   assert.equal(await page.locator(".correction-note").textContent().then((text) => text.trim()), "已统一 1 个术语");
+
+  await page.locator('[data-insight="highlights"]').click();
+  await page.locator(".highlight-item[data-seek='0']", { hasText: "由小明明天完成" }).waitFor();
+  await page.screenshot({ path: new URL("../artifacts/meeting-highlights-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.locator('[data-insight="speakers"]').click();
+  await page.getByText("确认了 OneFly 项目的交付安排。", { exact: true }).waitFor();
+  await page.locator('[data-insight="actions"]').click();
+  await page.getByText("OneFly 项目明天完成", { exact: true }).waitFor();
+  await page.getByText("完成 OneFly 项目", { exact: true }).waitFor();
+  await page.screenshot({ path: new URL("../artifacts/meeting-decisions-desktop.png", import.meta.url).pathname, fullPage: true });
 
   await page.locator('[data-insight="qa"]').click();
   await page.locator("#questionInput").fill("谁负责项目，什么时候完成？");
@@ -114,6 +135,18 @@ try {
   await page.waitForFunction(() => document.querySelector("#shareUrlInput").value.startsWith("http"));
   const shareUrl = await page.locator("#shareUrlInput").inputValue();
   assert.match(shareUrl, /#share=g\./);
+  const meetingPublic = await page.evaluate(async (url) => {
+    const encoded = new URLSearchParams(new URL(url).hash.slice(1)).get("share");
+    const prefix = encoded.slice(0, 2);
+    const value = encoded.slice(2).replace(/-/g, "+").replace(/_/g, "/");
+    const bytes = Uint8Array.from(atob(value.padEnd(Math.ceil(value.length / 4) * 4, "=")), (char) => char.charCodeAt(0));
+    const output = prefix === "g." ? new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer()) : bytes;
+    return JSON.parse(new TextDecoder().decode(output));
+  }, shareUrl);
+  assert.equal(meetingPublic.schema, 3);
+  assert.equal(meetingPublic.highlights[0].quote, "由小明明天完成");
+  assert.equal(meetingPublic.speaker_summaries[0].speaker, "小明");
+  assert.equal(meetingPublic.decision_records[0].start_seconds, 0);
   await page.keyboard.press("Escape");
 
   await page.locator('[data-insight="summary"]').click();
@@ -161,6 +194,8 @@ try {
   assert.equal(await page.locator('[data-insight="summary"]').textContent(), "评估");
   assert.equal(await page.locator('[data-insight="actions"]').textContent(), "证据");
   assert.equal(await page.locator('[data-insight="qa"]').textContent(), "追问");
+  assert.equal(await page.locator('[data-insight="highlights"]').isHidden(), true);
+  assert.equal(await page.locator('[data-insight="speakers"]').isHidden(), true);
   await page.locator(".interview-disclaimer").waitFor();
 
   await page.locator('[data-insight="actions"]').click();

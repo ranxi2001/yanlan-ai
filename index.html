@@ -106,8 +106,10 @@
           <aside class="insights-pane" id="insightsPane">
             <div class="insights-header">
               <div class="segmented-control" role="tablist">
-                <button class="segment active" data-insight="summary" role="tab">摘要</button>
-                <button class="segment" data-insight="actions" role="tab">行动项</button>
+                <button class="segment active" data-insight="summary" role="tab">概览</button>
+                <button class="segment" data-insight="highlights" role="tab">金句</button>
+                <button class="segment" data-insight="speakers" role="tab">发言人</button>
+                <button class="segment" data-insight="actions" role="tab">决策</button>
                 <button class="segment" data-insight="qa" role="tab">提问</button>
               </div>
               <button class="icon-button mobile-only" id="insightsClose" title="关闭" aria-label="关闭智能纪要"><i data-lucide="x"></i></button>
@@ -120,7 +122,15 @@
 
     <dialog class="dialog" id="settingsDialog">
       <form method="dialog" id="settingsForm">
-        <header><div><h2>MiMo API 设置</h2><p>Base URL 按官方控制台原样填写，页面不会自动增删 <code>/v1</code>。</p></div><button class="icon-button" value="cancel" aria-label="关闭"><i data-lucide="x"></i></button></header>
+        <header><div><h2>模型与网络设置</h2><p>Base URL 按服务商控制台原样填写，页面不会自动增删 <code>/v1</code>。</p></div><button class="icon-button" value="cancel" aria-label="关闭"><i data-lucide="x"></i></button></header>
+        <section class="settings-section">
+          <h3><i data-lucide="network"></i>请求方式</h3>
+          <div class="settings-fields">
+            <label class="field"><span>传输模式</span><select id="transportModeInput"><option value="direct" selected>浏览器直连</option><option value="relay">本地同源网关</option></select></label>
+            <label class="field"><span>网关路径</span><input id="relayPathInput" value="/api/relay" /></label>
+          </div>
+          <p class="transport-help" id="transportHelp">直连要求模型服务允许当前网页域名发起 CORS 请求。</p>
+        </section>
         <section class="settings-section">
           <h3><i data-lucide="audio-lines"></i>MiMo 语音转写</h3>
           <div class="settings-fields">
@@ -143,7 +153,7 @@
             <label class="field field-wide"><span>会议背景 / 专有名词</span><textarea id="contextHintInput" rows="3" placeholder="例如：项目名 OneFly；参会人小明、Alice；术语 Karmada、OpenSandbox"></textarea></label>
           </div>
         </section>
-        <p class="settings-note"><i data-lucide="shield-check"></i><span>两个 Key 都使用 sessionStorage，关闭标签页即清除。音频只发送给 MiMo ASR；原始逐字稿会发送给 GPT 校正专有名词、生成总结和回答问题。</span></p>
+        <p class="settings-note"><i data-lucide="shield-check"></i><span>两个 Key 都使用 sessionStorage，关闭标签页即清除。本地网关仅随 <code>npm run local</code> 在 127.0.0.1 启动，不记录 Key、音频或逐字稿。</span></p>
         <footer><button class="secondary-button" value="cancel">取消</button><button class="primary-button" id="saveSettingsButton" value="default">保存设置</button></footer>
       </form>
     </dialog>

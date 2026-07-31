@@ -1,6 +1,6 @@
 {
   "name": "yanlan-ai",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Yanlan: an open-source, local-first, dual-model AI meeting workspace.",
@@ -9,9 +9,10 @@
     "dev": "vite --host 127.0.0.1 --port 4173",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
-    "test": "node --test test/core.test.mjs",
+    "local": "npm run build && node server/local.mjs",
+    "test": "node --test test/*.test.mjs",
     "test:browser": "node scripts/browser-test.mjs",
-    "check": "node --check src/app.js && node --check src/api.js && node --check src/storage.js && npm test && npm run build"
+    "check": "node --check src/app.js && node --check src/api.js && node --check src/storage.js && node --check server/local.mjs && npm test && npm run build"
   },
   "dependencies": {
     "lucide": "^0.468.0"

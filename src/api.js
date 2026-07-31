@@ -9,6 +9,8 @@ export const DEFAULT_CONFIG = Object.freeze({
   chatModel: "gpt-5.6-luna",
   chatProtocol: "responses",
   chatPath: "responses",
+  transportMode: "direct",
+  relayPath: "/api/relay",
   contextHint: "",
   chunkSeconds: 10,
 });
@@ -32,13 +34,15 @@ function authHeaders(apiKey, contentType = "application/json") {
   return headers;
 }
 
-async function apiFetch(url, options) {
+async function apiFetch(url, options, config = DEFAULT_CONFIG) {
+  const requestUrl = requestUrlForConfig(url, config);
   let response;
   try {
-    response = await fetch(url, options);
+    response = await fetch(requestUrl, options);
   } catch (error) {
     if (error instanceof TypeError) {
-      throw new Error("浏览器无法访问 API，请检查 Base URL、网络连接以及服务端 CORS 设置");
+      if (config.transportMode === "relay") throw new Error("本地同源网关不可用，请使用 npm run local 启动言澜");
+      throw new Error("浏览器无法访问 API，请检查 Base URL、网络或服务端 CORS；也可用 npm run local 切换本地网关");
     }
     throw error;
   }
@@ -48,6 +52,13 @@ async function apiFetch(url, options) {
     throw new Error(`${message}（HTTP ${response.status}）`);
   }
   return body;
+}
+
+export function requestUrlForConfig(targetUrl, config = DEFAULT_CONFIG, pageUrl = globalThis.location?.href) {
+  if (config.transportMode !== "relay") return targetUrl;
+  const relay = new URL(config.relayPath || DEFAULT_CONFIG.relayPath, pageUrl || "http://127.0.0.1/");
+  relay.searchParams.set("url", targetUrl);
+  return relay.toString();
 }
 
 export async function transcribeAudio({ config, blob, fileName = "audio.wav", language = "auto", signal }) {
@@ -63,7 +74,7 @@ export async function transcribeAudio({ config, blob, fileName = "audio.wav", la
         asr_options: { language: language || "auto" },
       }),
       signal,
-    });
+    }, config);
     return parseTranscriptionResponse(body);
   }
   const form = new FormData();
@@ -76,7 +87,7 @@ export async function transcribeAudio({ config, blob, fileName = "audio.wav", la
     headers: authHeaders(config.asrApiKey, null),
     body: form,
     signal,
-  });
+  }, config);
   return parseTranscriptionResponse(body);
 }
 
@@ -111,14 +122,25 @@ export async function summarizeTranscript({ config, meeting, signal }) {
   const transcript = transcriptForPrompt(meeting);
   if (!transcript) return emptySummary();
   if (meeting.mode === "interview") return summarizeInterviewTranscript({ config, meeting, transcript, signal });
-  const system = `你是严谨的会议纪要助手。请仅依据逐字稿输出 JSON，不要使用 Markdown 代码块。字段必须为：title（简短标题）、summary（完整摘要）、keywords（字符串数组）、decisions（字符串数组）、action_items（对象数组，每项含 task、owner、due；未知填空字符串）。不得虚构逐字稿里没有的信息。`;
+  const system = `你是严谨的会议纪要助手。请仅依据带时间和发言人的逐字稿输出纯 JSON，不要使用 Markdown 代码块。
+字段必须为：
+1. title（简短标题）、summary（完整摘要）、keywords（字符串数组）；
+2. highlights（会议金句数组，每项含 start_seconds、speaker、quote、reason）；
+3. speaker_summaries（发言人总结数组，每项含 speaker、summary、key_points 字符串数组）；
+4. decisions（关键决策字符串数组）；
+5. decision_records（关键决策证据数组，每项含 decision、start_seconds、evidence）；
+6. action_items（行动项数组，每项含 task、owner、due，未知填空字符串）。
+金句必须是逐字稿中的简短原话，speaker 和 start_seconds 必须对应原片段。关键决策的 evidence 必须是逐字稿中的简短原话并使用对应 start_seconds。只总结有实际发言的说话人。不得虚构逐字稿里没有的信息、时间或原话。`;
   const content = await chatCompletion({ config, system, user: `会议逐字稿：\n${transcript}`, signal });
   const parsed = parseJsonObject(content);
   return {
     title: stringOr(parsed.title, ""),
     summary: stringOr(parsed.summary, content),
     keywords: stringArray(parsed.keywords),
+    highlights: normalizeHighlights(parsed.highlights),
+    speaker_summaries: normalizeSpeakerSummaries(parsed.speaker_summaries),
     decisions: stringArray(parsed.decisions),
+    decision_records: normalizeDecisionRecords(parsed.decision_records),
     action_items: Array.isArray(parsed.action_items) ? parsed.action_items.map((item) => ({
       task: stringOr(item?.task, ""), owner: stringOr(item?.owner, ""), due: stringOr(item?.due, ""),
     })).filter((item) => item.task) : [],
@@ -142,7 +164,10 @@ async function summarizeInterviewTranscript({ config, meeting, transcript, signa
     title: stringOr(parsed.title, ""),
     summary: stringOr(parsed.summary, report.overview || content),
     keywords: stringArray(parsed.keywords),
+    highlights: [],
+    speaker_summaries: [],
     decisions: [],
+    decision_records: [],
     action_items: [],
     interviewReport: report,
   };
@@ -213,7 +238,7 @@ async function chatCompletion({ config, system, user, signal }) {
     headers: authHeaders(config.chatApiKey),
     body: JSON.stringify(requestBody),
     signal,
-  });
+  }, config);
   const content = responseText(body);
   if (!content) throw new Error("文本模型没有返回内容");
   return content;
@@ -273,8 +298,39 @@ function stringArray(value) {
   return Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : [];
 }
 
+function normalizeHighlights(value) {
+  return Array.isArray(value) ? value.map((item) => ({
+    start_seconds: evidenceTime(item?.start_seconds),
+    speaker: stringOr(item?.speaker, "发言人"),
+    quote: stringOr(item?.quote, ""),
+    reason: stringOr(item?.reason, ""),
+  })).filter((item) => item.quote && item.start_seconds != null).slice(0, 20) : [];
+}
+
+function normalizeSpeakerSummaries(value) {
+  return Array.isArray(value) ? value.map((item) => ({
+    speaker: stringOr(item?.speaker, "发言人"),
+    summary: stringOr(item?.summary, ""),
+    key_points: stringArray(item?.key_points).slice(0, 12),
+  })).filter((item) => item.summary || item.key_points.length).slice(0, 30) : [];
+}
+
+function normalizeDecisionRecords(value) {
+  return Array.isArray(value) ? value.map((item) => ({
+    decision: stringOr(item?.decision, ""),
+    start_seconds: evidenceTime(item?.start_seconds),
+    evidence: stringOr(item?.evidence, ""),
+  })).filter((item) => item.decision && item.evidence && item.start_seconds != null).slice(0, 30) : [];
+}
+
+function evidenceTime(value) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
 function emptySummary() {
-  return { title: "", summary: "", keywords: [], decisions: [], action_items: [] };
+  return { title: "", summary: "", keywords: [], highlights: [], speaker_summaries: [], decisions: [], decision_records: [], action_items: [] };
 }
 
 function interviewContextForPrompt(meeting) {
@@ -335,7 +391,38 @@ export function formatTimestamp(seconds, vtt = false) {
 export function toMarkdown(meeting) {
   if (meeting.mode === "interview") return toInterviewMarkdown(meeting);
   const actions = meeting.action_items?.length ? meeting.action_items.map((item) => `- [ ] ${item.task}${item.owner ? ` · ${item.owner}` : ""}${item.due ? ` · ${item.due}` : ""}`).join("\n") : "无";
-  return [`# ${meeting.title}`, "", `- 创建时间：${new Date(meeting.createdAt).toLocaleString("zh-CN")}`, `- 时长：${formatTimestamp(meeting.duration)}`, "", "## AI 摘要", "", meeting.summary || "无", "", "## 会议决策", "", ...(meeting.decisions?.length ? meeting.decisions.map((item) => `- ${item}`) : ["无"]), "", "## 行动项", "", actions, "", "## 逐字稿", "", ...(meeting.segments || []).flatMap((segment) => [`### ${formatTimestamp(segment.start_seconds)} · ${segment.speaker || "发言人"}`, "", segment.text, ""])].join("\n").trimEnd() + "\n";
+  const highlights = meeting.highlights?.length ? meeting.highlights.flatMap((item) => [
+    `### ${formatTimestamp(item.start_seconds)} · ${item.speaker || "发言人"}`,
+    "",
+    `> ${item.quote}`,
+    "",
+    item.reason || "",
+    "",
+  ]) : ["无", ""];
+  const speakers = meeting.speaker_summaries?.length ? meeting.speaker_summaries.flatMap((item) => [
+    `### ${item.speaker || "发言人"}`,
+    "",
+    item.summary || "无",
+    "",
+    ...(item.key_points?.length ? item.key_points.map((point) => `- ${point}`) : []),
+    "",
+  ]) : ["无", ""];
+  const decisions = meeting.decision_records?.length ? meeting.decision_records.map((item) => {
+    const time = item.start_seconds == null ? "" : ` [${formatTimestamp(item.start_seconds)}]`;
+    return `-${time} ${item.decision}${item.evidence ? ` · “${item.evidence}”` : ""}`;
+  }) : (meeting.decisions?.length ? meeting.decisions.map((item) => `- ${item}`) : ["无"]);
+  return [
+    `# ${meeting.title}`, "",
+    `- 创建时间：${new Date(meeting.createdAt).toLocaleString("zh-CN")}`,
+    `- 时长：${formatTimestamp(meeting.duration)}`, "",
+    "## AI 摘要", "", meeting.summary || "无", "",
+    "## 关键词", "", ...(meeting.keywords?.length ? meeting.keywords.map((item) => `- ${item}`) : ["无"]), "",
+    "## 会议金句", "", ...highlights,
+    "## 发言人总结", "", ...speakers,
+    "## 关键决策", "", ...decisions, "",
+    "## 行动项", "", actions, "",
+    "## 逐字稿", "", ...(meeting.segments || []).flatMap((segment) => [`### ${formatTimestamp(segment.start_seconds)} · ${segment.speaker || "发言人"}`, "", segment.text, ""]),
+  ].join("\n").trimEnd() + "\n";
 }
 
 function toInterviewMarkdown(meeting) {
@@ -383,9 +470,11 @@ export function toVtt(meeting) {
 
 export function publicMeeting(meeting) {
   const result = {
-    schema: 2, title: meeting.title, createdAt: meeting.createdAt, duration: meeting.duration,
+    schema: 3, title: meeting.title, createdAt: meeting.createdAt, duration: meeting.duration,
     language: meeting.language || "", summary: meeting.summary || "", keywords: meeting.keywords || [],
-    decisions: meeting.decisions || [], action_items: meeting.action_items || [], segments: meeting.segments || [],
+    highlights: normalizeHighlights(meeting.highlights), speaker_summaries: normalizeSpeakerSummaries(meeting.speaker_summaries),
+    decisions: meeting.decisions || [], decision_records: normalizeDecisionRecords(meeting.decision_records),
+    action_items: meeting.action_items || [], segments: meeting.segments || [],
   };
   if (meeting.mode === "interview") {
     result.mode = "interview";
@@ -402,7 +491,7 @@ export function publicMeeting(meeting) {
 
 export function buildShareHtml(meeting) {
   const payload = JSON.stringify(publicMeeting(meeting)).replace(/</g, "\\u003c");
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(meeting.title)} · 言澜</title><style>body{margin:0;color:#182230;background:#f7f8fa;font:14px/1.75 system-ui,-apple-system,"PingFang SC",sans-serif}main{width:min(820px,calc(100% - 32px));margin:auto;padding:40px 0 70px}header{padding-bottom:24px;border-bottom:1px solid #dfe3e8}h1{margin:0 0 6px;font-size:26px}h2{margin:28px 0 10px;font-size:17px}.meta,time{color:#667085;font-size:12px}.summary{margin:26px 0;padding-left:16px;border-left:3px solid #087e8b}.notice{padding:12px 14px;color:#7a2e0e;background:#fff5eb;border:1px solid #fed7aa;border-radius:7px}.result{display:flex;gap:16px;align-items:center;margin:16px 0}.pill{padding:3px 8px;border-radius:999px;background:#eef4ff;color:#1849a9;font-weight:650}.competency{padding:14px 0;border-bottom:1px solid #e4e7ec}.competency strong{margin-right:8px}.evidence{margin:6px 0;color:#475467}article{display:grid;grid-template-columns:62px 1fr;padding:18px 0;border-bottom:1px solid #e4e7ec}article p{margin:2px 0 0;overflow-wrap:anywhere}.speaker{font-weight:650}footer{margin-top:32px;color:#98a2b3;font-size:11px}@media(max-width:560px){main{padding-top:24px}article{grid-template-columns:1fr;gap:5px}.result{align-items:flex-start;flex-direction:column;gap:5px}}</style></head><body><main id="app"></main><script>const m=${payload};const e=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));const t=n=>{n=Math.max(0,Number(n)||0);const h=Math.floor(n/3600),x=Math.floor(n%3600/60),s=Math.floor(n%60);return(h?String(h).padStart(2,"0")+":":"")+String(x).padStart(2,"0")+":"+String(s).padStart(2,"0")};const rl={advance:"建议推进",follow_up:"补充追问",hold:"暂不推进",insufficient:"证据不足"},cl={high:"高",medium:"中",low:"低"},gl={strong:"突出",adequate:"符合",mixed:"有待确认",weak:"不足",insufficient:"证据不足"};const interview=m.mode==="interview"&&m.interviewReport?'<section><p class="notice">AI 辅助评估仅供面试官复核，不用于自动录用决定；请忽略敏感个人属性并核对原始证据。</p><h2>辅助结论</h2><div class="result"><span class="pill">'+e(rl[m.interviewReport.recommendation]||"证据不足")+'</span><span>置信度 '+e(cl[m.interviewReport.confidence]||"低")+'</span></div><p>'+e(m.interviewReport.overview||m.summary||"证据不足")+'</p><h2>能力证据</h2>'+(m.interviewReport.competencies||[]).map(c=>'<div class="competency"><strong>'+e(c.name)+'</strong><span>'+e(gl[c.rating]||"证据不足")+'</span><div>'+e(c.assessment)+'</div>'+(c.evidence||[]).map(v=>'<div class="evidence">['+t(v.start_seconds)+'] “'+e(v.quote)+'”</div>').join("")+'</div>').join("")+'</section>':(m.summary?'<section class="summary"><strong>AI 摘要</strong><div>'+e(m.summary)+'</div></section>':'');document.querySelector("#app").innerHTML='<header><h1>'+e(m.title)+'</h1><div class="meta">'+e(new Date(m.createdAt).toLocaleString("zh-CN"))+' · '+t(m.duration)+'</div></header>'+interview+'<section><h2>逐字稿</h2>'+m.segments.map(s=>'<article><time>'+t(s.start_seconds)+'</time><div><div class="speaker">'+e(s.speaker||"发言人")+'</div><p>'+e(s.text)+'</p></div></article>').join("")+'</section><footer>由言澜 Yanlan 生成</footer>';<\/script></body></html>`;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(meeting.title)} · 言澜</title><style>body{margin:0;color:#182230;background:#f7f8fa;font:14px/1.75 system-ui,-apple-system,"PingFang SC",sans-serif}main{width:min(820px,calc(100% - 32px));margin:auto;padding:40px 0 70px}header{padding-bottom:24px;border-bottom:1px solid #dfe3e8}h1{margin:0 0 6px;font-size:26px}h2{margin:28px 0 10px;font-size:17px}h3{margin:16px 0 4px;font-size:14px}.meta,time{color:#667085;font-size:12px}.summary{margin:26px 0;padding-left:16px;border-left:3px solid #087e8b}.notice{padding:12px 14px;color:#7a2e0e;background:#fff5eb;border:1px solid #fed7aa;border-radius:7px}.result{display:flex;gap:16px;align-items:center;margin:16px 0}.pill{padding:3px 8px;border-radius:999px;background:#eef4ff;color:#1849a9;font-weight:650}.competency,.insight-row{padding:14px 0;border-bottom:1px solid #e4e7ec}.competency strong{margin-right:8px}.evidence,.reason{margin:6px 0;color:#475467}.quote{margin:4px 0;font-size:16px}.points{margin:6px 0;padding-left:20px}.decision-time{margin-right:8px;color:#2864dc}article{display:grid;grid-template-columns:62px 1fr;padding:18px 0;border-bottom:1px solid #e4e7ec}article p{margin:2px 0 0;overflow-wrap:anywhere}.speaker{font-weight:650}footer{margin-top:32px;color:#98a2b3;font-size:11px}@media(max-width:560px){main{padding-top:24px}article{grid-template-columns:1fr;gap:5px}.result{align-items:flex-start;flex-direction:column;gap:5px}}</style></head><body><main id="app"></main><script>const m=${payload};const e=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));const t=n=>{n=Math.max(0,Number(n)||0);const h=Math.floor(n/3600),x=Math.floor(n%3600/60),s=Math.floor(n%60);return(h?String(h).padStart(2,"0")+":":"")+String(x).padStart(2,"0")+":"+String(s).padStart(2,"0")};const rl={advance:"建议推进",follow_up:"补充追问",hold:"暂不推进",insufficient:"证据不足"},cl={high:"高",medium:"中",low:"低"},gl={strong:"突出",adequate:"符合",mixed:"有待确认",weak:"不足",insufficient:"证据不足"};const interview=m.mode==="interview"&&m.interviewReport?'<section><p class="notice">AI 辅助评估仅供面试官复核，不用于自动录用决定；请忽略敏感个人属性并核对原始证据。</p><h2>辅助结论</h2><div class="result"><span class="pill">'+e(rl[m.interviewReport.recommendation]||"证据不足")+'</span><span>置信度 '+e(cl[m.interviewReport.confidence]||"低")+'</span></div><p>'+e(m.interviewReport.overview||m.summary||"证据不足")+'</p><h2>能力证据</h2>'+(m.interviewReport.competencies||[]).map(c=>'<div class="competency"><strong>'+e(c.name)+'</strong><span>'+e(gl[c.rating]||"证据不足")+'</span><div>'+e(c.assessment)+'</div>'+(c.evidence||[]).map(v=>'<div class="evidence">['+t(v.start_seconds)+'] “'+e(v.quote)+'”</div>').join("")+'</div>').join("")+'</section>':'';const generic=m.mode!=="interview"?'<section class="summary"><strong>AI 摘要</strong><div>'+e(m.summary||"无")+'</div></section>'+((m.highlights||[]).length?'<section><h2>会议金句</h2>'+m.highlights.map(v=>'<div class="insight-row"><time>'+t(v.start_seconds)+'</time> · <strong>'+e(v.speaker)+'</strong><p class="quote">“'+e(v.quote)+'”</p>'+(v.reason?'<p class="reason">'+e(v.reason)+'</p>':'')+'</div>').join("")+'</section>':'')+((m.speaker_summaries||[]).length?'<section><h2>发言人总结</h2>'+m.speaker_summaries.map(v=>'<div class="insight-row"><h3>'+e(v.speaker)+'</h3><div>'+e(v.summary)+'</div>'+((v.key_points||[]).length?'<ul class="points">'+v.key_points.map(p=>'<li>'+e(p)+'</li>').join("")+'</ul>':'')+'</div>').join("")+'</section>':'')+(((m.decision_records||[]).length||(m.decisions||[]).length)?'<section><h2>关键决策</h2>'+((m.decision_records||[]).length?m.decision_records.map(v=>'<div class="insight-row">'+(v.start_seconds==null?'':'<span class="decision-time">['+t(v.start_seconds)+']</span>')+'<strong>'+e(v.decision)+'</strong>'+(v.evidence?'<p class="evidence">“'+e(v.evidence)+'”</p>':'')+'</div>').join(""):(m.decisions||[]).map(v=>'<div class="insight-row">'+e(v)+'</div>').join(""))+'</section>':''):'';document.querySelector("#app").innerHTML='<header><h1>'+e(m.title)+'</h1><div class="meta">'+e(new Date(m.createdAt).toLocaleString("zh-CN"))+' · '+t(m.duration)+'</div></header>'+interview+generic+'<section><h2>逐字稿</h2>'+m.segments.map(s=>'<article><time>'+t(s.start_seconds)+'</time><div><div class="speaker">'+e(s.speaker||"发言人")+'</div><p>'+e(s.text)+'</p></div></article>').join("")+'</section><footer>由言澜 Yanlan 生成</footer>';<\/script></body></html>`;
 }
 
 function recommendationLabel(value) {

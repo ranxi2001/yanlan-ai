@@ -41,7 +41,8 @@ const elements = {
   settingsForm: $("#settingsForm"), asrBaseUrlInput: $("#asrBaseUrlInput"), asrApiKeyInput: $("#asrApiKeyInput"),
   asrModelInput: $("#asrModelInput"), asrProtocolInput: $("#asrProtocolInput"), asrPathInput: $("#asrPathInput"), chunkSecondsInput: $("#chunkSecondsInput"),
   chatBaseUrlInput: $("#chatBaseUrlInput"), chatApiKeyInput: $("#chatApiKeyInput"), chatModelInput: $("#chatModelInput"),
-  chatProtocolInput: $("#chatProtocolInput"), chatPathInput: $("#chatPathInput"), contextHintInput: $("#contextHintInput"), shareDialog: $("#shareDialog"),
+  chatProtocolInput: $("#chatProtocolInput"), chatPathInput: $("#chatPathInput"), contextHintInput: $("#contextHintInput"),
+  transportModeInput: $("#transportModeInput"), relayPathInput: $("#relayPathInput"), transportHelp: $("#transportHelp"), shareDialog: $("#shareDialog"),
   shareUrlInput: $("#shareUrlInput"), shareHint: $("#shareHint"), copyShareButton: $("#copyShareButton"),
   copySharePrimaryButton: $("#copySharePrimaryButton"), downloadShareButton: $("#downloadShareButton"), toast: $("#toast"),
   interviewDialog: $("#interviewDialog"), interviewForm: $("#interviewForm"), interviewDialogClose: $("#interviewDialogClose"),
@@ -115,6 +116,7 @@ function bindEvents() {
   elements.chatProtocolInput.addEventListener("change", () => {
     elements.chatPathInput.value = elements.chatProtocolInput.value === "responses" ? "responses" : "chat/completions";
   });
+  elements.transportModeInput.addEventListener("change", renderTransportHelp);
   document.querySelectorAll(".toggle-key-button").forEach((button) => button.addEventListener("click", toggleSecret));
   elements.searchInput.addEventListener("input", (event) => { state.query = event.target.value.trim().toLocaleLowerCase(); renderTranscript(activeMeeting()); });
   elements.meetingTitle.addEventListener("input", updateMeetingTitle);
@@ -228,6 +230,8 @@ function renderInsights(meeting) {
   }
   if (meeting.mode === "interview" && state.insight === "actions") renderInterviewEvidence(meeting);
   else if (meeting.mode === "interview" && state.insight === "summary") renderInterviewAssessment(meeting);
+  else if (state.insight === "highlights") renderHighlights(meeting);
+  else if (state.insight === "speakers") renderSpeakerSummaries(meeting);
   else if (state.insight === "actions") renderActions(meeting);
   else if (state.insight === "qa") renderQa(meeting);
   else renderSummary(meeting);
@@ -269,17 +273,35 @@ function renderSummary(meeting) {
     return;
   }
   const keywords = meeting.keywords?.length ? `<div class="keyword-list">${meeting.keywords.map((item) => `<span class="keyword">${escapeHtml(item)}</span>`).join("")}</div>` : '<p class="summary-text">无关键词</p>';
-  const decisions = meeting.decisions?.length ? `<ul class="decision-list">${meeting.decisions.map((item) => `<li class="decision-item">${escapeHtml(item)}</li>`).join("")}</ul>` : '<p class="summary-text">没有识别到明确决策</p>';
   const correction = meeting.correctionError ? `<p class="inline-warning">术语校正未完成：${escapeHtml(meeting.correctionError)}</p>` : (meeting.terminology?.length ? `<p class="correction-note"><i data-lucide="spell-check-2"></i>已统一 ${meeting.terminology.length} 个术语</p>` : "");
-  elements.insightContent.innerHTML = `${correction}<section class="insight-section"><h2 class="insight-label"><i data-lucide="align-left"></i><span>内容摘要</span></h2><p class="summary-text">${escapeHtml(meeting.summary || meeting.summaryError || "暂无摘要")}</p></section><section class="insight-section"><h2 class="insight-label"><i data-lucide="tags"></i><span>关键词</span></h2>${keywords}</section><section class="insight-section"><h2 class="insight-label"><i data-lucide="circle-check-big"></i><span>会议决策</span></h2>${decisions}</section>`;
+  elements.insightContent.innerHTML = `${correction}<section class="insight-section"><h2 class="insight-label"><i data-lucide="align-left"></i><span>内容摘要</span></h2><p class="summary-text">${escapeHtml(meeting.summary || meeting.summaryError || "暂无摘要")}</p></section><section class="insight-section"><h2 class="insight-label"><i data-lucide="tags"></i><span>关键词</span></h2>${keywords}</section>`;
+}
+
+function renderHighlights(meeting) {
+  if (!meeting.highlights?.length) {
+    elements.insightContent.innerHTML = '<div class="insight-empty"><i data-lucide="quote"></i><span>没有识别到可核验的会议金句</span></div>';
+    return;
+  }
+  elements.insightContent.innerHTML = `<div class="highlight-list">${meeting.highlights.map((item) => `<button class="highlight-item" type="button" data-seek="${Number(item.start_seconds) || 0}"><div class="highlight-meta"><time>${formatTimestamp(item.start_seconds)}</time><span>${escapeHtml(item.speaker || "发言人")}</span><i data-lucide="play"></i></div><blockquote>“${escapeHtml(item.quote)}”</blockquote>${item.reason ? `<p>${escapeHtml(item.reason)}</p>` : ""}</button>`).join("")}</div>`;
+}
+
+function renderSpeakerSummaries(meeting) {
+  if (!meeting.speaker_summaries?.length) {
+    elements.insightContent.innerHTML = '<div class="insight-empty"><i data-lucide="users"></i><span>没有足够发言内容生成发言人总结</span></div>';
+    return;
+  }
+  elements.insightContent.innerHTML = `<div class="speaker-summary-list">${meeting.speaker_summaries.map((item, index) => `<section class="speaker-summary-item"><div class="speaker-summary-head"><span class="speaker-avatar">${escapeHtml(speakerInitial(item.speaker, index))}</span><h2>${escapeHtml(item.speaker || "发言人")}</h2></div><p>${escapeHtml(item.summary || "无")}</p>${item.key_points?.length ? `<ul>${item.key_points.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>` : ""}</section>`).join("")}</div>`;
 }
 
 function renderActions(meeting) {
-  if (!meeting.action_items?.length) {
-    elements.insightContent.innerHTML = '<div class="insight-empty"><i data-lucide="list-checks"></i><span>没有识别到明确行动项</span></div>';
+  const records = meeting.decision_records?.length ? meeting.decision_records : (meeting.decisions || []).map((decision) => ({ decision, start_seconds: null, evidence: "" }));
+  if (!records.length && !meeting.action_items?.length) {
+    elements.insightContent.innerHTML = '<div class="insight-empty"><i data-lucide="gavel"></i><span>没有识别到明确决策或行动项</span></div>';
     return;
   }
-  elements.insightContent.innerHTML = `<ul class="action-list">${meeting.action_items.map((item) => `<li class="action-item"><i data-lucide="square-check-big"></i><div><p class="action-task">${escapeHtml(item.task)}</p><div class="action-meta">${item.owner ? `<span><i data-lucide="user"></i>${escapeHtml(item.owner)}</span>` : ""}${item.due ? `<span><i data-lucide="calendar-clock"></i>${escapeHtml(item.due)}</span>` : ""}${!item.owner && !item.due ? "待确认负责人和时间" : ""}</div></div></li>`).join("")}</ul>`;
+  const decisions = records.length ? `<section class="decision-section"><h2 class="insight-label"><i data-lucide="gavel"></i><span>关键决策</span></h2><div class="decision-record-list">${records.map((item) => `<button class="decision-record" type="button"${item.start_seconds == null ? "" : ` data-seek="${Number(item.start_seconds) || 0}"`}><div>${item.start_seconds == null ? "" : `<time>${formatTimestamp(item.start_seconds)}</time>`}<strong>${escapeHtml(item.decision)}</strong>${item.start_seconds == null ? "" : '<i data-lucide="play"></i>'}</div>${item.evidence ? `<p>“${escapeHtml(item.evidence)}”</p>` : ""}</button>`).join("")}</div></section>` : "";
+  const actions = meeting.action_items?.length ? `<section class="action-section"><h2 class="insight-label"><i data-lucide="list-checks"></i><span>行动项</span></h2><ul class="action-list">${meeting.action_items.map((item) => `<li class="action-item"><i data-lucide="square-check-big"></i><div><p class="action-task">${escapeHtml(item.task)}</p><div class="action-meta">${item.owner ? `<span><i data-lucide="user"></i>${escapeHtml(item.owner)}</span>` : ""}${item.due ? `<span><i data-lucide="calendar-clock"></i>${escapeHtml(item.due)}</span>` : ""}${!item.owner && !item.due ? "待确认负责人和时间" : ""}</div></div></li>`).join("")}</ul></section>` : "";
+  elements.insightContent.innerHTML = `${decisions}${actions}`;
 }
 
 function renderQa(meeting) {
@@ -291,9 +313,15 @@ function renderQa(meeting) {
 
 function renderInsightTabs(meeting) {
   const interview = meeting?.mode === "interview";
-  const labels = interview ? { summary: "评估", actions: "证据", qa: "追问" } : { summary: "摘要", actions: "行动项", qa: "提问" };
+  if (interview && !["summary", "actions", "qa"].includes(state.insight)) state.insight = "summary";
+  const labels = interview
+    ? { summary: "评估", actions: "证据", qa: "追问" }
+    : { summary: "概览", highlights: "金句", speakers: "发言人", actions: "决策", qa: "提问" };
+  document.querySelector(".segmented-control").classList.toggle("interview-tabs", interview);
   document.querySelectorAll("[data-insight]").forEach((button) => {
-    button.textContent = labels[button.dataset.insight];
+    const supported = Boolean(labels[button.dataset.insight]);
+    button.classList.toggle("hidden", !supported);
+    if (supported) button.textContent = labels[button.dataset.insight];
     const active = button.dataset.insight === state.insight;
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", String(active));
@@ -304,7 +332,7 @@ function renderConfig() {
   const asrReady = Boolean(state.config.asrBaseUrl && state.config.asrApiKey);
   const chatReady = Boolean(state.config.chatBaseUrl && state.config.chatApiKey);
   elements.configModel.textContent = asrReady && chatReady ? `${state.config.asrModel} + ${state.config.chatModel}` : "双模型未配置";
-  elements.configHost.textContent = asrReady && chatReady ? "MiMo 转写 · GPT 校正" : "点击配置 API";
+  elements.configHost.textContent = asrReady && chatReady ? `MiMo 转写 · ${state.config.transportMode === "relay" ? "本地网关" : "浏览器直连"}` : "点击配置 API";
   elements.configDot.className = `status-dot ${asrReady && chatReady ? "ready" : "error"}`;
   elements.configNotice.classList.toggle("hidden", (asrReady && chatReady) || state.sharedMode);
 }
@@ -697,7 +725,7 @@ async function stopRecording() {
 
 function createMeeting(values) {
   const meeting = {
-    id: crypto.randomUUID(), createdAt: new Date().toISOString(), qa: [], keywords: [], decisions: [], action_items: [],
+    id: crypto.randomUUID(), createdAt: new Date().toISOString(), qa: [], keywords: [], highlights: [], speaker_summaries: [], decisions: [], decision_records: [], action_items: [],
     mode: state.draftMode,
     ...(state.draftMode === "interview" && state.draftInterview ? { interviewContext: { ...state.draftInterview, competencies: [...state.draftInterview.competencies] } } : {}),
     ...values,
@@ -828,7 +856,10 @@ function openSettings() {
   elements.chatModelInput.value = state.config.chatModel;
   elements.chatProtocolInput.value = state.config.chatProtocol;
   elements.chatPathInput.value = state.config.chatPath;
+  elements.transportModeInput.value = state.config.transportMode;
+  elements.relayPathInput.value = state.config.relayPath;
   elements.contextHintInput.value = state.config.contextHint;
+  renderTransportHelp();
   elements.settingsDialog.showModal();
   refreshIcons();
 }
@@ -839,9 +870,10 @@ function saveSettings(event) {
     asrBaseUrl: elements.asrBaseUrlInput.value.trim(), asrApiKey: elements.asrApiKeyInput.value.trim(),
     asrModel: elements.asrModelInput.value.trim(), asrProtocol: elements.asrProtocolInput.value, asrPath: elements.asrPathInput.value.trim(), chunkSeconds: Number(elements.chunkSecondsInput.value),
     chatBaseUrl: elements.chatBaseUrlInput.value.trim(), chatApiKey: elements.chatApiKeyInput.value.trim(),
-    chatModel: elements.chatModelInput.value.trim(), chatProtocol: elements.chatProtocolInput.value, chatPath: elements.chatPathInput.value.trim(), contextHint: elements.contextHintInput.value.trim(),
+    chatModel: elements.chatModelInput.value.trim(), chatProtocol: elements.chatProtocolInput.value, chatPath: elements.chatPathInput.value.trim(),
+    transportMode: elements.transportModeInput.value, relayPath: elements.relayPathInput.value.trim(), contextHint: elements.contextHintInput.value.trim(),
   };
-  if (!next.asrBaseUrl || !next.asrApiKey || !next.asrModel || !next.asrPath || !next.chatBaseUrl || !next.chatApiKey || !next.chatModel || !next.chatPath) {
+  if (!next.asrBaseUrl || !next.asrApiKey || !next.asrModel || !next.asrPath || !next.chatBaseUrl || !next.chatApiKey || !next.chatModel || !next.chatPath || !next.relayPath) {
     showToast("请完整填写 MiMo 和 GPT 两组配置", true);
     return;
   }
@@ -853,6 +885,14 @@ function saveSettings(event) {
   elements.settingsDialog.close();
   renderConfig();
   showToast("双模型配置已保存在浏览器中");
+}
+
+function renderTransportHelp() {
+  const relay = elements.transportModeInput.value === "relay";
+  elements.relayPathInput.disabled = !relay;
+  elements.transportHelp.textContent = relay
+    ? "本地网关支持任意用户 Base URL。请通过 npm run local 打开本机页面。"
+    : "直连要求模型服务允许当前网页域名发起 CORS 请求。";
 }
 
 function loadConfig() {
