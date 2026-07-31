@@ -94,19 +94,22 @@ textarea:focus-visible {
 }
 
 .brand-mark {
-  display: grid;
+  position: relative;
   width: 32px;
   height: 32px;
   flex: 0 0 32px;
-  place-items: center;
-  color: #ffffff;
-  background: var(--text);
+  overflow: hidden;
+  background: #f5fbfa;
+  border: 1px solid #ccebe6;
   border-radius: 8px;
 }
 
-.brand-mark svg {
-  width: 18px;
-  height: 18px;
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  object-fit: cover;
+  transform: translateY(5%) scale(1.75);
 }
 
 .brand-name {

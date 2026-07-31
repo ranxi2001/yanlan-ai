@@ -80,6 +80,9 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
 
 try {
   await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.locator("#brandLogo").waitFor();
+  assert.equal(await page.locator("#brandLogo").evaluate((image) => image.complete && image.naturalWidth === 1254), true);
+  assert.match(await page.locator('link[rel="icon"]').getAttribute("href"), /yanlan-logo\.png$/);
   await page.locator("#settingsButton").click();
   assert.equal(await page.locator('.provider-link[href="https://ai.tosky.top/"]').getAttribute("target"), "_blank");
   assert.equal(await page.locator('.provider-link[href="https://platform.xiaomimimo.com?ref=6ENEDG"]').getAttribute("target"), "_blank");
@@ -314,7 +317,7 @@ try {
   await page.locator("#settingsDialog header .icon-button").click();
 
   assert.deepEqual(browserErrors, []);
-  console.log("Browser flow passed: keyless recorder, persistent local keys, Responses API, meeting and interview workflows, exports, share, and responsive layout.");
+  console.log("Browser flow passed: branded assets, keyless recorder, persistent local keys, Responses API, meeting and interview workflows, exports, share, and responsive layout.");
 } finally {
   await browser.close();
 }
