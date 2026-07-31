@@ -15,27 +15,32 @@
 
 [Live demo](https://onefly.top/yanlan-ai/) · [Report an issue](https://github.com/ranxi2001/yanlan-ai/issues/new/choose) · [Contribute](./CONTRIBUTING.md)
 
-Yanlan is an open-source, self-hostable AI audio workspace that runs entirely in the browser and supports both general meetings and interview-specific workflows. It uses a dual-model pipeline: MiMo transcribes the audio, while GPT uses meeting or role context to correct domain terms and inconsistencies before producing meeting notes or an interview assessment backed by timestamped evidence. The default text model is `gpt-5.6-luna`, called through the Responses API.
+Yanlan is an open-source, self-hostable AI audio workspace that runs entirely in the browser and supports both general meetings and interview-specific workflows. It uses a dual-model pipeline: MiMo transcribes the audio, while GPT uses meeting or role context to correct domain terms and inconsistencies before producing meeting notes or an interview review packet backed by timestamped evidence. The default text model is `gpt-5.6-luna`, called through the Responses API.
 
 ![Yanlan meeting workspace](./docs/yanlan-workspace.png)
 
 ## Features
 
-- Record in the browser, transcribe in near real time by segment, and save the complete recording when finished
+- Record in the browser, transcribe in near real time by segment, and continuously commit audio chunks to IndexedDB so persisted audio can be recovered after an accidental refresh
 - Use Yanlan as a local recorder without any API key, then play or export the audio directly
-- Upload and transcribe common audio formats
-- Preserve raw ASR segments while GPT corrections keep the original timeline intact
+- Upload and chunk common audio formats; the default MiMo data-URL path mixes only the current PCM range instead of duplicating the entire decoded recording
+- Preserve raw ASR segments; GPT may adjust punctuation/case or substitute complete terms explicitly labeled with fields such as `Term:`, `Project:`, or `Name:`, but cannot change the timeline or speaker attribution, and other text rewrites are rejected
 - Generate an overview, keywords, replayable highlights, speaker summaries, source-backed decisions, action items, and transcript Q&A
 - Enter a candidate alias, role, interview round, competencies, and job description before an interview
-- Produce an assisted recommendation, confidence level, competency evidence, risks, and follow-up questions after an interview
-- Jump from interview evidence to the corresponding audio timestamp, with explicit markers when evidence is insufficient
+- Organize interview evidence, gaps, and follow-up questions by competency; code validates timestamps and quotes but never decides whether a quote proves a competency, and never advances/rejects a candidate
+- Jump from interview evidence to the corresponding audio timestamp; only quotes found in the referenced transcript segment are shown as evidence
 - Play recordings locally and seek by clicking transcript timestamps
 - Export the original recording, Markdown, WebVTT, JSON, or a standalone offline HTML page
 - Generate a read-only page containing the transcript, timestamps, and summary
 - Choose between direct browser requests and a local same-origin relay for user-defined API base URLs
+- Require HTTPS for remote model endpoints; HTTP is accepted only for loopback hosts (`localhost`, `127.0.0.0/8`, and `[::1]`)
 - Store recordings in IndexedDB and workspace data in localStorage
+- Retry transient MiMo failures with timeouts and backoff; if any live segment still fails, stop before generating incomplete notes and keep the recording for retranscription
+- Process long transcripts in bounded summary/interview batches and retrieve question-relevant time ranges for Q&A instead of sending the whole meeting in one prompt
 
 See Xiaomi's official [MiMo-V2.5-ASR repository](https://github.com/XiaomiMiMo/MiMo-V2.5-ASR) for model and deployment details. Yanlan's default request format follows [MiMo-Code](https://github.com/XiaomiMiMo/MiMo-Code): audio is sent as a data URL through Chat Completions with `asr_options`. A standard OpenAI Transcriptions mode is also available for compatible gateways.
+
+The default MiMo browser upload path accepts files up to 30 minutes and 128 MiB; fallback whole-file uploads are capped at 40 MiB when the browser cannot decode a file. Split longer recordings, use live recording, or select the standard OpenAI Transcriptions protocol when a compatible provider supports it. These bounds prevent native browser decoding from exhausting memory; provider-side limits still apply.
 
 ## Recommended Providers
 
@@ -47,21 +52,21 @@ The MiMo URL is a referral link. Its reward terms are listed above so you can ma
 
 ## CLI: Transcribe an Audio File
 
-When you only need text from one recording, there is no need to start the web app. With Node.js 20 or later, run:
+When you only need text from one recording, there is no need to start the web app. With Node.js 20.19 or later, run:
 
 ```bash
 export MIMO_API_KEY="your-key"
-npx --yes github:ranxi2001/yanlan-ai#v0.4.5 transcribe recording.mp3 -o recording.txt
+npx --yes github:ranxi2001/yanlan-ai#v0.4.6 transcribe recording.mp3 -o recording.txt
 ```
 
 You can also install the CLI globally:
 
 ```bash
-npm install --global github:ranxi2001/yanlan-ai#v0.4.5
+npm install --global github:ranxi2001/yanlan-ai#v0.4.6
 yanlan transcribe interview.m4a -o interview.md --language en
 ```
 
-The CLI defaults to `mimo-v2.5-asr` at `https://api.xiaomimimo.com/v1`. It accepts MP3, WAV, M4A, WebM, OGG, Opus, AAC, FLAC, and MP4 files and produces `text`, `markdown`, or `json`. Set `MIMO_BASE_URL` to use a compatible gateway. Keep credentials in environment variables so real keys do not enter your shell history.
+The CLI defaults to `mimo-v2.5-asr` at `https://api.xiaomimimo.com/v1`. It accepts MP3, WAV, M4A, WebM, OGG, Opus, AAC, FLAC, and MP4 files and produces `text`, `markdown`, or `json`. Set `MIMO_BASE_URL` to use a compatible gateway. The default `mimo-chat` data-URL protocol rejects files over 40 MiB before reading them; split/compress larger files or use `--protocol openai-transcriptions` with a compatible provider. Keep credentials in environment variables so real keys do not enter your shell history. The CLI never overwrites the input audio and rejects existing outputs by default; use `--force` only after confirming that a non-input output file should be replaced.
 
 ```bash
 yanlan transcribe --help
@@ -88,7 +93,7 @@ The skill checks Node.js and the local `MIMO_API_KEY`, invokes a pinned Yanlan C
 
 ## Local Development
 
-Node.js 20 or later is required.
+Node.js 20.19 or later is required.
 
 ```bash
 npm install
@@ -99,7 +104,7 @@ Open `http://127.0.0.1:4173`. Recording, playback, and audio export work without
 
 1. MiMo ASR base URL, API key, model, protocol, and transcription path
 2. GPT base URL, API key, model, protocol, and relative API path
-3. Optional shared context such as background information, participant names, project names, and domain terms
+3. Optional shared background plus domain terms explicitly labeled with fields such as `Term:`, `Project:`, or `Name:`
 
 Choose Interview when creating a record, then provide the role context. The complete job description is sent with the transcript to the configured GPT endpoint for correction and assessment. The full job description and interviewer names are never included in shared links or offline share pages.
 
@@ -132,13 +137,14 @@ The relay listens only on `127.0.0.1`, validates Host and Origin, accepts only `
 
 - Both API keys, endpoint settings, and terminology prompts are stored in the current browser's `localStorage` and remain available after refresh or restart.
 - Keys are sent only to the model APIs configured by the user, never to a Yanlan-hosted server. Use Clear local keys in Settings to remove them at any time.
-- Complete recordings are stored in the browser's IndexedDB.
+- Recording chunks are committed to IndexedDB throughout capture, then atomically combined into the complete recording and removed after a normal stop.
+- After an accidental close, Yanlan can recover consecutive chunks that were already committed. The final chunk of roughly one second may not yet have been emitted, so export a backup after important recordings.
 - Audio segments are sent to the configured MiMo API; transcripts are sent to the configured GPT API.
 - Responses requests explicitly set `store: false` and do not use server-side session state. Third-party gateways remain subject to their own privacy policies.
 - The local relay runs only through `npm run local`. The static live version never proxies or stores user keys.
 - Shared links and offline pages exclude API keys, original recordings, Q&A history, and raw ASR backups.
-- Interview shares exclude the complete job description and interviewer names. They contain only the candidate alias, role, round, competencies, assisted assessment, and transcript.
-- Interview assessments are evidence for human review, not automated hiring decisions. Do not judge candidates by voice, accent, or sensitive personal attributes.
+- Interview shares exclude the complete job description and interviewer names. They contain only the candidate alias, role, round, competencies, evidence review material, and transcript.
+- Interview reports only organize candidate evidence whose timestamp and quote survive validation; they do not determine whether the quote semantically supports a competency. Interviewers must replay and judge it manually. Never use the report for automated hiring decisions or evaluate candidates from voice, accent, or sensitive personal attributes.
 - A browser-only BYOK application cannot hide keys from the page running it. Use a trusted deployment and never enter production credentials on an unfamiliar site.
 - Direct browser requests require model services to allow the deployment origin through CORS. Use the bundled local same-origin relay when they do not.
 
@@ -156,16 +162,15 @@ The generated `dist/` directory can be deployed to GitHub Pages, Cloudflare Page
 npm run check
 ```
 
-Start the development server before running the browser end-to-end test:
+The browser end-to-end test starts an isolated local server and generates its own audio fixture:
 
 ```bash
-npm run dev
 npm run test:browser
 ```
 
 ## Project Status
 
-`v0.4.5` introduced the audio transcription CLI and Agent Skill. `v0.4.4` added the teal brand identity. `v0.4.3` enabled keyless local recording and persistent browser API settings. `v0.4.0` added meeting highlights, speaker summaries, traceable decisions, and the local same-origin relay. `v0.3.0` adopted `gpt-5.6-luna` and the Responses API by default. `v0.2.0` introduced the interview workflow, competency evidence, follow-up questions, and privacy-trimmed interview shares.
+`v0.4.6` adds incremental recording persistence and crash recovery, ASR retries and completeness gating, bounded GPT corrections, transcript-backed evidence validation, long-content batching, audio memory boundaries, protected CLI outputs, and browser E2E coverage in CI. `v0.4.5` introduced the audio transcription CLI and Agent Skill. `v0.4.4` added the teal brand identity. `v0.4.3` enabled keyless local recording and persistent browser API settings. `v0.4.0` added meeting highlights, speaker summaries, traceable decisions, and the local same-origin relay. `v0.3.0` adopted `gpt-5.6-luna` and the Responses API by default. `v0.2.0` introduced the interview workflow, competency evidence, follow-up questions, and privacy-trimmed interview shares.
 
 The next priorities include speaker diarization, transcript editing, collaborative annotations, team permissions, and more model integrations. Roadmap discussions and priorities are maintained in GitHub Issues.
 

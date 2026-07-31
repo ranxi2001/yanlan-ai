@@ -1,6 +1,6 @@
 {
   "name": "yanlan-ai",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "type": "module",
   "description": "Yanlan: an open-source AI meeting workspace, MiMo transcription CLI, and Agent Skill.",
   "license": "MIT",
@@ -29,13 +29,14 @@
     "cli": "node bin/yanlan.mjs",
     "test": "node --test test/*.test.mjs",
     "test:browser": "node scripts/browser-test.mjs",
+    "test:package": "node scripts/package-test.mjs",
     "check": "node --check src/app.js && node --check src/api.js && node --check src/cli.js && node --check bin/yanlan.mjs && node --check src/storage.js && node --check server/local.mjs && npm test && npm run build"
   },
   "dependencies": {
     "lucide": "^0.468.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19"
   },
   "devDependencies": {
     "playwright": "^1.62.0",

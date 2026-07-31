@@ -1,15 +1,36 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { chromium } from "playwright";
+import { createServer } from "vite";
+import { buildShareHtml } from "../src/api.js";
 
-const baseUrl = process.env.APP_URL || "http://127.0.0.1:4173";
-const fixture = new URL("../meeting-test-zh.mp3", import.meta.url).pathname;
+let developmentServer;
+let baseUrl = process.env.APP_URL || "";
+if (!baseUrl) {
+  developmentServer = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: {
+      host: "127.0.0.1",
+      port: 4173,
+      strictPort: false,
+      hmr: false,
+      watch: { ignored: ["**/artifacts/**"] },
+    },
+  });
+  await developmentServer.listen();
+  baseUrl = developmentServer.resolvedUrls?.local?.[0]?.replace(/\/$/, "") || "http://127.0.0.1:4173";
+}
+const fixture = { name: "meeting-test-zh.wav", mimeType: "audio/wav", buffer: createWavFixture() };
 await mkdir(new URL("../artifacts", import.meta.url), { recursive: true });
 
 const browser = await chromium.launch({ headless: true, args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"] });
 const context = await browser.newContext({ viewport: { width: 1440, height: 960 }, acceptDownloads: true, permissions: ["microphone"] });
 const page = await context.newPage();
 const browserErrors = [];
+let transientAsrFailures = 2;
+let successfulAsrResponsesRemaining = Number.POSITIVE_INFINITY;
+let asrTranscript = "今天讨论万福来项目，由小明明天完成。";
 page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
 page.on("pageerror", (error) => browserErrors.push(error.message));
 
@@ -19,10 +40,16 @@ await page.route("https://mimo.example/v1/chat/completions", async (route) => {
   const request = route.request().postDataJSON();
   assert.equal(request.model, "mimo-v2.5-asr");
   assert.match(request.messages[0].content[0].input_audio.data, /^data:audio\/wav;base64,/);
+  if (successfulAsrResponsesRemaining <= 0 || transientAsrFailures > 0) {
+    transientAsrFailures = Math.max(0, transientAsrFailures - 1);
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "temporary ASR failure" } }) });
+    return;
+  }
+  if (Number.isFinite(successfulAsrResponsesRemaining)) successfulAsrResponsesRemaining -= 1;
   await route.fulfill({
     contentType: "application/json",
     body: JSON.stringify({
-      choices: [{ message: { content: "今天讨论万福来项目，由小明明天完成。" } }],
+      choices: [{ message: { content: asrTranscript } }],
     }),
   });
 });
@@ -40,7 +67,7 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
     content = user.includes("目标岗位：")
       ? JSON.stringify({ segments: [{ id: 0, speaker: "候选人", text: "我会先做服务降级，再通过日志和指标定位故障。" }], terminology: ["服务降级"] })
       : JSON.stringify({ segments: [{ id: 0, speaker: "小明", text: "今天讨论 OneFly 项目，由小明明天完成。" }], terminology: ["OneFly"] });
-  } else if (system.includes("面试评估助手")) {
+  } else if (system.includes("面试证据提取助手")) {
     assert.match(system, /不得根据声音、口音/);
     assert.match(user, /目标岗位：平台工程师/);
     content = JSON.stringify({
@@ -69,7 +96,7 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
       highlights: [{ start_seconds: 0, speaker: "小明", quote: "由小明明天完成", reason: "明确了负责人和交付时间" }],
       speaker_summaries: [{ speaker: "小明", summary: "确认了 OneFly 项目的交付安排。", key_points: ["明天完成项目"] }],
       decisions: ["项目明天完成"],
-      decision_records: [{ decision: "OneFly 项目明天完成", start_seconds: 0, evidence: "由小明明天完成" }],
+      decision_records: [{ decision: "明天完成", start_seconds: 0, evidence: "由小明明天完成" }],
       action_items: [{ task: "完成 OneFly 项目", owner: "小明", due: "明天" }],
     });
   } else {
@@ -96,12 +123,14 @@ try {
 
   await page.locator("#startRecordButton").click();
   await page.locator("#liveRecorder:not(.hidden)").waitFor();
-  await page.getByText("音频仅保存在本机", { exact: true }).waitFor();
+  await page.getByText("音频正在增量保存在本机", { exact: true }).waitFor();
   await page.waitForTimeout(1200);
   await page.locator("#stopRecordButton").click();
   await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("仅录音"));
   await page.locator("#recordingPlayer:not(.hidden)").waitFor();
   await page.getByText("录音已保存在本机", { exact: true }).waitFor();
+  const completedMeetingId = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].id);
+  assert.equal(await recordingChunkCount(page, completedMeetingId), 0);
   assert.equal(await page.locator("#copyButton").isDisabled(), true);
   assert.equal(await page.locator("#shareButton").isDisabled(), true);
   assert.equal(await page.locator("#exportButton").isEnabled(), true);
@@ -111,6 +140,125 @@ try {
   await page.locator('[data-export="audio"]').click();
   assert.match((await recorderDownload).suggestedFilename(), /\.(webm|ogg|m4a)$/);
   await page.screenshot({ path: new URL("../artifacts/recorder-only-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.locator("#newMeetingButton").click();
+
+  await page.locator("#startRecordButton").click();
+  await page.locator("#liveRecorder:not(.hidden)").waitFor();
+  const interruptedMeetingId = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].id);
+  await page.waitForTimeout(1200);
+  assert.ok(await recordingChunkCount(page, interruptedMeetingId) > 0);
+  const recoveryStorageBeforeReload = await recordingStorageState(page, interruptedMeetingId);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.reload({ waitUntil: "networkidle" });
+  try {
+    await page.getByText("录音已保存在本机", { exact: true }).waitFor({ timeout: 10000 });
+  } catch (error) {
+    const recoveryState = await page.evaluate(() => ({
+      meetings: JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]"),
+      activeSession: sessionStorage.getItem("yanlan.active-recording.v1"),
+      meta: document.querySelector("#meetingMeta")?.textContent,
+      transcript: document.querySelector("#transcriptList")?.textContent,
+    }));
+    const recoveryStorageAfterReload = await recordingStorageState(page, interruptedMeetingId);
+    throw new Error(`Interrupted recording recovery did not finish: ${JSON.stringify({ recoveryState, recoveryStorageBeforeReload, recoveryStorageAfterReload })}; browser errors: ${browserErrors.join(" | ")}`, { cause: error });
+  }
+  await page.locator("#recordingPlayer:not(.hidden)").waitFor();
+  const recovered = await page.evaluate(async (meetingId) => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("yanlan", 2);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction(["recordings", "recordingChunks"], "readonly");
+    const recording = await new Promise((resolve, reject) => {
+      const request = transaction.objectStore("recordings").get(meetingId);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const chunks = await new Promise((resolve, reject) => {
+      const request = transaction.objectStore("recordingChunks").index("meetingId").count(IDBKeyRange.only(meetingId));
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+    return { size: recording?.blob?.size || 0, chunks };
+  }, interruptedMeetingId);
+  assert.ok(recovered.size > 0);
+  assert.equal(recovered.chunks, 0);
+  await page.locator("#newMeetingButton").click();
+
+  await page.evaluate(() => {
+    window.__yanlanOriginalIdbPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function failRecordingChunkPut(...args) {
+      if (this.name === "recordingChunks") throw new DOMException("simulated quota failure", "QuotaExceededError");
+      return window.__yanlanOriginalIdbPut.apply(this, args);
+    };
+  });
+  await page.locator("#startRecordButton").click();
+  await page.waitForTimeout(1200);
+  await page.locator("#stopRecordButton").click();
+  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("处理失败"));
+  await page.locator("#errorMessage").filter({ hasText: /录音分片未能保存到本机/ }).waitFor();
+  assert.equal(await page.locator("#retryButton").isEnabled(), true);
+  await page.evaluate(() => {
+    IDBObjectStore.prototype.put = window.__yanlanOriginalIdbPut;
+    delete window.__yanlanOriginalIdbPut;
+  });
+  await page.locator("#retryButton").click();
+  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("仅录音"));
+  await page.getByText("录音已保存在本机", { exact: true }).waitFor();
+  await page.locator("#newMeetingButton").click();
+
+  await page.evaluate(() => {
+    window.__yanlanOriginalRecordingPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function failFinalRecordingPut(...args) {
+      if (this.name === "recordings") throw new DOMException("simulated final save failure", "QuotaExceededError");
+      return window.__yanlanOriginalRecordingPut.apply(this, args);
+    };
+  });
+  await page.locator("#startRecordButton").click();
+  await page.waitForTimeout(1200);
+  const finalSaveFailureMeetingId = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].id);
+  await page.locator("#stopRecordButton").click();
+  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("处理失败"));
+  await page.locator("#errorMessage").filter({ hasText: /simulated final save failure/ }).waitFor();
+  assert.equal(await page.locator("#retryButton").isEnabled(), true);
+  assert.ok(await recordingChunkCount(page, finalSaveFailureMeetingId) > 0);
+  await page.evaluate(() => {
+    IDBObjectStore.prototype.put = window.__yanlanOriginalRecordingPut;
+    delete window.__yanlanOriginalRecordingPut;
+  });
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByText("录音已保存在本机", { exact: true }).waitFor({ timeout: 10000 });
+  await page.locator("#recordingPlayer:not(.hidden)").waitFor();
+  assert.equal(await recordingChunkCount(page, finalSaveFailureMeetingId), 0);
+  await page.locator("#newMeetingButton").click();
+
+  await page.evaluate(() => {
+    window.__yanlanOriginalPartialPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function failLaterRecordingChunks(value, ...args) {
+      if (this.name === "recordingChunks" && value.index > 0) throw new DOMException("simulated later chunk failure", "QuotaExceededError");
+      return window.__yanlanOriginalPartialPut.call(this, value, ...args);
+    };
+  });
+  await page.locator("#startRecordButton").click();
+  await page.waitForTimeout(2200);
+  const partialFailureMeetingId = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].id);
+  await page.locator("#stopRecordButton").click();
+  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("处理失败"));
+  const expectedPartialChunks = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].recordingChunkCount);
+  assert.ok(expectedPartialChunks > 1);
+  assert.equal(await recordingChunkCount(page, partialFailureMeetingId), 1);
+  await page.evaluate(() => {
+    IDBObjectStore.prototype.put = window.__yanlanOriginalPartialPut;
+    delete window.__yanlanOriginalPartialPut;
+  });
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator("#errorMessage").filter({ hasText: /录音分片不完整/ }).waitFor({ timeout: 10000 });
+  assert.equal(await page.locator("#retryButton").isDisabled(), true);
+  assert.equal(await page.locator("#recordingPlayer").isHidden(), true);
   await page.locator("#newMeetingButton").click();
 
   await page.locator("#settingsButton").click();
@@ -125,7 +273,8 @@ try {
   assert.equal(await page.locator("#relayPathInput").isDisabled(), true);
   await page.screenshot({ path: new URL("../artifacts/responses-settings-desktop.png", import.meta.url).pathname, fullPage: true });
   assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);
-  await page.locator("#contextHintInput").fill("项目名 OneFly；负责人小明");
+  await page.locator("#chunkSecondsInput").selectOption("5");
+  await page.locator("#contextHintInput").fill("项目名 OneFly；负责人小明；术语 服务降级");
   await page.locator("#saveSettingsButton").click();
 
   const persisted = await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } }));
@@ -149,7 +298,7 @@ try {
   await page.locator('[data-insight="speakers"]').click();
   await page.getByText("确认了 OneFly 项目的交付安排。", { exact: true }).waitFor();
   await page.locator('[data-insight="actions"]').click();
-  await page.getByText("OneFly 项目明天完成", { exact: true }).waitFor();
+  await page.getByText("明天完成", { exact: true }).waitFor();
   await page.getByText("完成 OneFly 项目", { exact: true }).waitFor();
   await page.screenshot({ path: new URL("../artifacts/meeting-decisions-desktop.png", import.meta.url).pathname, fullPage: true });
 
@@ -166,7 +315,7 @@ try {
   await page.locator("#exportButton").click();
   const audioDownload = page.waitForEvent("download");
   await page.locator('[data-export="audio"]').click();
-  assert.match((await audioDownload).suggestedFilename(), /\.mp3$/);
+  assert.match((await audioDownload).suggestedFilename(), /\.wav$/);
 
   await page.locator("#shareButton").click();
   await page.locator("#shareUrlInput").waitFor();
@@ -214,6 +363,25 @@ try {
   await page.locator("#recordingPlayer:not(.hidden)").waitFor();
 
   await page.locator("#newMeetingButton").click();
+  successfulAsrResponsesRemaining = 1;
+  await page.locator("#startRecordButton").click();
+  await page.locator("#liveRecorder:not(.hidden)").waitFor();
+  await page.waitForTimeout(5600);
+  await page.locator("#stopRecordButton").click();
+  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("处理失败"), null, { timeout: 20000 });
+  await page.locator("#errorMessage").filter({ hasText: /仍有 1 个实时转写片段失败/ }).waitFor();
+  assert.equal(await page.locator("#shareButton").isDisabled(), true);
+  assert.equal(await page.locator("#copyButton").isDisabled(), true);
+  assert.equal(await page.locator("#transcriptList").isHidden(), true);
+  await page.locator("#exportButton").click();
+  assert.equal(await page.locator('[data-export="markdown"]').isDisabled(), true);
+  assert.equal(await page.locator('[data-export="audio"]').isEnabled(), true);
+  successfulAsrResponsesRemaining = Number.POSITIVE_INFINITY;
+  await page.locator("#retryButton").click();
+  await page.waitForFunction(() => document.querySelector("#meetingMeta")?.textContent.includes("已完成"), null, { timeout: 20000 });
+
+  await page.locator("#newMeetingButton").click();
+  asrTranscript = "我会先做服务降机，再通过日志和指标定位故障。";
   await page.locator('[data-record-mode="interview"]').click();
   assert.equal(await page.locator("#recorderHeading").textContent(), "开始一场面试记录");
   await page.locator("#uploadButton").click();
@@ -222,24 +390,27 @@ try {
   await page.locator("#interviewStageInput").selectOption({ label: "技术一面" });
   await page.locator("#interviewerInput").fill("内部面试官");
   await page.locator("#competenciesInput").fill("系统设计、故障排查、协作沟通");
-  await page.locator("#jobDescriptionInput").fill("内部 JD：负责核心平台可靠性");
+  await page.locator("#jobDescriptionInput").fill("内部 JD：负责核心平台可靠性与服务降级");
   await page.locator("#interviewConsentInput").check();
   const fileChooserPromise = page.waitForEvent("filechooser");
   await page.locator("#interviewContinueButton").click();
   const fileChooser = await fileChooserPromise;
   await fileChooser.setFiles(fixture);
-  await page.getByText("补充追问", { exact: true }).waitFor({ timeout: 15000 });
-  assert.equal(await page.locator('[data-insight="summary"]').textContent(), "评估");
+  await page.getByText("证据复核", { exact: true }).waitFor({ timeout: 15000 });
+  assert.equal(await page.locator('[data-insight="summary"]').textContent(), "复核");
   assert.equal(await page.locator('[data-insight="actions"]').textContent(), "证据");
   assert.equal(await page.locator('[data-insight="qa"]').textContent(), "追问");
   assert.equal(await page.locator('[data-insight="highlights"]').isHidden(), true);
   assert.equal(await page.locator('[data-insight="speakers"]').isHidden(), true);
   await page.locator(".interview-disclaimer").waitFor();
+  await page.getByText("证据覆盖", { exact: true }).waitFor();
+  await page.getByText("系统设计：1 条候选原话，需人工判断", { exact: true }).waitFor();
 
   await page.locator('[data-insight="actions"]').click();
   await page.getByText("故障排查", { exact: true }).waitFor();
   await page.locator(".evidence-item", { hasText: "通过日志和指标定位故障" }).waitFor();
   assert.equal(await page.locator(".evidence-item").first().getAttribute("data-seek"), "0");
+  assert.equal(await page.getByText("有待确认", { exact: true }).count(), 2);
 
   await page.locator("#shareButton").click();
   await page.waitForFunction(() => document.querySelector("#shareUrlInput").value.startsWith("http"));
@@ -255,6 +426,14 @@ try {
   assert.equal(decodedPublic.interviewContext.role, "平台工程师");
   assert.equal(decodedPublic.interviewReport.recommendation, "follow_up");
   assert.doesNotMatch(JSON.stringify(decodedPublic), /内部 JD|内部面试官/);
+  const offlineInterview = await context.newPage();
+  const offlineErrors = [];
+  offlineInterview.on("pageerror", (error) => offlineErrors.push(error.message));
+  await offlineInterview.setContent(buildShareHtml(decodedPublic), { waitUntil: "domcontentloaded" });
+  await offlineInterview.getByText("证据复核", { exact: true }).waitFor();
+  assert.equal(await offlineInterview.getByText(/置信度/).count(), 0);
+  assert.deepEqual(offlineErrors, []);
+  await offlineInterview.close();
   await page.keyboard.press("Escape");
   await page.locator('[data-insight="summary"]').click();
   await page.locator("#toast").evaluate((element) => { element.className = "toast"; });
@@ -265,7 +444,7 @@ try {
   await interviewMobile.goto(interviewShareUrl, { waitUntil: "networkidle" });
   await interviewMobile.locator("#insightsButton").click();
   await interviewMobile.waitForTimeout(250);
-  await interviewMobile.getByText("补充追问", { exact: true }).waitFor();
+  await interviewMobile.getByText("证据复核", { exact: true }).waitFor();
   await interviewMobile.locator(".interview-disclaimer").waitFor();
   await interviewMobile.screenshot({ path: new URL("../artifacts/interview-mobile-share.png", import.meta.url).pathname, fullPage: true });
   assert.equal(await interviewMobile.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
@@ -316,8 +495,77 @@ try {
   assert.doesNotMatch(JSON.stringify(cleared.session), /asr-test-key|gpt-test-key/);
   await page.locator("#settingsDialog header .icon-button").click();
 
-  assert.deepEqual(browserErrors, []);
-  console.log("Browser flow passed: branded assets, keyless recorder, persistent local keys, Responses API, meeting and interview workflows, exports, share, and responsive layout.");
+  assert.ok(browserErrors.some((message) => /status of 503/.test(message)));
+  assert.deepEqual(browserErrors.filter((message) => !/Failed to load resource: the server responded with a status of 503/.test(message)), []);
+  console.log("Browser flow passed: crash recovery, ASR retries and completeness gating, keyless recorder, persistent keys, meeting/interview workflows, exports, sharing, and responsive layout.");
 } finally {
   await browser.close();
+  await developmentServer?.close();
+}
+
+function recordingChunkCount(pageHandle, meetingId) {
+  return pageHandle.evaluate(async (id) => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("yanlan", 2);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const count = await new Promise((resolve, reject) => {
+      const store = database.transaction("recordingChunks", "readonly").objectStore("recordingChunks");
+      const request = store.index("meetingId").count(IDBKeyRange.only(id));
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+    return count;
+  }, meetingId);
+}
+
+function recordingStorageState(pageHandle, meetingId) {
+  return pageHandle.evaluate(async (id) => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("yanlan", 2);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction(["recordings", "recordingChunks"], "readonly");
+    const recording = await new Promise((resolve, reject) => {
+      const request = transaction.objectStore("recordings").get(id);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const chunks = await new Promise((resolve, reject) => {
+      const request = transaction.objectStore("recordingChunks").index("meetingId").getAll(IDBKeyRange.only(id));
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+    return {
+      recordingSize: recording?.blob?.size || 0,
+      chunks: chunks.map((chunk) => ({ index: chunk.index, size: chunk.blob?.size || 0 })),
+    };
+  }, meetingId);
+}
+
+function createWavFixture({ seconds = 1, sampleRate = 16000 } = {}) {
+  const sampleCount = Math.round(seconds * sampleRate);
+  const buffer = Buffer.alloc(44 + sampleCount * 2);
+  buffer.write("RIFF", 0, "ascii");
+  buffer.writeUInt32LE(36 + sampleCount * 2, 4);
+  buffer.write("WAVE", 8, "ascii");
+  buffer.write("fmt ", 12, "ascii");
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write("data", 36, "ascii");
+  buffer.writeUInt32LE(sampleCount * 2, 40);
+  for (let index = 0; index < sampleCount; index += 1) {
+    const sample = Math.sin((2 * Math.PI * 440 * index) / sampleRate) * 0.08;
+    buffer.writeInt16LE(Math.round(sample * 0x7fff), 44 + index * 2);
+  }
+  return buffer;
 }

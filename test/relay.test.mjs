@@ -52,6 +52,14 @@ test("local relay forwards only same-origin API requests without exposing a publ
     });
     assert.equal(invalid.status, 400);
 
+    const insecureRemote = await fetch(`${origin}/api/relay?url=${encodeURIComponent("http://api.example/v1")}`, {
+      method: "POST",
+      headers: { Origin: origin, Authorization: "Bearer must-not-leak", "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(insecureRemote.status, 400);
+    assert.equal(received, null);
+
     const status = await fetch(`${origin}/api/relay/status`);
     assert.deepEqual(await status.json(), { ok: true, service: "yanlan-local-relay" });
   } finally {

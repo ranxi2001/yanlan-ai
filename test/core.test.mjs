@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   DEFAULT_CONFIG,
+  askTranscript,
   buildShareHtml,
   correctTranscript,
   formatTimestamp,
@@ -13,6 +14,7 @@ import {
   toMarkdown,
   toVtt,
   transcribeAudio,
+  transcribeAudioWithRetry,
 } from "../src/api.js";
 
 const config = {
@@ -59,6 +61,21 @@ test("local relay keeps arbitrary provider URLs in the same-origin request", () 
   );
 });
 
+test("API requests reject credential-bearing remote HTTP endpoints", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => { requests += 1; throw new Error("must not send credentials"); };
+  try {
+    await assert.rejects(() => transcribeAudio({
+      config: { ...config, asrBaseUrl: "http://api.example/v1" },
+      blob: new Blob(["wav"], { type: "audio/wav" }),
+    }), /必须使用 HTTPS/);
+    assert.equal(requests, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("normalizes verbose and plain transcription responses", () => {
   assert.deepEqual(parseTranscriptionResponse({ segments: [{ start: 1.5, end: 2.5, speaker: "A", text: "你好" }] }).segments[0], {
     start_seconds: 1.5, end_seconds: 2.5, speaker: "A", text: "你好",
@@ -85,10 +102,73 @@ test("official MiMo ASR uses chat completions data-URL protocol", async () => {
   }
 });
 
+test("ASR retries transient upstream failures and preserves permanent failures", async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    if (attempts < 3) return new Response(JSON.stringify({ error: { message: "temporarily unavailable" } }), { status: 503 });
+    return new Response(JSON.stringify({ choices: [{ message: { content: "重试后成功" } }] }), { status: 200 });
+  };
+  try {
+    const result = await transcribeAudioWithRetry({
+      config,
+      blob: new Blob(["wav"], { type: "audio/wav" }),
+      language: "zh",
+    }, { attempts: 3, baseDelayMs: 0 });
+    assert.equal(result.text, "重试后成功");
+    assert.equal(attempts, 3);
+
+    attempts = 0;
+    globalThis.fetch = async () => {
+      attempts += 1;
+      return new Response(JSON.stringify({ error: { message: "bad key" } }), { status: 401 });
+    };
+    await assert.rejects(() => transcribeAudioWithRetry({
+      config,
+      blob: new Blob(["wav"], { type: "audio/wav" }),
+    }, { attempts: 3, baseDelayMs: 0 }), /bad key/);
+    assert.equal(attempts, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("ASR retries when the response body is interrupted", async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    if (attempts === 1) return { ok: true, status: 200, text: async () => { throw new TypeError("socket closed"); } };
+    return new Response(JSON.stringify({ choices: [{ message: { content: "正文重试成功" } }] }));
+  };
+  try {
+    const result = await transcribeAudioWithRetry({
+      config,
+      blob: new Blob(["wav"], { type: "audio/wav" }),
+    }, { attempts: 2, baseDelayMs: 0 });
+    assert.equal(result.text, "正文重试成功");
+    assert.equal(attempts, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("formats transcript exports with timestamps", () => {
   assert.equal(formatTimestamp(65), "01:05");
   assert.match(toMarkdown(meeting), /### 00:03 · 发言人 2/);
   assert.match(toVtt(meeting), /00:00:03\.000 --> 00:00:08\.000/);
+});
+
+test("Markdown export never falls back to decisions without verified evidence", () => {
+  const markdown = toMarkdown({
+    ...meeting,
+    decisions: ["未提供证据的旧决策"],
+    decision_records: [{ decision: "伪造的结构化决策", start_seconds: 0, evidence: "不存在的原话" }],
+  });
+  assert.doesNotMatch(markdown, /未提供证据的旧决策/);
+  assert.doesNotMatch(markdown, /伪造的结构化决策/);
+  assert.match(markdown, /## 关键决策\n\n无/);
 });
 
 test("offline share HTML includes meeting insights but no secrets", () => {
@@ -130,6 +210,150 @@ test("GPT correction preserves timestamps while applying corrected text", async 
     const result = await correctTranscript({ config, meeting });
     assert.equal(result.segments[0].start_seconds, 0);
     assert.equal(result.segments[0].text, "今天讨论 OneFly。");
+    assert.equal(result.segments[0].speaker, "发言人 1");
+    assert.deepEqual(result.terminology, ["OneFly"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GPT correction rejects material rewrites", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    segments: [
+      { id: 0, speaker: "Alice", text: "预算已经获批，产品今天正式上线。" },
+      { id: 1, speaker: "小明", text: "客户已经签约并完成全部付款。" },
+    ],
+  }) } }] }));
+  try {
+    const result = await correctTranscript({ config, meeting });
+    assert.deepEqual(result.segments.map((segment) => segment.text), meeting.segments.map((segment) => segment.text));
+    assert.equal(result.rejectedCorrections, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GPT correction rejects semantic reversals and critical value changes", async () => {
+  const source = {
+    ...meeting,
+    segments: [
+      { start_seconds: 0, end_seconds: 1, speaker: "A", text: "我支持这个方案。" },
+      { start_seconds: 1, end_seconds: 2, speaker: "A", text: "我不建议录用。" },
+      { start_seconds: 2, end_seconds: 3, speaker: "A", text: "预算是 ¥100。" },
+      { start_seconds: 3, end_seconds: 4, speaker: "A", text: "计划在 8 月 10 日发布。" },
+      { start_seconds: 4, end_seconds: 5, speaker: "A", text: "这个方案风险很高。" },
+    ],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ segments: [
+    { id: 0, speaker: "A", text: "我反对这个方案。" },
+    { id: 1, speaker: "A", text: "我建议录用。" },
+    { id: 2, speaker: "A", text: "预算是 $100。" },
+    { id: 3, speaker: "A", text: "计划在 8 月 11 日发布。" },
+    { id: 4, speaker: "候选人", text: "这个方案风险很低。" },
+  ], terminology: ["反对", "$100"] }) } }] }));
+  try {
+    const result = await correctTranscript({ config, meeting: source });
+    assert.deepEqual(result.segments.map((segment) => segment.text), source.segments.map((segment) => segment.text));
+    assert.equal(result.rejectedCorrections, 5);
+    assert.deepEqual(result.terminology, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GPT correction does not trust arbitrary short terms from an interview JD", async () => {
+  const source = {
+    ...meeting,
+    mode: "interview",
+    interviewContext: { role: "平台工程师", competencies: ["系统设计"], jobDescription: "负责低延迟系统" },
+    segments: [{ start_seconds: 0, end_seconds: 3, speaker: "面试官", text: "这个方案风险很高。" }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    segments: [{ id: 0, speaker: "候选人", text: "这个方案风险很低。" }],
+    terminology: ["低"],
+  }) } }] }));
+  try {
+    const result = await correctTranscript({ config, meeting: source });
+    assert.equal(result.segments[0].text, "这个方案风险很高。");
+    assert.equal(result.segments[0].speaker, "面试官");
+    assert.equal(result.rejectedCorrections, 1);
+    assert.deepEqual(result.terminology, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GPT correction rejects a semantic reversal even when the replacement is an explicit multi-character term", async () => {
+  const source = {
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 3, speaker: "A", text: "这个方案属于高风险。" }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    segments: [{ id: 0, speaker: "A", text: "这个方案属于低风险。" }],
+    terminology: ["低风险"],
+  }) } }] }));
+  try {
+    const result = await correctTranscript({ config: { ...config, contextHint: "术语：低风险" }, meeting: source });
+    assert.equal(result.segments[0].text, "这个方案属于高风险。");
+    assert.equal(result.rejectedCorrections, 1);
+    assert.deepEqual(result.terminology, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GPT correction can unify a second occurrence of an explicit term", async () => {
+  const source = {
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 3, speaker: "A", text: "OneFly 与万福来项目。" }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    segments: [{ id: 0, speaker: "A", text: "OneFly 与 OneFly 项目。" }],
+    terminology: ["OneFly"],
+  }) } }] }));
+  try {
+    const result = await correctTranscript({ config, meeting: source });
+    assert.equal(result.segments[0].text, "OneFly 与 OneFly 项目。");
+    assert.deepEqual(result.terminology, ["OneFly"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GPT correction bounds context and preserves an oversized segment without sending it", async () => {
+  const source = {
+    ...meeting,
+    segments: [
+      { start_seconds: 0, end_seconds: 3, speaker: "A", text: "超长原始片段".repeat(2_000) },
+      { start_seconds: 3, end_seconds: 6, speaker: "A", text: "项目叫万福来。" },
+    ],
+  };
+  const originalFetch = globalThis.fetch;
+  const prompts = [];
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    const user = body.messages[1].content;
+    prompts.push(user);
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      segments: [{ id: 1, speaker: "A", text: "项目叫 OneFly。" }],
+      terminology: ["OneFly"],
+    }) } }] }));
+  };
+  try {
+    const result = await correctTranscript({
+      config: { ...config, contextHint: `项目名：OneFly；${"无关背景".repeat(5_000)}` },
+      meeting: source,
+    });
+    assert.equal(prompts.length, 1);
+    assert.ok(prompts[0].length <= 18_000);
+    assert.equal(result.segments[0].text, source.segments[0].text);
+    assert.equal(result.segments[1].text, "项目叫 OneFly。");
+    assert.equal(result.rejectedCorrections, 1);
     assert.deepEqual(result.terminology, ["OneFly"]);
   } finally {
     globalThis.fetch = originalFetch;
@@ -146,6 +370,109 @@ test("GPT summary parses structured JSON", async () => {
     assert.equal(result.highlights[0].start_seconds, 3);
     assert.equal(result.speaker_summaries[0].key_points[0], "明天完成");
     assert.equal(result.decision_records[0].evidence, "由小明明天完成");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("summary drops quotes that do not match the referenced transcript segment", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    title: "不可信纪要",
+    summary: "测试证据过滤",
+    highlights: [
+      { start_seconds: 3, speaker: "发言人 2", quote: "由小明明天完成", reason: "有效" },
+      { start_seconds: 0, speaker: "发言人 1", quote: "从未说过的原话", reason: "无效" },
+    ],
+    decision_records: [
+      { decision: "明天完成", start_seconds: 3, evidence: "由小明明天完成" },
+      { decision: "虚构决策", start_seconds: 3, evidence: "预算已经获批" },
+    ],
+    decisions: ["绕过证据校验的虚构决策"],
+  }) } }] }));
+  try {
+    const result = await summarizeTranscript({ config, meeting });
+    assert.deepEqual(result.highlights.map((item) => item.quote), ["由小明明天完成"]);
+    assert.deepEqual(result.decision_records.map((item) => item.decision), ["明天完成"]);
+    assert.deepEqual(result.decisions, ["明天完成"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("decision evidence must also overlap the claimed decision", async () => {
+  const weatherMeeting = {
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: "今天天气很好。" }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    decision_records: [{ decision: "批准一千万元预算", start_seconds: 0, evidence: "今天天气很好" }],
+  }) } }] }));
+  try {
+    const result = await summarizeTranscript({ config, meeting: weatherMeeting });
+    assert.deepEqual(result.decision_records, []);
+    assert.deepEqual(result.decisions, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("decision validation rejects a fabricated claim padded with a real quote", async () => {
+  const weatherMeeting = {
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: "今天天气很好。" }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    decision_records: [{ decision: "今天天气很好，因此批准一千万元预算", start_seconds: 0, evidence: "今天天气很好" }],
+  }) } }] }));
+  try {
+    const result = await summarizeTranscript({ config, meeting: weatherMeeting });
+    assert.deepEqual(result.decision_records, []);
+    assert.deepEqual(result.decisions, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("evidence comparison preserves semantic symbols", async () => {
+  const symbolMeeting = {
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: "预算是 ¥100，技术栈是 C++。" }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    highlights: [
+      { start_seconds: 0, quote: "预算是 ¥100" },
+      { start_seconds: 0, quote: "预算是 $100" },
+      { start_seconds: 0, quote: "技术栈是 C#" },
+    ],
+  }) } }] }));
+  try {
+    const result = await summarizeTranscript({ config, meeting: symbolMeeting });
+    assert.deepEqual(result.highlights.map((item) => item.quote), ["预算是 ¥100"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("evidence is rejected when the displayed segment cannot be traced to raw ASR", async () => {
+  const alteredMeeting = {
+    ...meeting,
+    rawSegments: [{ start_seconds: 0, end_seconds: 3, speaker: "A", text: "我不建议录用。" }],
+    segments: [{ start_seconds: 0, end_seconds: 3, speaker: "A", text: "我建议录用。" }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    highlights: [{ start_seconds: 0, quote: "我建议录用" }],
+    decision_records: [{ decision: "建议录用", start_seconds: 0, evidence: "我建议录用" }],
+  }) } }] }));
+  try {
+    const result = await summarizeTranscript({ config, meeting: alteredMeeting });
+    assert.deepEqual(result.highlights, []);
+    assert.deepEqual(result.decision_records, []);
+    assert.deepEqual(result.decisions, []);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -170,6 +497,49 @@ test("Responses API uses instructions/input and parses typed output", async () =
     const result = await summarizeTranscript({ config: { ...config, chatModel: "gpt-5.6-luna", chatProtocol: "responses", chatPath: "responses" }, meeting });
     assert.equal(result.title, "Responses 周会");
     assert.equal(result.summary, "已完成协议迁移");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("long meeting summaries use bounded transcript batches and retain verified evidence", async () => {
+  const segments = Array.from({ length: 9 }, (_, index) => ({
+    start_seconds: index * 10,
+    end_seconds: index * 10 + 9,
+    speaker: `发言人 ${index + 1}`,
+    text: `${index === 0 ? "LONG_START 会议开场。" : ""}${"常规讨论内容。".repeat(1_300)}${index === 8 ? "最终确认发布天穹计划。LONG_END" : ""}`,
+  }));
+  const longMeeting = { ...meeting, duration: 90, segments };
+  const requests = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const user = JSON.parse(options.body).messages[1].content;
+    requests.push(user);
+    let result;
+    if (user.includes("相邻分段摘要")) {
+      result = { title: "长会议", summary: "会议覆盖常规讨论并最终确认天穹计划发布。", keywords: ["天穹计划"] };
+    } else if (user.includes("最终确认发布天穹计划")) {
+      result = {
+        summary: "最终确认天穹计划发布。",
+        highlights: [{ start_seconds: 80, speaker: "发言人 9", quote: "最终确认发布天穹计划", reason: "明确发布决定" }],
+        decision_records: [{ decision: "发布天穹计划", start_seconds: 80, evidence: "最终确认发布天穹计划" }],
+      };
+    } else {
+      result = { summary: user.includes("LONG_START") ? "会议开始常规讨论。" : "会议继续常规讨论。" };
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) } }] }), { headers: { "content-type": "application/json" } });
+  };
+  try {
+    const result = await summarizeTranscript({ config, meeting: longMeeting });
+    const transcriptRequests = requests.filter((user) => user.includes("会议逐字稿"));
+    const mergeRequests = requests.filter((user) => user.includes("相邻分段摘要"));
+    assert.ok(transcriptRequests.length > 4);
+    assert.ok(mergeRequests.length > 1);
+    assert.ok(requests.every((user) => user.length <= 18_000));
+    assert.ok(requests.every((user) => !(user.includes("LONG_START") && user.includes("LONG_END"))));
+    assert.match(result.summary, /天穹计划/);
+    assert.deepEqual(result.highlights.map((item) => item.quote), ["最终确认发布天穹计划"]);
+    assert.deepEqual(result.decision_records.map((item) => item.decision), ["发布天穹计划"]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -202,7 +572,11 @@ test("interview mode generates evidence-based report and privacy-safe exports", 
         recommendation: "follow_up",
         confidence: "medium",
         overview: "系统设计证据较充分，故障排查仍需追问。",
-        competencies: [{ name: "系统设计", rating: "strong", assessment: "给出了分层方案。", evidence: [{ start_seconds: 3, quote: "由小明明天完成" }] }],
+        competencies: [{ name: "系统设计", rating: "strong", assessment: "给出了分层方案。", evidence: [
+          { start_seconds: 3, quote: "由小明明天完成" },
+          { start_seconds: 0, quote: "并不存在的面试原话" },
+          { start_seconds: "unknown", quote: "由小明明天完成" },
+        ] }],
         strengths: ["能够分解系统职责"],
         risks: ["缺少复杂故障案例"],
         follow_ups: ["请补充一次线上故障的定位过程。"],
@@ -213,7 +587,11 @@ test("interview mode generates evidence-based report and privacy-safe exports", 
     const result = await summarizeTranscript({ config, meeting: interview });
     assert.equal(result.interviewReport.recommendation, "follow_up");
     assert.equal(result.interviewReport.competencies[0].evidence[0].start_seconds, 3);
+    assert.equal(result.interviewReport.competencies[0].evidence.length, 1);
     assert.equal(result.interviewReport.competencies[1].rating, "insufficient");
+    assert.deepEqual(result.interviewReport.strengths, []);
+    assert.deepEqual(result.interviewReport.risks, ["故障排查：证据不足"]);
+    assert.doesNotMatch(JSON.stringify(result.interviewReport), /能够分解系统职责|缺少复杂故障案例/);
     assert.match(prompt, /不得根据声音、口音/);
     assert.match(prompt, /系统设计、故障排查/);
 
@@ -223,9 +601,248 @@ test("interview mode generates evidence-based report and privacy-safe exports", 
     assert.equal(publicData.interviewContext.role, "平台工程师");
     assert.equal(publicData.interviewReport.recommendation, "follow_up");
     assert.doesNotMatch(JSON.stringify(publicData), /机密平台|Alice|内部问题|rawSegments/);
-    assert.match(toMarkdown(completed), /仅供面试官复核，不用于自动录用决定/);
+    assert.match(toMarkdown(completed), /不判断原话是否证明能力/);
     assert.match(toMarkdown(completed), /\[00:03\]/);
-    assert.match(buildShareHtml(completed), /AI 辅助评估/);
+    const shareHtml = buildShareHtml(completed);
+    assert.match(shareHtml, /程序只校验时间和原话/);
+    assert.match(shareHtml, /证据复核/);
+    assert.doesNotMatch(shareHtml, /置信度/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("interview output never turns an unrelated quote into an automatic competency rating", async () => {
+  const interview = {
+    ...meeting,
+    mode: "interview",
+    interviewContext: { role: "平台工程师", competencies: ["系统设计"] },
+    segments: [{ start_seconds: 0, end_seconds: 5, speaker: "候选人", text: "今天天气很好。" }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    interview_report: {
+      recommendation: "advance",
+      confidence: "high",
+      competencies: [
+        {
+          name: "系统设计",
+          rating: "strong",
+          assessment: "具备千万级系统架构能力。",
+          evidence: [{ start_seconds: 0, quote: "今天天气很好" }],
+        },
+        { name: "天气聊天", rating: "strong", evidence: [{ start_seconds: 0, quote: "今天天气很好" }] },
+      ],
+      strengths: ["架构能力突出"],
+    },
+  }) } }] }));
+  try {
+    const result = await summarizeTranscript({ config, meeting: interview });
+    const competency = result.interviewReport.competencies[0];
+    assert.equal(competency.rating, "mixed");
+    assert.equal(competency.assessment, "仅展示可核验原话；是否支持该能力项需面试官人工判断。");
+    assert.equal(competency.evidence[0].quote, "今天天气很好");
+    assert.deepEqual(result.interviewReport.competencies.map((item) => item.name), ["系统设计"]);
+    assert.deepEqual(result.interviewReport.strengths, []);
+    assert.equal(result.interviewReport.recommendation, "follow_up");
+    assert.equal(result.interviewReport.confidence, "medium");
+    assert.doesNotMatch(JSON.stringify(result), /千万级|架构能力突出/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("long interviews merge same-competency evidence from bounded transcript batches", async () => {
+  const segments = Array.from({ length: 8 }, (_, index) => ({
+    start_seconds: index * 10,
+    end_seconds: index * 10 + 9,
+    speaker: "候选人",
+    text: `${index === 0 ? "候选人说明系统边界。LONG_INTERVIEW_START" : ""}${"面试过程记录。".repeat(700)}${index === 7 ? "候选人说明故障回滚。LONG_INTERVIEW_END" : ""}`,
+  }));
+  const interview = {
+    ...meeting,
+    mode: "interview",
+    duration: 80,
+    segments,
+    interviewContext: { role: "平台工程师", competencies: ["系统设计"] },
+  };
+  const requests = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const user = JSON.parse(options.body).messages[1].content;
+    requests.push(user);
+    const evidence = [];
+    if (user.includes("候选人说明系统边界")) evidence.push({ start_seconds: 0, quote: "候选人说明系统边界" });
+    if (user.includes("候选人说明故障回滚")) evidence.push({ start_seconds: 70, quote: "候选人说明故障回滚" });
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      title: "长面试",
+      interview_report: {
+        competencies: evidence.length ? [{ name: "系统设计", rating: "strong", assessment: "模型评分", evidence }] : [],
+        follow_ups: evidence.length ? ["请说明取舍。"] : [],
+      },
+    }) } }] }), { headers: { "content-type": "application/json" } });
+  };
+  try {
+    const result = await summarizeTranscript({ config, meeting: interview });
+    const competency = result.interviewReport.competencies[0];
+    assert.ok(requests.length > 2);
+    assert.ok(requests.every((user) => user.length <= 18_000));
+    assert.ok(requests.every((user) => !(user.includes("LONG_INTERVIEW_START") && user.includes("LONG_INTERVIEW_END"))));
+    assert.equal(competency.rating, "mixed");
+    assert.equal(competency.assessment, "仅展示可核验原话；是否支持该能力项需面试官人工判断。");
+    assert.deepEqual(competency.evidence.map((item) => item.quote), ["候选人说明系统边界", "候选人说明故障回滚"]);
+    assert.deepEqual(result.interviewReport.strengths, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("interview report limits high-confidence advancement when competency coverage is sparse", async () => {
+  const interview = {
+    ...meeting,
+    mode: "interview",
+    interviewContext: { role: "平台工程师", competencies: ["系统设计", "故障排查"] },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    summary: "模型给出了过强结论。",
+    interview_report: {
+      recommendation: "advance",
+      confidence: "high",
+      overview: "候选人精通零信任。",
+      competencies: [{ name: "系统设计", rating: "strong", assessment: "给出了具体方案。", evidence: [{ start_seconds: 3, quote: "由小明明天完成" }] }],
+      strengths: ["精通零信任架构"],
+      risks: ["未经证实的风险"],
+    },
+  }) } }] }));
+  try {
+    const result = await summarizeTranscript({ config, meeting: interview });
+    assert.equal(result.interviewReport.recommendation, "follow_up");
+    assert.equal(result.interviewReport.confidence, "medium");
+    assert.deepEqual(result.interviewReport.strengths, []);
+    assert.deepEqual(result.interviewReport.risks, ["故障排查：证据不足"]);
+    assert.doesNotMatch(JSON.stringify(result), /精通零信任|未经证实的风险|过强结论/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("interview evidence is unique across competencies and cannot preserve a sparse hold decision", async () => {
+  const interview = {
+    ...meeting,
+    mode: "interview",
+    interviewContext: { role: "平台工程师", competencies: ["系统设计", "故障排查"] },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    interview_report: {
+      recommendation: "hold",
+      confidence: "high",
+      competencies: [
+        { name: "系统设计", rating: "strong", assessment: "有项目经验。", evidence: [{ start_seconds: 3, quote: "由小明明天完成" }] },
+        { name: "故障排查", rating: "strong", assessment: "模型重复使用同一证据。", evidence: [{ start_seconds: 3, quote: "由小明明天完成" }] },
+      ],
+    },
+  }) } }] }));
+  try {
+    const result = await summarizeTranscript({ config, meeting: interview });
+    assert.equal(result.interviewReport.recommendation, "follow_up");
+    assert.equal(result.interviewReport.confidence, "medium");
+    assert.equal(result.interviewReport.competencies[0].evidence.length, 1);
+    assert.equal(result.interviewReport.competencies[1].evidence.length, 0);
+    assert.equal(result.interviewReport.competencies[1].rating, "insufficient");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("interview automation never advances or rejects a candidate even with full evidence coverage", async () => {
+  const interview = {
+    ...meeting,
+    mode: "interview",
+    interviewContext: { role: "平台工程师", competencies: ["系统设计", "故障排查"] },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    interview_report: {
+      recommendation: "advance",
+      confidence: "high",
+      competencies: [
+        { name: "系统设计", rating: "adequate", assessment: "有一条证据。", evidence: [{ start_seconds: 0, quote: "今天讨论万福来" }] },
+        { name: "故障排查", rating: "adequate", assessment: "有一条证据。", evidence: [{ start_seconds: 3, quote: "由小明明天完成" }] },
+      ],
+    },
+  }) } }] }));
+  try {
+    const result = await summarizeTranscript({ config, meeting: interview });
+    assert.equal(result.interviewReport.recommendation, "follow_up");
+    assert.equal(result.interviewReport.confidence, "medium");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("interview report downgrades conclusions when no evidence survives validation", async () => {
+  const interview = {
+    ...meeting,
+    mode: "interview",
+    interviewContext: { role: "平台工程师", competencies: ["系统设计"] },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    summary: "模型声称候选人表现突出。",
+    interview_report: {
+      recommendation: "advance",
+      confidence: "high",
+      overview: "建议录用。",
+      competencies: [{ name: "系统设计", rating: "strong", assessment: "能力突出。", evidence: [{ start_seconds: 0, quote: "不存在的证据" }] }],
+      strengths: ["架构能力突出"],
+      risks: [],
+    },
+  }) } }] }));
+  try {
+    const result = await summarizeTranscript({ config, meeting: interview });
+    assert.equal(result.interviewReport.recommendation, "insufficient");
+    assert.equal(result.interviewReport.confidence, "low");
+    assert.equal(result.interviewReport.competencies[0].rating, "insufficient");
+    assert.deepEqual(result.interviewReport.strengths, []);
+    assert.match(result.interviewReport.overview, /没有通过逐字稿校验/);
+    assert.equal(result.summary, result.interviewReport.overview);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("long transcript questions select bounded relevant excerpts and fall back to both edges", async () => {
+  const segments = Array.from({ length: 12 }, (_, index) => ({
+    start_seconds: index * 5,
+    end_seconds: index * 5 + 4,
+    speaker: "发言人",
+    text: `${index === 0 ? "EDGE_START。" : ""}${"普通背景内容。".repeat(450)}${index === 6 ? "天穹计划采用星河数据库。" : ""}${index === 11 ? "EDGE_END。" : ""}`,
+  }));
+  const longMeeting = { ...meeting, duration: 60, segments };
+  const requests = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const user = JSON.parse(options.body).messages[1].content;
+    requests.push(user);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "已根据选取片段回答。" } }] }));
+  };
+  try {
+    await askTranscript({ config, meeting: longMeeting, question: "天穹计划采用什么数据库？" });
+    await askTranscript({ config, meeting: longMeeting, question: "火星殖民补给方案是什么？" });
+    assert.equal(requests.length, 2);
+    assert.ok(requests.every((user) => user.length <= 18_000));
+    assert.ok(requests.every((user) => user.includes("按问题选取的片段") && user.includes("非完整逐字稿")));
+    assert.match(requests[0], /天穹计划采用星河数据库/);
+    assert.doesNotMatch(requests[0], /EDGE_START.*EDGE_END/s);
+    assert.match(requests[1], /EDGE_START/);
+    assert.match(requests[1], /EDGE_END/);
+    assert.ok(requests[1].indexOf("EDGE_START") < requests[1].indexOf("EDGE_END"));
+    for (const request of requests) {
+      const times = [...request.matchAll(/\[(\d{2}):(\d{2})\]/g)].map((match) => Number(match[1]) * 60 + Number(match[2]));
+      assert.deepEqual(times, [...times].sort((left, right) => left - right));
+    }
   } finally {
     globalThis.fetch = originalFetch;
   }

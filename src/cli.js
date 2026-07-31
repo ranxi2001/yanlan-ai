@@ -1,9 +1,11 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, resolve } from "node:path";
+import { openAsBlob } from "node:fs";
+import { link, mkdir, open, realpath, rename, stat, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { DEFAULT_CONFIG, formatTimestamp, transcribeAudio } from "./api.js";
+import { DEFAULT_CONFIG, formatTimestamp, transcribeAudioWithRetry } from "./api.js";
 
-export const CLI_VERSION = "0.4.5";
+export const CLI_VERSION = "0.4.6";
 export const DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com/v1";
 
 const AUDIO_TYPES = Object.freeze({
@@ -18,6 +20,7 @@ const AUDIO_TYPES = Object.freeze({
   ".wav": "audio/wav",
   ".webm": "audio/webm",
 });
+const MAX_MIMO_CHAT_AUDIO_BYTES = 40 * 1024 * 1024;
 
 const HELP = `Yanlan CLI ${CLI_VERSION}
 
@@ -39,6 +42,7 @@ Options:
       --api-path <path>     Override the protocol endpoint path
       --timeout <seconds>   Request timeout (default: 300)
   -q, --quiet               Suppress progress messages
+      --force               Replace an existing output file (never the input)
   -h, --help                Show this help
 
 Environment:
@@ -47,6 +51,10 @@ Environment:
   MIMO_ASR_MODEL            Defaults to mimo-v2.5-asr
   MIMO_ASR_PROTOCOL         Defaults to mimo-chat
   MIMO_ASR_PATH             Defaults to chat/completions
+
+Limits:
+  The default mimo-chat data-URL protocol accepts files up to 40 MiB. Split or
+  compress larger files, or use openai-transcriptions with a compatible provider.
 
 Examples:
   yanlan transcribe interview.m4a
@@ -80,6 +88,7 @@ export function parseCliArguments(argv) {
         "api-path": { type: "string" },
         timeout: { type: "string" },
         quiet: { type: "boolean", short: "q" },
+        force: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
     });
@@ -112,6 +121,7 @@ export function parseCliArguments(argv) {
     apiPath: parsed.values["api-path"] || "",
     timeoutMs: Math.round(timeoutSeconds * 1000),
     quiet: Boolean(parsed.values.quiet),
+    force: Boolean(parsed.values.force),
   };
 }
 
@@ -148,6 +158,7 @@ export async function runCli(argv, io = {}) {
   const stdout = io.stdout || process.stdout;
   const stderr = io.stderr || process.stderr;
   const env = io.env || process.env;
+  let outputPlan = null;
   try {
     const options = parseCliArguments(argv);
     if (options.command === "help") {
@@ -166,12 +177,17 @@ export async function runCli(argv, io = {}) {
       throw new CliUsageError("MIMO_ASR_PROTOCOL must be mimo-chat or openai-transcriptions");
     }
     const inputPath = resolve(options.input);
-    const info = await stat(inputPath).catch(() => null);
+    const info = await optionalStat(inputPath);
     if (!info?.isFile()) throw new CliUsageError(`Audio file not found: ${options.input}`);
     if (!info.size) throw new CliUsageError(`Audio file is empty: ${options.input}`);
     const extension = extname(inputPath).toLowerCase();
     const mimeType = AUDIO_TYPES[extension];
     if (!mimeType) throw new CliUsageError(`Unsupported audio extension: ${extension || "(none)"}`);
+    if (protocol === "mimo-chat" && info.size > MAX_MIMO_CHAT_AUDIO_BYTES) {
+      throw new CliUsageError("The default mimo-chat protocol accepts audio files up to 40 MiB. Split or compress the file, or use --protocol openai-transcriptions with a compatible provider.");
+    }
+    const outputPath = options.output ? resolve(options.output) : "";
+    if (outputPath) outputPlan = await prepareOutput(inputPath, info, outputPath, options.force);
 
     const config = {
       ...DEFAULT_CONFIG,
@@ -183,22 +199,30 @@ export async function runCli(argv, io = {}) {
       transportMode: "direct",
     };
     if (!options.quiet) stderr.write(`Transcribing ${basename(inputPath)} with ${config.asrModel}...\n`);
-    const bytes = await readFile(inputPath);
-    const result = await transcribeAudio({
+    const audioBlob = await openAsBlob(inputPath, { type: mimeType });
+    const result = await transcribeAudioWithRetry({
       config,
-      blob: new Blob([bytes], { type: mimeType }),
+      blob: audioBlob,
       fileName: basename(inputPath),
       language: options.language,
       signal: AbortSignal.timeout(options.timeoutMs),
-    });
+    }, { baseDelayMs: io.retryDelayMs ?? 500 });
     if (!result.text?.trim()) throw new Error("MiMo ASR returned an empty transcript");
     const rendered = formatTranscription(result, options.format, {
       source: basename(inputPath), model: config.asrModel, language: options.language,
     });
     if (options.output) {
-      const outputPath = resolve(options.output);
-      await mkdir(dirname(outputPath), { recursive: true });
-      await writeFile(outputPath, rendered, "utf8");
+      await outputPlan.handle.writeFile(rendered, "utf8");
+      await outputPlan.handle.sync();
+      await outputPlan.handle.close();
+      outputPlan.handle = null;
+      if (options.force) await rename(outputPlan.temporaryPath, outputPath);
+      else await link(outputPlan.temporaryPath, outputPath).catch((error) => {
+        if (error?.code === "EEXIST") throw new CliUsageError(`Output file already exists: ${options.output}. Pass --force to replace it.`);
+        throw error;
+      });
+      await unlink(outputPlan.temporaryPath).catch((error) => { if (error?.code !== "ENOENT") throw error; });
+      outputPlan = null;
       if (!options.quiet) stderr.write(`Saved transcript to ${outputPath}\n`);
     } else {
       stdout.write(rendered);
@@ -210,6 +234,9 @@ export async function runCli(argv, io = {}) {
     stderr.write(`yanlan: ${message}\n`);
     if (usage) stderr.write("Run 'yanlan --help' for usage.\n");
     return usage ? 2 : 1;
+  } finally {
+    await outputPlan?.handle?.close().catch(() => {});
+    if (outputPlan?.temporaryPath) await unlink(outputPlan.temporaryPath).catch(() => {});
   }
 }
 
@@ -223,4 +250,38 @@ function normalizeFormat(value, output) {
 
 function firstValue(...values) {
   return values.map((value) => String(value || "").trim()).find(Boolean) || "";
+}
+
+async function validateOutputPath(inputPath, inputInfo, outputPath, force) {
+  if (inputPath === outputPath) throw new CliUsageError("Output file must not be the input audio file");
+  const outputInfo = await optionalStat(outputPath);
+  if (!outputInfo) return;
+  if (!outputInfo.isFile()) throw new CliUsageError(`Output path is not a file: ${outputPath}`);
+  const [realInput, realOutput] = await Promise.all([realpath(inputPath), realpath(outputPath)]);
+  if (realInput === realOutput || (inputInfo.dev === outputInfo.dev && inputInfo.ino === outputInfo.ino)) {
+    throw new CliUsageError("Output file must not be the input audio file");
+  }
+  if (!force) throw new CliUsageError(`Output file already exists: ${outputPath}. Pass --force to replace it.`);
+}
+
+async function prepareOutput(inputPath, inputInfo, outputPath, force) {
+  try {
+    await mkdir(dirname(outputPath), { recursive: true });
+    await validateOutputPath(inputPath, inputInfo, outputPath, force);
+    const temporaryPath = join(dirname(outputPath), `.${basename(outputPath)}.yanlan-${randomUUID()}.tmp`);
+    const handle = await open(temporaryPath, "wx", 0o600);
+    return { temporaryPath, handle };
+  } catch (error) {
+    if (error instanceof CliUsageError) throw error;
+    throw new CliUsageError(`Cannot prepare output file ${outputPath}: ${error.message}`);
+  }
+}
+
+async function optionalStat(path) {
+  try {
+    return await stat(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw new CliUsageError(`Cannot access ${path}: ${error.message}`);
+  }
 }

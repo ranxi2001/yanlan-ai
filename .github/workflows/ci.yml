@@ -23,5 +23,11 @@ jobs:
         run: npm ci
       - name: Check
         run: npm run check
+      - name: Verify npm package
+        run: npm run test:package
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Browser end-to-end test
+        run: npm run test:browser
       - name: Audit dependencies
         run: npm audit --audit-level=high

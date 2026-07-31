@@ -53,8 +53,9 @@ async function relayRequest(request, response, requestUrl) {
   } catch {
     return json(response, 400, { error: "Invalid target URL" });
   }
-  if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) {
-    return json(response, 400, { error: "Only credential-free HTTP(S) target URLs are allowed" });
+  const loopbackTarget = target.hostname === "localhost" || target.hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(target.hostname);
+  if ((target.protocol !== "https:" && !(target.protocol === "http:" && loopbackTarget)) || target.username || target.password) {
+    return json(response, 400, { error: "Remote targets must use HTTPS; HTTP is limited to credential-free loopback URLs" });
   }
   if (isGatewayTarget(target, request.headers.host)) return json(response, 400, { error: "The gateway cannot relay to itself" });
 

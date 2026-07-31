@@ -10,16 +10,17 @@ Use the deterministic Yanlan CLI for one local audio file at a time. The command
 ## Workflow
 
 1. Resolve the input audio path and verify that the user requested transcription of that file.
-2. Check for Node.js 20 or newer with `node --version`.
+2. Check for Node.js 20.19 or newer with `node --version`.
 3. Check whether `MIMO_API_KEY` is available without printing its value. If it is absent, ask the user to set it locally and stop.
-4. Choose an output beside the audio unless the user supplied another path. Use `.txt` by default, `.md` for a readable document, or `.json` when downstream automation needs segments and metadata.
-5. Run the pinned release:
+4. Choose an output beside the audio unless the user supplied another path. Use `.txt` by default, `.md` for a readable document, or `.json` when downstream automation needs segments and metadata. If that path already exists, choose a numbered filename instead of replacing it. Use `--force` only when the user explicitly requested replacement of that exact output file.
+5. Check the input size. The default `mimo-chat` data-URL protocol rejects files over 40 MiB before upload. For a larger file, split or compress it first, or use `--protocol openai-transcriptions` only when the configured provider explicitly supports that endpoint.
+6. Run the pinned release:
 
 ```bash
-npx --yes github:ranxi2001/yanlan-ai#v0.4.5 transcribe "/absolute/path/recording.mp3" --output "/absolute/path/recording.txt"
+npx --yes github:ranxi2001/yanlan-ai#v0.4.6 transcribe "/absolute/path/recording.mp3" --output "/absolute/path/recording.txt"
 ```
 
-6. Confirm the output file exists and is non-empty. Report its path, selected language, and model. Do not paste a sensitive transcript into the response unless the user asks to see it.
+7. Confirm the output file exists and is non-empty. Report its path, selected language, and model. Do not paste a sensitive transcript into the response unless the user asks to see it.
 
 ## Options
 
@@ -31,12 +32,14 @@ yanlan transcribe interview.wav -o interview.md --language zh --format markdown
 yanlan transcribe lecture.mp3 -o lecture.json --language en --format json
 ```
 
-Set `MIMO_BASE_URL` for a compatible gateway. Use `MIMO_ASR_MODEL`, `MIMO_ASR_PROTOCOL`, and `MIMO_ASR_PATH` only when the provider requires non-default values. Prefer environment variables over `--api-key` so credentials do not enter shell history or process listings.
+Set `MIMO_BASE_URL` for a compatible gateway. Remote gateways must use HTTPS; plain HTTP is accepted only for loopback development endpoints (`localhost`, `127.0.0.0/8`, or `[::1]`). Use `MIMO_ASR_MODEL`, `MIMO_ASR_PROTOCOL`, and `MIMO_ASR_PATH` only when the provider requires non-default values. Prefer environment variables over `--api-key` so credentials do not enter shell history or process listings.
 
 ## Failure handling
 
 - On `401` or `403`, ask the user to verify the local Key and account access without exposing the Key.
 - On timeout or connection failure, preserve the audio and any existing output, then report the endpoint host and error without credentials.
+- Never use the input audio path as the output path. The CLI rejects identical paths and hard links, and it rejects existing outputs unless the user explicitly approved `--force`.
 - On an unsupported extension, do not rename the file to bypass detection; convert it with a trusted audio tool or ask for a supported format.
+- On the 40 MiB data-URL limit, preserve the source and do not bypass the guard. Split/compress the audio or use a provider-supported multipart transcription endpoint.
 - On an empty transcript, report the failure instead of inventing content.
 - Do not summarize, correct terminology, or infer speakers unless the user separately requests those tasks after transcription.
