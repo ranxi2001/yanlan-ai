@@ -8,6 +8,7 @@ import {
   correctTranscript,
   formatTimestamp,
   normalizeMimoBaseUrl,
+  mapWithConcurrency,
   publicMeeting,
   readableTranscriptSegments,
   summarizeTranscript,
@@ -17,7 +18,15 @@ import {
   toVtt,
   transcribeAudioWithRetry,
 } from "./api.js";
-import { MAX_MIMO_FALLBACK_BYTES, MAX_MIMO_UPLOAD_SECONDS, mimoUploadLimitMessage } from "./audio-limits.js";
+import { assessTranscriptionQuality } from "./asr-quality.js";
+import { reconcileTranscriptSegments, transcriptionQualityError, transcribePcmAdaptively } from "./asr-pipeline.js";
+import {
+  MAX_MIMO_FALLBACK_BYTES,
+  MAX_MIMO_UPLOAD_SECONDS,
+  audioDurationOrNull,
+  mimoUploadLimitMessage,
+  storedAudioDuration,
+} from "./audio-limits.js";
 import { createKeyBackup, parseKeyBackup } from "./key-backup.js";
 import { deleteRecording, getRecording, getRecordingChunks, saveRecording, saveRecordingChunk } from "./storage.js";
 
@@ -28,6 +37,7 @@ const LEGACY_CHAT_SESSION_KEY = "yanlan.chat-key.v1";
 const ACTIVE_RECORDING_SESSION_KEY = "yanlan.active-recording.v1";
 const MAX_MEETINGS = 40;
 const MAX_RECORDING_SECONDS = 4 * 60 * 60;
+const ASR_REQUEST_CONCURRENCY = 2;
 const RECORDING_HEARTBEAT_MS = 1_000;
 const RECORDING_STALE_MS = 4_000;
 const ACTIVE_TASK_STATUSES = new Set(["recording", "recovering", "transcribing", "correcting", "summarizing"]);
@@ -311,8 +321,8 @@ function renderInterviewAssessment(meeting) {
   }
   const correction = correctionNotice(meeting);
   const coverage = (report.competencies || []).filter((item) => item.evidence?.length).map((item) => (
-    `<li>${escapeHtml(item.name)}：${item.evidence.length} 条候选原话，需人工判断</li>`
-  )).join("") || "<li>没有通过校验的候选原话</li>";
+    `<li>${escapeHtml(item.name)}：${item.evidence.length} 条逐字稿原话，需核对说话人并人工判断</li>`
+  )).join("") || "<li>没有通过校验的逐字稿原话</li>";
   const risks = report.risks?.length ? report.risks.map((item) => `<li>${escapeHtml(item)}</li>`).join("") : "<li>没有识别到明确待核实项</li>";
   elements.insightContent.innerHTML = `${correction}<p class="interview-disclaimer"><i data-lucide="shield-check"></i><span>AI 只整理补充追问材料，不自动推进或淘汰候选人。程序只校验时间与原话，是否支持能力判断仍需面试官回听复核。</span></p><section class="insight-section"><h2 class="insight-label"><i data-lucide="scan-search"></i><span>证据复核</span></h2><p class="summary-text">${escapeHtml(report.overview || meeting.summary || "证据不足")}</p></section><div class="strength-risk-grid"><section><h2 class="insight-label"><i data-lucide="list-checks"></i><span>证据覆盖</span></h2><ul>${coverage}</ul></section><section><h2 class="insight-label"><i data-lucide="search-alert"></i><span>风险与待核实</span></h2><ul>${risks}</ul></section></div>`;
 }
@@ -328,7 +338,7 @@ function renderInterviewEvidence(meeting) {
     return;
   }
   const competencies = report.competencies.map((item) => {
-    const evidence = item.evidence?.length ? `<div class="evidence-list">${item.evidence.map((entry) => `<button class="evidence-item" type="button" data-seek="${Number(entry.start_seconds) || 0}"><time>${formatTimestamp(entry.start_seconds)}</time><span>“${escapeHtml(entry.quote)}”</span><i data-lucide="play"></i></button>`).join("")}</div>` : '<p class="evidence-empty">无可核验逐字稿证据</p>';
+    const evidence = item.evidence?.length ? `<div class="evidence-list">${item.evidence.map((entry) => `<button class="evidence-item" type="button" data-seek="${Number(entry.start_seconds) || 0}"><time>${formatTimestamp(entry.start_seconds)}</time><span>${escapeHtml(entry.speaker || "发言人")} · “${escapeHtml(entry.quote)}”</span><i data-lucide="play"></i></button>`).join("")}</div>` : '<p class="evidence-empty">无可核验逐字稿证据</p>';
     return `<section class="competency-item"><div class="competency-head"><h2>${escapeHtml(item.name)}</h2><span class="rating-badge ${escapeHtml(item.rating)}">${escapeHtml(ratingLabel(item.rating))}</span></div><p>${escapeHtml(item.assessment || "证据不足")}</p>${evidence}</section>`;
   }).join("");
   const followUps = report.follow_ups?.length ? `<section class="follow-up-section"><h2 class="insight-label"><i data-lucide="message-circle-question"></i><span>下一轮建议追问</span></h2><ol>${report.follow_ups.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol></section>` : "";
@@ -608,10 +618,20 @@ async function recoverInterruptedMeeting(meetingId) {
     let blob = existing?.blob;
     if (!blob) {
       const chunks = await getRecordingChunks(meetingId);
-      const expectedChunks = Number(latest.recordingChunkCount);
-      if (!Number.isInteger(expectedChunks) || expectedChunks < 1 || chunks.length !== expectedChunks || chunks.some((chunk, index) => chunk.index !== index)) {
+      const committedChunks = Number(latest.recordingChunkCount);
+      const observedChunks = Number(latest.recordingObservedChunkCount);
+      const stoppedExpectedChunks = Number.isInteger(observedChunks) ? observedChunks : committedChunks;
+      const persistenceFailed = latest.recordingPersistenceFailed === true;
+      const invalidManifest = !Number.isInteger(committedChunks) || committedChunks < 0;
+      const missingCommittedChunk = !invalidManifest && chunks.length < committedChunks;
+      const stoppedIncomplete = latest.recordingStopped === true
+        && (!Number.isInteger(stoppedExpectedChunks) || stoppedExpectedChunks < 1 || chunks.length !== stoppedExpectedChunks);
+      const nonContiguous = chunks.some((chunk, index) => chunk.index !== index);
+      if (persistenceFailed || invalidManifest || !chunks.length || missingCommittedChunk || stoppedIncomplete || nonContiguous) {
         const indexes = chunks.map((chunk) => chunk.index).join(", ") || "无";
-        const error = new Error(`本地录音分片不完整（预期 ${Number.isInteger(expectedChunks) ? expectedChunks : "未知"} 个，找到 ${chunks.length} 个；现有序号：${indexes}），无法标记为完整录音`);
+        const expected = latest.recordingStopped === true ? stoppedExpectedChunks : committedChunks;
+        const failureNote = persistenceFailed ? "；浏览器已报告分片写入失败" : "";
+        const error = new Error(`本地录音分片不完整（至少预期 ${Number.isInteger(expected) ? expected : "未知"} 个，找到 ${chunks.length} 个；现有序号：${indexes}${failureNote}），无法标记为完整录音`);
         error.recoveryTerminal = true;
         throw error;
       }
@@ -628,12 +648,12 @@ async function recoverInterruptedMeeting(meetingId) {
     } catch (error) {
       throw new Error(`恢复后的录音无法被浏览器解码：${error.message}`);
     }
-    const recoveredDuration = probedDuration || Number(latest.duration);
+    const recoveredDuration = audioDurationOrNull(probedDuration) ?? storedAudioDuration(latest.duration);
     const recoveryNote = latest.recordingStopped
       ? "录音已从停止时完整落盘的分片恢复。请重新生成逐字稿。"
       : "录音已从增量分片恢复；崩溃前最后约一秒可能尚未触发保存。请重新生成逐字稿。";
     Object.assign(meeting, latest, {
-      duration: recoveredDuration || Number(latest.duration) || 0,
+      duration: storedAudioDuration(recoveredDuration),
       hasRecording: true,
       status: "recorded",
       rawSegments: [],
@@ -646,6 +666,8 @@ async function recoverInterruptedMeeting(meetingId) {
     delete meeting.recordingHeartbeat;
     delete meeting.recordingSessionId;
     delete meeting.recordingChunkCount;
+    delete meeting.recordingObservedChunkCount;
+    delete meeting.recordingPersistenceFailed;
     delete meeting.recordingStopped;
     if (sessionMatches) sessionStorage.removeItem(ACTIVE_RECORDING_SESSION_KEY);
     saveAndRender();
@@ -683,7 +705,7 @@ async function handleFileSelection(event) {
     return;
   }
   if (!requireConfig()) return;
-  const duration = await probeDuration(file).catch(() => 0);
+  const duration = await probeDuration(file).catch(() => null);
   const uploadError = mimoUploadLimitError(file, duration);
   if (uploadError) {
     showToast(uploadError.message, true);
@@ -694,7 +716,7 @@ async function handleFileSelection(event) {
   const meeting = createMeeting({
     title: autoTitle ? cleanFileTitle(file.name) || "新的会议记录" : (titleInput || normalizeDraftTitle("")),
     autoTitle,
-    duration,
+    duration: storedAudioDuration(duration),
     sourceName: file.name,
     sourceType: file.type || "audio/mpeg",
     language: elements.languageSelect.value,
@@ -705,13 +727,15 @@ async function handleFileSelection(event) {
     meeting.hasRecording = true;
     saveMeetings();
     render();
-    await processStoredAudio(meeting, file, file.name);
+    await processStoredAudio(meeting, file, file.name, duration);
   } catch (error) {
     failMeeting(meeting, error);
   }
 }
 
-async function processStoredAudio(meeting, blob, fileName) {
+async function processStoredAudio(meeting, blob, fileName, probedDuration = audioDurationOrNull(meeting.duration)) {
+  const uploadError = mimoUploadLimitError(blob, probedDuration);
+  if (uploadError) throw uploadError;
   meeting.status = "transcribing";
   meeting.processingDetail = "正在准备音频";
   meeting.error = "";
@@ -721,40 +745,74 @@ async function processStoredAudio(meeting, blob, fileName) {
   meeting.qa = [];
   meeting.rawSegments = [];
   meeting.segments = [];
+  meeting.asrQualityEvents = [];
+  meeting.asrReconciliations = [];
+  meeting.terminology = [];
+  meeting.corrections = [];
+  meeting.rejectedCorrections = 0;
   saveAndRender();
-  meeting.rawSegments = await transcribeStoredBlob(meeting, blob, fileName);
-  meeting.segments = meeting.rawSegments.map((segment) => ({ ...segment }));
+  const transcription = await transcribeStoredBlob(meeting, blob, fileName, probedDuration);
+  meeting.rawSegments = transcription.rawSegments;
+  meeting.segments = transcription.segments;
   if (!meeting.segments.length) throw new Error("MiMo 没有返回可用的逐字稿");
   await enrichMeeting(meeting);
 }
 
-async function transcribeStoredBlob(meeting, blob, fileName) {
+async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = audioDurationOrNull(meeting.duration)) {
   if (state.config.asrProtocol === "openai-transcriptions") {
     updateMeetingTaskProgress(meeting, "正在上传并转写音频");
     const result = await transcribeAudioWithRetry({ config: state.config, blob, fileName, language: meeting.language });
-    return normalizeSegments(result.segments, meeting.duration);
+    const rawSegments = normalizeSegments(result.segments, meeting.duration);
+    const reconciled = reconcileTranscriptSegments(rawSegments);
+    meeting.asrReconciliations = reconciled.reconciliations;
+    return { rawSegments, segments: reconciled.segments };
   }
-  const uploadError = mimoUploadLimitError(blob, meeting.duration);
+  const uploadError = mimoUploadLimitError(blob, probedDuration);
   if (uploadError) throw uploadError;
   try {
     const decoded = await decodeAudio(blob);
+    meeting.duration = storedAudioDuration(decoded.length / decoded.sampleRate);
     const chunkSamples = Math.max(15, Number(state.config.chunkSeconds) * 3) * decoded.sampleRate;
-    const segments = [];
+    const jobs = [];
     for (let offset = 0, index = 0; offset < decoded.length; offset += chunkSamples, index += 1) {
       const end = Math.min(decoded.length, offset + chunkSamples);
+      jobs.push({ offset, end, index });
+    }
+    let completed = 0;
+    const results = await mapWithConcurrency(jobs, ASR_REQUEST_CONCURRENCY, async ({ offset, end, index }) => {
       const pcm = mixAudioRange(decoded.buffer, offset, end);
       const start = offset / decoded.sampleRate;
-      const duration = pcm.length / decoded.sampleRate;
-      const progress = Math.min(100, Math.round((end / decoded.length) * 100));
-      updateMeetingTaskProgress(meeting, `正在转写音频 · ${progress}%`);
-      const result = await transcribeAudioWithRetry({ config: state.config, blob: encodeWav(pcm, decoded.sampleRate), fileName: `part-${String(index).padStart(4, "0")}.wav`, language: meeting.language });
-      segments.push(...normalizeSegments(result.segments, duration).map((segment) => ({
-        ...segment,
-        start_seconds: segment.start_seconds + start,
-        end_seconds: segment.end_seconds > segment.start_seconds ? segment.end_seconds + start : start + duration,
-      })));
-    }
-    return segments;
+      let recovered;
+      try {
+        recovered = await transcribePcmAdaptively({
+          pcm,
+          sampleRate: decoded.sampleRate,
+          startSeconds: start,
+          transcribe: async ({ pcm: part, startSeconds, depth }) => {
+            if (depth > 0) {
+              updateMeetingTaskProgress(meeting, `异常片段细分复核 · ${formatTimestamp(startSeconds)}`);
+            }
+            return transcribeAudioWithRetry({
+              config: state.config,
+              blob: encodeWav(part, decoded.sampleRate),
+              fileName: `part-${String(index).padStart(4, "0")}-${Math.round(startSeconds * 1_000)}.wav`,
+              language: meeting.language,
+            });
+          },
+        });
+      } catch (error) {
+        meeting.asrQualityEvents.push(...(error.qualityEvents || []));
+        throw error;
+      }
+      completed += 1;
+      updateMeetingTaskProgress(meeting, `正在转写音频 · ${Math.round((completed / jobs.length) * 100)}%`);
+      return recovered;
+    });
+    const rawSegments = results.flatMap((result) => result?.rawSegments || []);
+    meeting.asrQualityEvents.push(...results.flatMap((result) => result?.qualityEvents || []));
+    const reconciled = reconcileTranscriptSegments(rawSegments);
+    meeting.asrReconciliations = reconciled.reconciliations;
+    return { rawSegments, segments: reconciled.segments };
   } catch (error) {
     if (error.name !== "EncodingError" && !/decode|解码/i.test(error.message)) throw error;
     if (blob.size > MAX_MIMO_FALLBACK_BYTES) {
@@ -762,8 +820,25 @@ async function transcribeStoredBlob(meeting, blob, fileName) {
     }
     updateMeetingTaskProgress(meeting, "正在使用兼容方式转写音频");
     const result = await transcribeAudioWithRetry({ config: state.config, blob, fileName, language: meeting.language });
-    return normalizeSegments(result.segments, meeting.duration);
+    requireTranscriptionQuality(result, meeting.duration, meeting);
+    const rawSegments = normalizeSegments(result.segments, meeting.duration);
+    const reconciled = reconcileTranscriptSegments(rawSegments);
+    meeting.asrReconciliations = reconciled.reconciliations;
+    return { rawSegments, segments: reconciled.segments };
   }
+}
+
+function requireTranscriptionQuality(result, duration, meeting) {
+  const assessment = assessTranscriptionQuality(result, duration);
+  if (assessment.ok || assessment.reasonCode === "empty_transcript") return;
+  meeting.asrQualityEvents.push({
+    start_seconds: 0,
+    duration_seconds: storedAudioDuration(duration),
+    reason_codes: assessment.reasonCodes,
+    action: "rejected",
+    metrics: assessment.metrics,
+  });
+  throw transcriptionQualityError(assessment, 0, duration);
 }
 
 async function decodeAudio(blob) {
@@ -811,9 +886,16 @@ async function enrichMeeting(meeting) {
     meeting.terminology = corrected.terminology;
     meeting.rejectedCorrections = corrected.rejectedCorrections;
     meeting.semanticJoins = corrected.semanticJoins;
+    meeting.corrections = corrected.corrections;
   } catch (error) {
     meeting.correctionError = error.message;
-    meeting.segments = (meeting.rawSegments || meeting.segments).map((segment) => ({ ...segment }));
+    const reconciled = reconcileTranscriptSegments(meeting.rawSegments || []);
+    meeting.segments = reconciled.segments;
+    meeting.asrReconciliations = reconciled.reconciliations;
+    meeting.terminology = [];
+    meeting.corrections = [];
+    meeting.rejectedCorrections = 0;
+    meeting.semanticJoins = 0;
   }
 
   meeting.status = "summarizing";
@@ -855,6 +937,7 @@ async function retryInsightProcessing(step) {
       meeting.terminology = corrected.terminology;
       meeting.rejectedCorrections = corrected.rejectedCorrections;
       meeting.semanticJoins = corrected.semanticJoins;
+      meeting.corrections = corrected.corrections;
       meeting.correctionError = "";
       if (transcriptContentSignature(corrected.segments) !== previousTranscript) {
         resetSummaryResult(meeting);
@@ -903,6 +986,7 @@ function resetCorrectionResult(meeting) {
   meeting.terminology = [];
   meeting.rejectedCorrections = 0;
   meeting.semanticJoins = 0;
+  meeting.corrections = [];
 }
 
 function resetSummaryResult(meeting) {
@@ -944,7 +1028,11 @@ async function retryActiveMeeting() {
   try {
     const record = await getRecording(meeting.id);
     if (!record?.blob) throw new Error("本机没有找到这段录音，请重新上传");
-    await processStoredAudio(meeting, record.blob, record.fileName || meeting.sourceName || "audio.webm");
+    const probedDuration = await probeDuration(record.blob).catch(() => null);
+    const previousDuration = audioDurationOrNull(meeting.duration);
+    const knownDuration = audioDurationOrNull(probedDuration) ?? (previousDuration > 0 ? previousDuration : null);
+    meeting.duration = storedAudioDuration(knownDuration);
+    await processStoredAudio(meeting, record.blob, record.fileName || meeting.sourceName || "audio.webm", knownDuration);
   } catch (error) {
     failMeeting(meeting, error);
   }
@@ -971,11 +1059,11 @@ async function startRecording() {
       title: normalizeDraftTitle(elements.meetingTitle.value), autoTitle: true, duration: 0,
       sourceName: `录音 ${formatFileDate(new Date())}.${extensionForMime(mediaRecorder.mimeType)}`,
       sourceType: mediaRecorder.mimeType || "audio/webm", language: elements.languageSelect.value,
-      status: "recording", rawSegments: [], segments: [], recordingSessionId: crypto.randomUUID(), recordingHeartbeat: Date.now(), recordingChunkCount: 0, recordingStopped: false,
+      status: "recording", rawSegments: [], segments: [], recordingSessionId: crypto.randomUUID(), recordingHeartbeat: Date.now(), recordingChunkCount: 0, recordingObservedChunkCount: 0, recordingStopped: false,
     });
     sessionStorage.setItem(ACTIVE_RECORDING_SESSION_KEY, meeting.recordingSessionId);
     const recorder = {
-      meeting, stream, audioContext, source, processor, mediaRecorder, mediaChunkCount: 0,
+      meeting, stream, audioContext, source, processor, mediaRecorder, mediaChunkCount: 0, persistedMediaChunkCount: 0, persistedChunkIndexes: new Set(),
       pendingPcm: [], pendingSamples: 0, processedSamples: 0, sampleRate: audioContext.sampleRate,
       startedAt: performance.now(), queue: Promise.resolve(), persistQueue: Promise.resolve(), pendingRequests: 0,
       errors: [], failedChunks: [], persistenceErrors: [], failedPersistence: [], silentChunks: 0, closing: false, stopped: false, finalizing: false, lastHeartbeatAt: 0,
@@ -1026,7 +1114,8 @@ function flushLiveChunk(recorder) {
     chunkNumber,
     start,
     duration: pcm.length / recorder.sampleRate,
-    wav: encodeWav(pcm, recorder.sampleRate),
+    sampleRate: 16000,
+    pcm: resample(pcm, recorder.sampleRate, 16000),
   };
   recorder.queue = recorder.queue.then(async () => {
     recorder.pendingRequests += 1;
@@ -1047,7 +1136,7 @@ function persistMediaChunk(recorder, blob) {
   if (!blob?.size) return;
   const chunk = { index: recorder.mediaChunkCount, blob };
   recorder.mediaChunkCount += 1;
-  recorder.meeting.recordingChunkCount = recorder.mediaChunkCount;
+  recorder.meeting.recordingObservedChunkCount = recorder.mediaChunkCount;
   saveMeetings();
   recorder.persistQueue = recorder.persistQueue.then(async () => {
     try {
@@ -1055,11 +1144,23 @@ function persistMediaChunk(recorder, blob) {
         fileName: recorder.meeting.sourceName,
         mimeType: blob.type || recorder.meeting.sourceType,
       });
+      markMediaChunkPersisted(recorder, chunk.index);
     } catch (error) {
       recorder.failedPersistence.push(chunk);
       recorder.persistenceErrors.push(error.message);
+      recorder.meeting.recordingPersistenceFailed = true;
+      saveMeetings();
     }
   });
+}
+
+function markMediaChunkPersisted(recorder, chunkIndex) {
+  recorder.persistedChunkIndexes.add(chunkIndex);
+  while (recorder.persistedChunkIndexes.has(recorder.persistedMediaChunkCount)) {
+    recorder.persistedMediaChunkCount += 1;
+  }
+  recorder.meeting.recordingChunkCount = recorder.persistedMediaChunkCount;
+  saveMeetings();
 }
 
 async function retryFailedPersistence(recorder) {
@@ -1072,31 +1173,50 @@ async function retryFailedPersistence(recorder) {
         fileName: recorder.meeting.sourceName,
         mimeType: chunk.blob.type || recorder.meeting.sourceType,
       });
+      markMediaChunkPersisted(recorder, chunk.index);
     } catch (error) {
       recorder.failedPersistence.push(chunk);
       recorder.persistenceErrors.push(error.message);
     }
   }
+  recorder.meeting.recordingPersistenceFailed = recorder.failedPersistence.length > 0;
+  saveMeetings();
 }
 
 async function transcribeLiveChunk(recorder, chunk) {
-  const result = await transcribeAudioWithRetry({
-    config: state.config,
-    blob: chunk.wav,
-    fileName: `live-${String(chunk.chunkNumber).padStart(4, "0")}.wav`,
-    language: recorder.meeting.language,
-  });
-  const segments = normalizeSegments(result.segments, chunk.duration).map((segment) => ({
-    ...segment,
-    start_seconds: segment.start_seconds + chunk.start,
-    end_seconds: segment.end_seconds ? segment.end_seconds + chunk.start : chunk.start + chunk.duration,
-  }));
-  if (!segments.length) {
+  recorder.meeting.asrQualityEvents ||= [];
+  recorder.meeting.asrReconciliations ||= [];
+  let result;
+  try {
+    result = await transcribePcmAdaptively({
+      pcm: chunk.pcm,
+      sampleRate: chunk.sampleRate,
+      startSeconds: chunk.start,
+      transcribe: ({ pcm, startSeconds }) => transcribeAudioWithRetry({
+        config: state.config,
+        blob: encodeWav(pcm, chunk.sampleRate),
+        fileName: `live-${String(chunk.chunkNumber).padStart(4, "0")}-${Math.round(startSeconds * 1_000)}.wav`,
+        language: recorder.meeting.language,
+      }),
+    });
+  } catch (error) {
+    recorder.meeting.asrQualityEvents.push(...(error.qualityEvents || []));
+    throw error;
+  }
+  recorder.meeting.asrQualityEvents.push(...result.qualityEvents);
+  if (!result.rawSegments.length) {
     recorder.silentChunks += 1;
     return;
   }
-  recorder.meeting.rawSegments.push(...segments);
-  recorder.meeting.segments = recorder.meeting.rawSegments.slice().sort((left, right) => left.start_seconds - right.start_seconds).map((segment) => ({ ...segment }));
+  recorder.meeting.rawSegments = [
+    ...recorder.meeting.rawSegments,
+    ...result.rawSegments,
+  ].sort((left, right) => left.start_seconds - right.start_seconds);
+  const combined = reconcileTranscriptSegments([
+    ...recorder.meeting.rawSegments,
+  ]);
+  recorder.meeting.segments = combined.segments.map((segment) => ({ ...segment }));
+  recorder.meeting.asrReconciliations = combined.reconciliations;
   saveMeetings();
   if (state.activeId === recorder.meeting.id) {
     renderTranscript(recorder.meeting);
@@ -1162,6 +1282,8 @@ async function finishStoppedRecording(recorder) {
     delete meeting.recordingHeartbeat;
     delete meeting.recordingSessionId;
     delete meeting.recordingChunkCount;
+    delete meeting.recordingObservedChunkCount;
+    delete meeting.recordingPersistenceFailed;
     delete meeting.recordingStopped;
     sessionStorage.removeItem(ACTIVE_RECORDING_SESSION_KEY);
     if (state.recorder === recorder) state.recorder = null;
@@ -1185,7 +1307,9 @@ async function finishStoppedRecording(recorder) {
     }
     meeting.noSpeechDetected = false;
     meeting.rawSegments.sort((left, right) => left.start_seconds - right.start_seconds);
-    meeting.segments = meeting.rawSegments.map((segment) => ({ ...segment }));
+    const reconciled = reconcileTranscriptSegments(meeting.rawSegments);
+    meeting.segments = reconciled.segments;
+    meeting.asrReconciliations = reconciled.reconciliations;
     await enrichMeeting(meeting);
   } catch (error) {
     if (!meeting.hasRecording) {
@@ -1213,6 +1337,7 @@ function createMeeting(values) {
     ...(state.draftMode === "interview" && state.draftInterview ? { interviewContext: { ...state.draftInterview, competencies: [...state.draftInterview.competencies] } } : {}),
     ...values,
   };
+  meeting.duration = storedAudioDuration(meeting.duration);
   state.meetings.unshift(meeting);
   const removed = state.meetings.slice(MAX_MEETINGS);
   state.meetings = state.meetings.slice(0, MAX_MEETINGS);
@@ -1732,11 +1857,20 @@ function writeAscii(view, offset, text) {
 }
 
 function normalizeSegments(segments, duration) {
-  return (segments || []).map((segment, index) => ({
-    start_seconds: Math.max(0, Number(segment.start_seconds) || 0),
-    end_seconds: Math.max(0, Number(segment.end_seconds) || (index === segments.length - 1 ? duration : 0)),
-    speaker: String(segment.speaker || "发言人 1"), text: String(segment.text || "").trim(),
-  })).filter((segment) => segment.text);
+  return (segments || []).map((segment, index) => {
+    const start = Math.max(0, Number(segment.start_seconds) || 0);
+    const explicitEnd = Number(segment.end_seconds);
+    const hasExplicitTiming = segment.timing_source === "provider"
+      || (segment.timing_source == null && Number.isFinite(explicitEnd) && explicitEnd > start);
+    return {
+      ...segment,
+      start_seconds: start,
+      end_seconds: Math.max(0, explicitEnd || (index === segments.length - 1 ? duration : 0)),
+      timing_source: hasExplicitTiming ? "provider" : "inferred",
+      speaker: String(segment.speaker || "发言人 1"),
+      text: String(segment.text || "").trim(),
+    };
+  }).filter((segment) => segment.text);
 }
 
 function activeMeeting() { return state.meetings.find((meeting) => meeting.id === state.activeId) || null; }
@@ -1767,16 +1901,22 @@ function loadMeetings() {
   try {
     const parsed = JSON.parse(localStorage.getItem(MEETINGS_KEY) || "[]");
     if (!Array.isArray(parsed)) return [];
-    return parsed.slice(0, MAX_MEETINGS).map((meeting) => ["transcribing", "correcting", "summarizing"].includes(meeting.status)
-      ? { ...meeting, status: "error", error: "上次处理被页面关闭中断，可从本地录音重新转写。" }
-      : meeting);
+    return parsed.slice(0, MAX_MEETINGS).map((meeting) => {
+      const normalized = { ...meeting, duration: storedAudioDuration(meeting.duration) };
+      return ["transcribing", "correcting", "summarizing"].includes(meeting.status)
+        ? { ...normalized, status: "error", error: "上次处理被页面关闭中断，可从本地录音重新转写。" }
+        : normalized;
+    });
   } catch { return []; }
 }
 
 function saveMeetings() {
   if (state.sharedMode) return;
   try {
-    localStorage.setItem(MEETINGS_KEY, JSON.stringify(state.meetings.slice(0, MAX_MEETINGS).map(({ asking, ...meeting }) => meeting)));
+    localStorage.setItem(MEETINGS_KEY, JSON.stringify(state.meetings.slice(0, MAX_MEETINGS).map(({ asking, ...meeting }) => ({
+      ...meeting,
+      duration: storedAudioDuration(meeting.duration),
+    }))));
   } catch { showToast("本地逐字稿存储空间已满，请先导出并删除旧记录", true); }
 }
 
@@ -1792,7 +1932,7 @@ function probeDuration(file) {
     };
     const timer = window.setTimeout(() => finish(reject, new Error("读取音频时长超时")), 5000);
     audio.preload = "metadata";
-    audio.onloadedmetadata = () => finish(resolve, Number.isFinite(audio.duration) ? audio.duration : 0);
+    audio.onloadedmetadata = () => finish(resolve, audioDurationOrNull(audio.duration));
     audio.onerror = () => finish(reject, new Error("无法读取音频时长"));
     audio.src = url;
   });
@@ -1863,14 +2003,16 @@ function summaryRetryState(meeting) {
   return `<div class="insight-empty insight-error-state" role="status" aria-live="polite" aria-atomic="true"><i data-lucide="circle-alert"></i><span><strong>${label}</strong><br>${escapeHtml(meeting.summaryError)}</span>${insightRetryButton(meeting, "summary")}</div>`;
 }
 function correctionNotice(meeting) {
-  if (meeting.correctionError) return `<div class="inline-warning insight-retry-notice" role="status" aria-live="polite" aria-atomic="true"><span>逐字稿校正未完成：${escapeHtml(meeting.correctionError)}</span>${insightRetryButton(meeting, "correction")}</div>`;
+  const recovered = meeting.asrQualityEvents?.filter((item) => item.action === "split").length || 0;
+  const quality = recovered ? `<p class="correction-note"><i data-lucide="scan-search"></i>已细分复核 ${recovered} 个异常转写片段</p>` : "";
+  if (meeting.correctionError) return `${quality}<div class="inline-warning insight-retry-notice" role="status" aria-live="polite" aria-atomic="true"><span>逐字稿校正未完成：${escapeHtml(meeting.correctionError)}</span>${insightRetryButton(meeting, "correction")}</div>`;
   const correctionDetails = [
     meeting.terminology?.length ? `已统一 ${meeting.terminology.length} 个术语` : "",
     meeting.semanticJoins ? `优化 ${meeting.semanticJoins} 处断句` : "",
   ].filter(Boolean).join(" · ");
   const accepted = correctionDetails ? `<p class="correction-note"><i data-lucide="spell-check-2"></i>${correctionDetails}</p>` : "";
-  const rejected = meeting.rejectedCorrections ? `<p class="inline-warning">已保留原始文本：${meeting.rejectedCorrections} 个片段未应用模型校正（未通过安全边界）</p>` : "";
-  return `${accepted}${rejected}`;
+  const rejected = meeting.rejectedCorrections ? `<p class="inline-warning">已保留原始文本：${meeting.rejectedCorrections} 个校正建议未通过安全校验</p>` : "";
+  return `${quality}${accepted}${rejected}`;
 }
 function ratingLabel(value) { return ({ strong: "突出", adequate: "符合", mixed: "有待确认", weak: "不足", insufficient: "证据不足" })[value] || "证据不足"; }
 

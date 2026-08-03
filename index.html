@@ -167,7 +167,7 @@
             <label class="field"><span>文本模型</span><input id="chatModelInput" value="gpt-5.6-luna" /></label>
             <label class="field"><span>调用协议</span><select id="chatProtocolInput"><option value="responses" selected>Responses（推荐）</option><option value="chat-completions">Chat Completions（兼容）</option></select></label>
             <label class="field"><span>相对路径</span><input id="chatPathInput" value="responses" /></label>
-            <label class="field field-wide"><span>会议背景 / 专有名词</span><textarea id="contextHintInput" rows="3" placeholder="例如：项目名 OneFly；参会人小明、Alice；术语 Karmada、OpenSandbox"></textarea></label>
+            <label class="field field-wide"><span>会议背景 / 专有名词</span><textarea id="contextHintInput" rows="3" placeholder="例如：项目名：万福来 -> OneFly；术语：d-schedule -> Descheduler；参会人：小明、Alice"></textarea></label>
           </div>
         </section>
         <p class="settings-note"><i data-lucide="shield-check"></i><span>两个 Key 仅保存在此浏览器的 localStorage，调用时只发送给你填写的模型 API，不发送给言澜托管服务器。本地网关不记录 Key、音频或逐字稿。</span></p>

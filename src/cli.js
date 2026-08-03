@@ -5,7 +5,7 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { DEFAULT_CONFIG, formatTimestamp, transcribeAudioWithRetry } from "./api.js";
 
-export const CLI_VERSION = "0.5.0";
+export const CLI_VERSION = "0.5.1";
 export const DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com/v1";
 const DEFAULT_MIMO_ASR_PATH = "chat/completions";
 

@@ -24,11 +24,11 @@ Yanlan is an open-source, self-hostable AI audio workspace that runs entirely in
 - Record in the browser, transcribe in near real time by segment, and continuously commit audio chunks to IndexedDB so persisted audio can be recovered after an accidental refresh
 - Use Yanlan as a local recorder without any API key, then play or export the audio directly
 - Upload and chunk common audio formats; the default MiMo data-URL path mixes only the current PCM range instead of duplicating the entire decoded recording
-- Preserve raw ASR segments; GPT may adjust punctuation/case or substitute complete terms explicitly labeled with fields such as `Term:`, `Project:`, or `Name:`, but cannot change the timeline or speaker attribution, and other text rewrites are rejected
+- Preserve raw ASR segments while GPT proposes minimal terminology patches; only explicit user mappings such as `wrong form -> canonical form` are applied automatically, every accepted or rejected patch is recorded, and timeline/speaker metadata never comes from GPT
 - Generate an overview, keywords, replayable highlights, speaker summaries, source-backed decisions, action items, and transcript Q&A
 - Enter a candidate alias, role, interview round, competencies, and job description before an interview
 - Organize interview evidence, gaps, and follow-up questions by competency; code validates timestamps and quotes but never decides whether a quote proves a competency, and never advances/rejects a candidate
-- Jump from interview evidence to the corresponding audio timestamp; only quotes found in the referenced transcript segment are shown as evidence
+- Jump from interview evidence to the corresponding audio timestamp; only complete quotes found in the referenced atomic segment or validated semantic-join group are shown as evidence
 - Play recordings locally and seek by clicking transcript timestamps
 - Export the original recording, Markdown, WebVTT, JSON, or a standalone offline HTML page
 - Generate a read-only page containing the transcript, timestamps, and summary
@@ -60,13 +60,13 @@ When you only need text from one recording, there is no need to start the web ap
 
 ```bash
 export MIMO_API_KEY="your-key"
-npx --yes github:ranxi2001/yanlan-ai#v0.5.0 transcribe recording.mp3 -o recording.txt
+npx --yes github:ranxi2001/yanlan-ai#v0.5.1 transcribe recording.mp3 -o recording.txt
 ```
 
 You can also install the CLI globally:
 
 ```bash
-npm install --global github:ranxi2001/yanlan-ai#v0.5.0
+npm install --global github:ranxi2001/yanlan-ai#v0.5.1
 yanlan transcribe interview.m4a -o interview.md --language en
 ```
 
@@ -108,7 +108,7 @@ Open `http://127.0.0.1:4173`. Recording, playback, and audio export work without
 
 1. The MiMo ASR API key; the official base URL, model, and 10-second live segmentation are prefilled and remain adjustable where applicable
 2. GPT base URL, API key, model, protocol, and relative API path
-3. Optional shared background plus domain terms explicitly labeled with fields such as `Term:`, `Project:`, or `Name:`
+3. Optional shared background and domain terms. Use an explicit mapping such as `Term: result binding -> ResourceBinding` for automatic correction; canonical-only terms provide context but never authorize a rewrite
 
 Each Test button uses the current unsaved form values. The MiMo test sends a one-second low-volume WAV and the GPT test sends one minimal prompt, so both may consume a very small amount of real API usage. Testing does not save the configuration.
 
@@ -151,7 +151,7 @@ The relay listens only on `127.0.0.1`, validates Host and Origin, accepts only `
 - The local relay runs only through `npm run local`. The static live version never proxies or stores user keys.
 - Shared links and offline pages exclude API keys, original recordings, Q&A history, and raw ASR backups.
 - Interview shares exclude the complete job description and interviewer names. They contain only the candidate alias, role, round, competencies, evidence review material, and transcript.
-- Interview reports only organize candidate evidence whose timestamp and quote survive validation; they do not determine whether the quote semantically supports a competency. Interviewers must replay and judge it manually. Never use the report for automated hiring decisions or evaluate candidates from voice, accent, or sensitive personal attributes.
+- Interview reports only organize transcript evidence whose timestamp, speaker, and quote survive validation. They do not infer speaker identity or determine whether a quote semantically supports a competency. Interviewers must replay and judge it manually. Never use the report for automated hiring decisions or evaluate candidates from voice, accent, or sensitive personal attributes.
 - A browser-only BYOK application cannot hide keys from the page running it. Use a trusted deployment and never enter production credentials on an unfamiliar site.
 - Direct browser requests require model services to allow the deployment origin through CORS. Use the bundled local same-origin relay when they do not.
 
@@ -177,9 +177,11 @@ npm run test:browser
 
 ## Project Status
 
-`v0.5.0` simplifies MiMo setup and migrates legacy base URLs, adds JSON key backup, independent MiMo/GPT connection tests, CORS guidance for the recommended provider, GPT retry controls, and Chinese semantic segmentation without collapsing the atomic timeline. `v0.4.6` added incremental recording persistence and crash recovery, ASR retries and completeness gating, bounded GPT corrections, transcript-backed evidence validation, long-content batching, audio memory boundaries, protected CLI outputs, and browser E2E coverage in CI. `v0.4.5` introduced the audio transcription CLI and Agent Skill. `v0.4.4` added the teal brand identity. `v0.4.3` enabled keyless local recording and persistent browser API settings. `v0.4.0` added meeting highlights, speaker summaries, traceable decisions, and the local same-origin relay.
+`v0.5.1` is informed by anonymized measurements from a 61-minute real meeting and adds large-file preflight rejection, ASR quality gates with adaptive retries, stable timeline ordering, auditable terminology patches, concurrent long-form summaries, complete transcript-backed evidence, and recording recovery consistency fixes. `v0.5.0` simplified MiMo setup and migrated legacy base URLs, added JSON key backup, independent MiMo/GPT connection tests, CORS guidance for the recommended provider, GPT retry controls, and Chinese semantic segmentation without collapsing the atomic timeline. `v0.4.6` added incremental recording persistence and crash recovery, ASR retries and completeness gating, bounded GPT corrections, transcript-backed evidence validation, long-content batching, audio memory boundaries, protected CLI outputs, and browser E2E coverage in CI. `v0.4.5` introduced the audio transcription CLI and Agent Skill.
 
 The next priorities include speaker diarization, transcript editing, collaborative annotations, team permissions, and more model integrations. Roadmap discussions and priorities are maintained in GitHub Issues.
+
+The [competitive architecture study](./docs/competitive-architecture.md) documents the product, open-source speech, and Agent/MCP trade-offs behind that roadmap (currently in Chinese).
 
 ## License
 

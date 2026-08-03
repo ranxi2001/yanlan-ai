@@ -5,3 +5,13 @@ dist/
 /meeting-test-zh.mp3
 /meeting-test-zh.vtt
 /artifacts/
+
+# Local recordings created or copied into the repository root.
+/*.webm
+/*.wav
+/*.m4a
+/*.mp3
+/*.ogg
+/*.aac
+/*.flac
+/*.mp4

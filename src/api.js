@@ -1,3 +1,5 @@
+import { reconcileTranscriptSegments, replayTranscriptReconciliations, segmentSourceHash } from "./asr-pipeline.js";
+
 export const DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com";
 
 export const DEFAULT_CONFIG = Object.freeze({
@@ -24,6 +26,9 @@ const CONNECTION_TEST_AUDIO_SAMPLE_RATE = 16_000;
 const MAX_TEXT_INPUT_CHARACTERS = 18_000;
 const SUMMARY_MERGE_GROUP_SIZE = 4;
 const SUMMARY_MERGE_ITEM_CHARACTERS = 3_500;
+const TEXT_REQUEST_CONCURRENCY = 3;
+const DEFAULT_TEXT_ATTEMPTS = 3;
+const TEXT_RETRY_BASE_DELAY_MS = 500;
 const MAX_CORRECTION_CONTEXT_CHARACTERS = 2_000;
 const MAX_CORRECTION_BATCH_JSON_CHARACTERS = 10_000;
 const MAX_BOUNDARY_PREVIEW_CHARACTERS = 500;
@@ -31,6 +36,9 @@ const MAX_READABLE_SEGMENT_CHARACTERS = 800;
 const MAX_READABLE_SEGMENT_SECONDS = 90;
 const MAX_SEMANTIC_JOIN_GAP_SECONDS = 3;
 const MAX_SEMANTIC_JOIN_OVERLAP_SECONDS = 0.25;
+const MAX_TERMINOLOGY_ENTRIES = 200;
+const MAX_TERMINOLOGY_ENTRY_CHARACTERS = 120;
+const MAX_TERMINOLOGY_PROMPT_CHARACTERS = 2_000;
 
 export function joinApiUrl(baseUrl, endpointPath) {
   const base = String(baseUrl || "").trim().replace(/\/+$/, "");
@@ -97,9 +105,18 @@ async function apiFetch(url, options, config = DEFAULT_CONFIG) {
     error.code = "http";
     error.status = response.status;
     error.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+    error.retryAfterMs = retryAfterMilliseconds(response.headers?.get?.("retry-after"));
     throw error;
   }
   return body;
+}
+
+function retryAfterMilliseconds(value) {
+  if (!value) return 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
 }
 
 function requestSignal(signal) {
@@ -184,6 +201,7 @@ export async function testChatConnection({ config, signal }) {
     system: "这是一次 API 配置连通性测试。",
     user: "只回复 OK。",
     signal,
+    attempts: 1,
   });
 }
 
@@ -275,13 +293,19 @@ export function parseTranscriptionResponse(body) {
   const choiceContent = body?.choices?.[0]?.message?.content;
   const text = String(body?.text ?? body?.transcript ?? (typeof choiceContent === "string" ? choiceContent : "")).trim();
   const sourceSegments = Array.isArray(body?.segments) ? body.segments : [];
-  const segments = sourceSegments.map((segment, index) => ({
-    start_seconds: numericTime(segment.start_seconds ?? segment.start ?? segment.begin_time ?? 0),
-    end_seconds: numericTime(segment.end_seconds ?? segment.end ?? segment.end_time ?? 0),
-    speaker: String(segment.speaker ?? segment.speaker_id ?? `发言人 ${index + 1}`),
-    text: String(segment.text ?? segment.transcript ?? "").trim(),
-  })).filter((segment) => segment.text);
-  if (!segments.length && text) segments.push({ start_seconds: 0, end_seconds: 0, speaker: "发言人 1", text });
+  const segments = sourceSegments.map((segment, index) => {
+    const providerTimes = providerSegmentTimes(segment);
+    const start = providerTimes?.start ?? 0;
+    const end = providerTimes?.end ?? 0;
+    return {
+      start_seconds: start,
+      end_seconds: end,
+      timing_source: providerTimes ? "provider" : "inferred",
+      speaker: String(segment.speaker ?? segment.speaker_id ?? `发言人 ${index + 1}`),
+      text: String(segment.text ?? segment.transcript ?? "").trim(),
+    };
+  }).filter((segment) => segment.text);
+  if (!segments.length && text) segments.push({ start_seconds: 0, end_seconds: 0, timing_source: "inferred", speaker: "发言人 1", text });
   return { text: text || segments.map((segment) => segment.text).join(" "), segments, raw: body };
 }
 
@@ -292,10 +316,29 @@ function recognizedTranscriptionEnvelope(body) {
     || Array.isArray(body?.segments);
 }
 
-function numericTime(value) {
+function providerSegmentTimes(segment) {
+  const candidates = [
+    ["start_seconds", "end_seconds", 1],
+    ["start", "end", 1],
+    ["begin_time", "end_time", 0.001],
+  ];
+  for (const [startKey, endKey, scale] of candidates) {
+    const rawStart = segment?.[startKey];
+    const rawEnd = segment?.[endKey];
+    if (rawStart == null && rawEnd == null) continue;
+    const start = strictTimestamp(rawStart);
+    const end = strictTimestamp(rawEnd);
+    if (start == null || end == null || end <= start) return null;
+    return { start: start * scale, end: end * scale };
+  }
+  return null;
+}
+
+function strictTimestamp(value) {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && !value.trim()) return null;
   const number = Number(value);
-  if (!Number.isFinite(number) || number < 0) return 0;
-  return number > 10000 ? number / 1000 : number;
+  return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 export async function summarizeTranscript({ config, meeting, signal }) {
@@ -312,17 +355,16 @@ export async function summarizeTranscript({ config, meeting, signal }) {
 6. action_items（行动项数组，每项含 task、owner、due，未知填空字符串）。
 金句必须是逐字稿中的简短原话，speaker 和 start_seconds 必须对应原片段。关键决策的 evidence 必须是逐字稿中的简短原话并使用对应 start_seconds。只总结有实际发言的说话人。不得虚构逐字稿里没有的信息、时间或原话。`;
   const transcriptBatches = splitTranscriptPromptBatches(segments, MAX_TEXT_INPUT_CHARACTERS - 300);
-  const partials = [];
-  for (let index = 0; index < transcriptBatches.length; index += 1) {
+  const partials = await mapWithConcurrency(transcriptBatches, TEXT_REQUEST_CONCURRENCY, async (batch, index) => {
     const batchLabel = transcriptBatches.length > 1 ? `（第 ${index + 1}/${transcriptBatches.length} 段，仅总结本段）` : "";
     const content = await chatCompletion({
       config,
       system,
-      user: `会议逐字稿${batchLabel}：\n${transcriptBatches[index]}`,
+      user: `会议逐字稿${batchLabel}：\n${batch}`,
       signal,
     });
-    partials.push(parseJsonObject(content));
-  }
+    return parseJsonObject(content);
+  });
   const merged = partials.length === 1
     ? partials[0]
     : await mergeMeetingSummaryTree({ config, summaries: partials, signal });
@@ -331,6 +373,8 @@ export async function summarizeTranscript({ config, meeting, signal }) {
     meeting.segments,
     meeting.rawSegments,
     meeting.terminology,
+    meeting.corrections,
+    meeting.asrReconciliations,
   );
   return {
     title: stringOr(merged.title, partials.map((item) => stringOr(item?.title, "")).find(Boolean) || ""),
@@ -341,6 +385,8 @@ export async function summarizeTranscript({ config, meeting, signal }) {
       meeting.segments,
       meeting.rawSegments,
       meeting.terminology,
+      meeting.corrections,
+      meeting.asrReconciliations,
     ),
     speaker_summaries: mergeSpeakerSummaries([merged, ...partials].flatMap((item) => Array.isArray(item?.speaker_summaries) ? item.speaker_summaries : [])),
     decisions: decisionRecords.map((item) => item.decision),
@@ -353,12 +399,13 @@ async function mergeMeetingSummaryTree({ config, summaries, signal }) {
   const system = `你是会议分段摘要合并助手。输入是按时间相邻的分段摘要，不是原始逐字稿。请合并为纯 JSON，只输出 title、summary、keywords、speaker_summaries、action_items。保留各段的重要事实、决策含义、人员和行动项，不得添加输入中没有的信息。`;
   let level = summaries.map(compactMeetingSummaryForMerge);
   while (level.length > 1) {
-    const next = [];
+    const groups = [];
     for (let index = 0; index < level.length; index += SUMMARY_MERGE_GROUP_SIZE) {
-      const group = level.slice(index, index + SUMMARY_MERGE_GROUP_SIZE);
+      groups.push(level.slice(index, index + SUMMARY_MERGE_GROUP_SIZE));
+    }
+    const next = await mapWithConcurrency(groups, TEXT_REQUEST_CONCURRENCY, async (group) => {
       if (group.length === 1) {
-        next.push(group[0]);
-        continue;
+        return group[0];
       }
       const content = await chatCompletion({
         config,
@@ -366,8 +413,8 @@ async function mergeMeetingSummaryTree({ config, summaries, signal }) {
         user: `请按时间顺序合并以下 ${group.length} 份相邻分段摘要：\n${JSON.stringify(group)}`,
         signal,
       });
-      next.push(compactMeetingSummaryForMerge(parseJsonObject(content)));
-    }
+      return compactMeetingSummaryForMerge(parseJsonObject(content));
+    });
     level = next;
   }
   return level[0] || {};
@@ -384,19 +431,18 @@ async function summarizeInterviewTranscript({ config, meeting, signal }) {
   const context = truncateText(interviewContextForPrompt(meeting), 3_500);
   const transcriptBudget = Math.max(4_000, MAX_TEXT_INPUT_CHARACTERS - context.length - 400);
   const transcriptBatches = splitTranscriptPromptBatches(meeting.segments || [], transcriptBudget);
-  const partials = [];
-  for (let index = 0; index < transcriptBatches.length; index += 1) {
+  const partials = await mapWithConcurrency(transcriptBatches, TEXT_REQUEST_CONCURRENCY, async (batch, index) => {
     const batchLabel = transcriptBatches.length > 1 ? `（第 ${index + 1}/${transcriptBatches.length} 段，仅提取本段证据）` : "";
     const content = await chatCompletion({
       config,
       system,
-      user: `${context}\n\n面试逐字稿${batchLabel}：\n${transcriptBatches[index]}`,
+      user: `${context}\n\n面试逐字稿${batchLabel}：\n${batch}`,
       signal,
     });
-    partials.push(parseJsonObject(content));
-  }
+    return parseJsonObject(content);
+  });
   const mergedReport = mergeInterviewReportParts(partials.map((item) => item?.interview_report));
-  const report = normalizeInterviewReport(mergedReport, meeting.interviewContext?.competencies, meeting.segments, meeting.rawSegments, meeting.terminology);
+  const report = normalizeInterviewReport(mergedReport, meeting.interviewContext?.competencies, meeting.segments, meeting.rawSegments, meeting.terminology, meeting.corrections, meeting.asrReconciliations);
   return {
     title: partials.map((item) => stringOr(item?.title, "")).find(Boolean) || "",
     summary: report.overview,
@@ -411,93 +457,104 @@ async function summarizeInterviewTranscript({ config, meeting, signal }) {
 }
 
 export async function correctTranscript({ config, meeting, signal }) {
-  const original = meeting.rawSegments?.length ? meeting.rawSegments : meeting.segments || [];
-  if (!original.length) return { segments: [], terminology: [], rejectedCorrections: 0, semanticJoins: 0 };
+  const original = correctionSourceSegments(meeting);
+  if (!original.length) return { segments: [], terminology: [], rejectedCorrections: 0, semanticJoins: 0, corrections: [] };
   const batches = splitSegmentBatches(original, 8_000);
-  const corrected = [];
-  const terminology = [];
-  const sharedContext = truncateText(config.contextHint, MAX_CORRECTION_CONTEXT_CHARACTERS);
-  const trustedTermsFromUser = explicitTermsFromContext(sharedContext);
-  if (meeting.mode === "interview") {
-    trustedTermsFromUser.push(meeting.interviewContext?.role || "", ...stringArray(meeting.interviewContext?.competencies));
+  const fullContext = String(config.contextHint || "");
+  const sharedContext = truncateText(fullContext, MAX_CORRECTION_CONTEXT_CHARACTERS);
+  const terminologyContext = parseTerminologyContext(fullContext);
+  if (terminologyContext.overflow) {
+    throw new Error(`术语配置超过 ${MAX_TERMINOLOGY_ENTRIES} 项，请精简后重试；逐字稿原文不受影响`);
   }
-  let rejectedCorrections = 0;
-  let sourceOffset = 0;
-  for (const batch of batches) {
+  if (meeting.mode === "interview") {
+    terminologyContext.canonicalTerms.push(meeting.interviewContext?.role || "", ...stringArray(meeting.interviewContext?.competencies));
+  }
+  terminologyContext.canonicalTerms = uniqueStrings(terminologyContext.canonicalTerms);
+  terminologyContext.canonicalKeys = new Set(terminologyContext.canonicalTerms.map(correctionText).filter(Boolean));
+  const explicitMappings = [...terminologyContext.aliasMappings.values()].map((item) => `${item.alias} -> ${item.canonical}`);
+  const mappedCanonicalKeys = new Set([...terminologyContext.aliasMappings.values()].map((item) => correctionText(item.canonical)));
+  const unaliasedCanonicalTerms = terminologyContext.canonicalTerms.filter((term) => !mappedCanonicalKeys.has(correctionText(term)));
+  const terminologyPrompt = `程序可接受的明确别名映射：\n${explicitMappings.join("\n") || "无"}\n\n仅有规范词、没有明确别名的候选（程序不会自动接受替换）：\n${unaliasedCanonicalTerms.join("、") || "无"}`;
+  if (terminologyPrompt.length > MAX_TERMINOLOGY_PROMPT_CHARACTERS) {
+    throw new Error("术语配置过长，无法在不截断映射的情况下安全发送；请精简术语表后重试，逐字稿原文不受影响");
+  }
+  let nextSegmentId = 0;
+  const jobs = batches.map((batch) => {
+    const batchStartId = nextSegmentId;
+    nextSegmentId += batch.length;
+    return { batch, batchStartId };
+  });
+  const results = await mapWithConcurrency(jobs, TEXT_REQUEST_CONCURRENCY, async ({ batch, batchStartId }) => {
     const input = batch.map((segment, localIndex) => ({
-      id: sourceOffset + localIndex,
+      id: batchStartId + localIndex,
       speaker: segment.speaker || "发言人",
       text: segment.text,
     }));
-    const following = original[sourceOffset + batch.length];
+    const following = original[batchStartId + batch.length];
     const payload = { segments: input };
     if (following) {
       payload.following_segment = {
-        id: sourceOffset + batch.length,
+        id: batchStartId + batch.length,
         speaker: following.speaker || "发言人",
         text: truncateText(following.text, MAX_BOUNDARY_PREVIEW_CHARACTERS),
       };
     }
     const serializedInput = JSON.stringify(payload);
     if (serializedInput.length > MAX_CORRECTION_BATCH_JSON_CHARACTERS) {
-      corrected.push(...batch.map((segment) => ({
-        ...segment,
-        speaker: stringOr(segment.speaker, "发言人"),
-        join_next: false,
-      })));
-      rejectedCorrections += batch.length;
-      sourceOffset += batch.length;
-      continue;
+      return {
+        segments: batch.map((segment) => ({ ...segment })),
+        terminology: [],
+        corrections: batch.map((segment, localIndex) => correctionLedgerEntry({
+          segmentId: batchStartId + localIndex,
+          segment,
+          status: "rejected",
+          reason: "segment_too_large",
+        })),
+      };
     }
     const interviewRules = meeting.mode === "interview" ? "这是面试逐字稿。不得依据声音、口音、姓名或敏感个人属性推断角色。" : "";
-    const system = `你是逐字稿校对与中文断句助手。音频按固定时长切片，片尾标点可能不代表真实句末。根据背景和相邻上下文，仅纠正明显的语音识别错误、专有名词、人名、同音词、标点和前后不一致。不得总结、改写、删减或添加事实，speaker 必须原样返回。${interviewRules}
-每个片段必须返回 join_next 布尔值：只有当前片段末尾语义明显未完成、下一相邻片段是同一句的直接续接时才为 true；完整句、同一话题但不同句、不同发言人都必须为 false。例如“她现在。”接“正在找工作”应删除假句号并设为 true。可在单个片段内部的明确新话题边界插入换行，但不得在句中机械换行。
-必须返回纯 JSON：{"segments":[{"id":数字,"speaker":"...","text":"...","join_next":布尔值}],"terminology":["统一后的术语"]}。segments 数量、顺序和 id 必须与输入完全一致。following_segment 只用于判断本批最后一项，不能在结果中新增对应片段。`;
+    const system = `你是逐字稿校对中的术语候选提取器与断句助手。只找可能需要统一的专有名词，并判断固定时长切片边界是否截断了同一句话；不得总结、改写、删减或添加事实。${interviewRules}只返回最小补丁和结构信号，不得返回完整逐字稿、segments、speaker 或时间信息。必须返回纯 JSON：{"patches":[{"id":数字,"replacements":[{"from":"片段中唯一出现的原文","to":"用户提供的规范词"}]}],"join_after":[数字]}。from 必须是对应片段中的原样子串，to 必须来自用户提供的规范词或明确别名映射。join_after 只包含语义明显未完成、下一相邻片段是同一句直接续接的当前片段 id；完整句、同一话题但不同句、不同发言人都不得连接。没有候选时返回 {"patches":[],"join_after":[]}。`;
     const context = meeting.mode === "interview"
       ? `${truncateText(interviewContextForPrompt(meeting), 3_000)}\n\n通用背景 / 专有名词：\n${sharedContext || "未提供"}`
       : `会议背景 / 术语表：\n${sharedContext || "未提供"}`;
-    const user = `${context}\n\n前序已统一术语：\n${terminology.join("、") || "无"}\n\n待校对片段：\n${serializedInput}`;
+    const user = `${context}\n\n${terminologyPrompt}\n\n待检查片段：\n${serializedInput}`;
+    if (user.length > MAX_TEXT_INPUT_CHARACTERS) {
+      throw new Error("术语、面试背景与逐字稿片段合计过长，无法安全发送校正请求；请精简配置后重试");
+    }
     const content = await chatCompletion({ config, system, user, signal });
     const parsed = parseJsonObject(content);
-    const responseSegments = Array.isArray(parsed.segments) ? parsed.segments : [];
-    const responseIsComplete = responseSegments.length === input.length
-      && responseSegments.every((item, index) => Number(item?.id) === input[index].id);
-    const batchTerms = responseIsComplete ? stringArray(parsed.terminology) : [];
-    const trustedTerms = batchTerms.filter((term) => (
-      correctionText(term).length >= 2
-      && trustedTermsFromUser.some((trustedTerm) => comparableText(trustedTerm) === comparableText(term))
-    ));
-    const acceptedTerms = new Set();
-    const byId = new Map(responseIsComplete ? responseSegments.map((item) => [Number(item.id), item]) : []);
-    if (!responseIsComplete) rejectedCorrections += batch.length;
-    input.forEach((item, localIndex) => {
-      const source = batch[localIndex];
-      const globalIndex = sourceOffset + localIndex;
-      const result = byId.get(item.id);
-      const correction = responseIsComplete
-        ? safeCorrection(source.text, result?.text, trustedTerms)
-        : { text: stringOr(source.text, ""), rejected: false };
-      if (correction.rejected) rejectedCorrections += 1;
-      else {
-        for (const term of trustedTerms) {
-          const normalizedTerm = correctionText(term);
-          if (normalizedTerm && occurrenceCount(correctionText(correction.text), normalizedTerm) > occurrenceCount(correctionText(source.text), normalizedTerm)) acceptedTerms.add(term);
-        }
-      }
-      corrected.push({
-        ...source,
-        // Speaker attribution cannot be proven from a text-only correction response.
-        speaker: stringOr(source.speaker, "发言人"),
-        text: correction.text,
-        join_next: result?.join_next === true,
-      });
-    });
-    for (const term of acceptedTerms) if (!terminology.includes(term)) terminology.push(term);
-    sourceOffset += batch.length;
-  }
-  const normalized = normalizeSemanticJoins(corrected, original);
-  const semanticJoins = normalized.filter((segment) => segment.join_next === true).length;
-  return { segments: normalized, terminology: terminology.slice(0, 60), rejectedCorrections, semanticJoins };
+    if (!Array.isArray(parsed?.patches)) {
+      throw new Error("术语校正响应格式无效：缺少 patches 数组，已保留原逐字稿");
+    }
+    const reusable = reusableCorrectionPatches(meeting.corrections, batch, batchStartId, terminologyContext);
+    const result = applyCorrectionPatches(batch, batchStartId, mergeCorrectionPatches(parsed.patches, reusable), terminologyContext);
+    const joinAfter = new Set((Array.isArray(parsed.join_after) ? parsed.join_after : [])
+      .map(Number)
+      .filter((id) => Number.isInteger(id) && id >= batchStartId && id < batchStartId + batch.length));
+    result.segments = result.segments.map((segment, localIndex) => ({
+      ...segment,
+      join_next: joinAfter.has(batchStartId + localIndex),
+    }));
+    return result;
+  });
+  const corrections = results.flatMap((result) => result.corrections);
+  const normalized = normalizeSemanticJoins(results.flatMap((result) => result.segments), original);
+  return {
+    segments: normalized,
+    terminology: uniqueStrings(results.flatMap((result) => result.terminology)).slice(0, MAX_TERMINOLOGY_ENTRIES),
+    rejectedCorrections: corrections.filter((item) => item.status === "rejected").length,
+    semanticJoins: normalized.filter((segment) => segment.join_next === true).length,
+    corrections,
+  };
+}
+
+function correctionSourceSegments(meeting) {
+  const rawSegments = meeting.rawSegments || [];
+  if (!rawSegments.length) return meeting.segments || [];
+  const ledger = Array.isArray(meeting.asrReconciliations) ? meeting.asrReconciliations : [];
+  const replayed = replayTranscriptReconciliations(rawSegments, ledger);
+  if (!replayed) throw new Error("ASR 边界校验记录无效，已停止重新校正并保留当前逐字稿");
+  return replayed;
 }
 
 export function readableTranscriptSegments(segments = []) {
@@ -564,7 +621,7 @@ export async function askTranscript({ config, meeting, question, signal }) {
   });
 }
 
-async function chatCompletion({ config, system, user, signal }) {
+async function chatCompletion({ config, system, user, signal, attempts = DEFAULT_TEXT_ATTEMPTS }) {
   if (!config.chatModel?.trim()) throw new Error("请先填写文本模型名称");
   const protocol = config.chatProtocol || (/\bresponses\/?$/i.test(config.chatPath || "") ? "responses" : "chat-completions");
   const requestBody = protocol === "responses" ? {
@@ -577,15 +634,31 @@ async function chatCompletion({ config, system, user, signal }) {
     messages: [{ role: "system", content: system }, { role: "user", content: user }],
     temperature: 0.2,
   };
-  const body = await apiFetch(joinApiUrl(config.chatBaseUrl, config.chatPath), {
-    method: "POST",
-    headers: authHeaders(config.chatApiKey),
-    body: JSON.stringify(requestBody),
-    signal,
-  }, config);
-  const content = responseText(body);
-  if (!content) throw new Error("文本模型没有返回内容");
-  return content;
+  const requestUrl = joinApiUrl(config.chatBaseUrl, config.chatPath);
+  const requestHeaders = authHeaders(config.chatApiKey);
+  const requestBodyJson = JSON.stringify(requestBody);
+  const requestAbortSignal = signal || AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS);
+  const attemptCount = Math.max(1, Math.min(DEFAULT_TEXT_ATTEMPTS, Number(attempts) || DEFAULT_TEXT_ATTEMPTS));
+  let lastError;
+  for (let attempt = 1; attempt <= attemptCount; attempt += 1) {
+    try {
+      const body = await apiFetch(requestUrl, {
+        method: "POST",
+        headers: requestHeaders,
+        body: requestBodyJson,
+        signal: requestAbortSignal,
+      }, config);
+      const content = responseText(body);
+      if (!content) throw retryableError("文本模型没有返回内容");
+      return content;
+    } catch (error) {
+      lastError = error;
+      if (requestAbortSignal.aborted || !error?.retryable || attempt === attemptCount) throw error;
+      const exponentialDelay = TEXT_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1));
+      await retryDelay(Math.max(exponentialDelay, Number(error.retryAfterMs) || 0), requestAbortSignal);
+    }
+  }
+  throw lastError;
 }
 
 function responseText(body) {
@@ -792,6 +865,29 @@ function joinTranscriptText(leftValue, rightValue) {
   return `${left}${(wordBoundary && !cjkBoundary) || latinContinuation || chineseToLatin ? " " : ""}${right}`;
 }
 
+export async function mapWithConcurrency(values, concurrency, mapper) {
+  const source = Array.from(values || []);
+  if (!source.length) return [];
+  const results = new Array(source.length);
+  let nextIndex = 0;
+  let failure = null;
+  const workerCount = Math.min(source.length, Math.max(1, Number(concurrency) || 1));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (!failure && nextIndex < source.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      try {
+        results[index] = await mapper(source[index], index);
+      } catch (error) {
+        failure ||= { error, index };
+      }
+    }
+  });
+  await Promise.all(workers);
+  if (failure) throw failure.error;
+  return results;
+}
+
 function parseJsonObject(value) {
   const text = String(value || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   try { return JSON.parse(text); } catch {}
@@ -923,28 +1019,211 @@ function mergeInterviewReportParts(values) {
   };
 }
 
-function explicitTermsFromContext(value) {
-  const labels = /^(?:术语|专有名词|项目名|产品名|公司名|组织名|人名|姓名|负责人|参会人|人员|terms?|project|product|company|organization|names?)\s*[:：=]?\s*(.+)$/i;
-  const terms = [];
-  for (const clause of String(value || "").split(/[；;\n]+/u)) {
+function parseTerminologyContext(value) {
+  const labels = /^(术语|专有名词|项目名|产品名|公司名|组织名|人名|姓名|负责人|参会人|人员|别名|terms?|project|product|company|organization|names?|aliases?)\s*[:：=]?\s*(.+)$/i;
+  const canonicalTerms = [];
+  const aliasMappings = new Map();
+  const conflictingAliases = new Set();
+  let entryCount = 0;
+  let overflow = false;
+  clauseLoop: for (const clause of String(value || "").split(/[；;\n]+/u)) {
     const match = clause.trim().match(labels);
     if (!match) continue;
-    terms.push(...match[1].split(/[、,，|/]+/u).map((term) => term.trim()).filter(Boolean));
+    const label = match[1];
+    const separator = /(?:->|→)/u.test(match[2]) ? /[、,，|]+/u : /[、,，|/]+/u;
+    for (const entry of match[2].split(separator).map((item) => item.trim()).filter(Boolean)) {
+      if (entryCount >= MAX_TERMINOLOGY_ENTRIES) {
+        overflow = true;
+        break clauseLoop;
+      }
+      entryCount += 1;
+      const mapping = entry.match(/^(.+?)\s*(?:->|→)\s*(.+)$/u);
+      if (!mapping) {
+        if (
+          !/^(?:别名|aliases?)$/i.test(label)
+          && codePointLength(entry) >= 2
+          && codePointLength(entry) <= MAX_TERMINOLOGY_ENTRY_CHARACTERS
+        ) canonicalTerms.push(entry);
+        continue;
+      }
+      const alias = mapping[1].trim();
+      const canonical = mapping[2].trim();
+      const aliasKey = correctionText(alias);
+      if (
+        codePointLength(alias) > MAX_TERMINOLOGY_ENTRY_CHARACTERS
+        || codePointLength(canonical) > MAX_TERMINOLOGY_ENTRY_CHARACTERS
+        || aliasKey.length < 2
+        || correctionText(canonical).length < 2
+        || alias.normalize("NFKC") === canonical.normalize("NFKC")
+      ) continue;
+      canonicalTerms.push(canonical);
+      const existing = aliasMappings.get(aliasKey);
+      if (existing && existing.canonical.normalize("NFKC") !== canonical.normalize("NFKC")) {
+        aliasMappings.delete(aliasKey);
+        conflictingAliases.add(aliasKey);
+      } else if (!conflictingAliases.has(aliasKey)) {
+        aliasMappings.set(aliasKey, { alias, canonical });
+      }
+    }
   }
-  return [...new Set(terms)];
+  return { canonicalTerms: uniqueStrings(canonicalTerms), aliasMappings, conflictingAliases, overflow };
 }
 
-function normalizeHighlights(value, segments = [], rawSegments = [], trustedTerms = []) {
-  return Array.isArray(value) ? value.map((item) => {
-    const evidence = verifiedEvidence(item?.start_seconds, item?.quote, segments, rawSegments, trustedTerms);
+function codePointLength(value) {
+  return [...String(value || "")].length;
+}
+
+function applyCorrectionPatches(batch, batchStartId, value, terminologyContext) {
+  const patches = Array.isArray(value) ? value : [];
+  const sources = batch.map((segment, localIndex) => ({ segmentId: batchStartId + localIndex, segment, proposals: [] }));
+  const byId = new Map(sources.map((item) => [item.segmentId, item]));
+  const corrections = [];
+  let order = 0;
+
+  for (const patch of patches) {
+    const segmentId = correctionSegmentId(patch?.id);
+    const replacements = Array.isArray(patch?.replacements) ? patch.replacements : null;
+    if (!replacements) {
+      corrections.push({ ...correctionLedgerEntry({ segmentId, segment: byId.get(segmentId)?.segment, status: "rejected", reason: "invalid_replacements" }), order: order += 1 });
+      continue;
+    }
+    for (const replacement of replacements) {
+      const proposal = { segmentId, replacement, order: order += 1 };
+      const target = byId.get(segmentId);
+      if (target) target.proposals.push(proposal);
+      else corrections.push({ ...rejectedPatchEntry(proposal, null, "unknown_segment"), order: proposal.order });
+    }
+  }
+
+  const acceptedTerminology = [];
+  const segments = sources.map(({ segmentId, segment, proposals }) => {
+    const accepted = [];
+    for (const proposal of proposals) {
+      const replacement = proposal.replacement;
+      const from = typeof replacement?.from === "string" ? replacement.from.trim() : "";
+      const proposedTo = typeof replacement?.to === "string" ? replacement.to.trim() : "";
+      const reject = (reason) => corrections.push({
+        ...correctionLedgerEntry({ segmentId, segment, from, to: proposedTo, status: "rejected", reason }),
+        order: proposal.order,
+      });
+      if (!from || !proposedTo) {
+        reject("invalid_replacement");
+        continue;
+      }
+      const aliasKey = correctionText(from);
+      if (terminologyContext.conflictingAliases.has(aliasKey)) {
+        reject("conflicting_alias_mapping");
+        continue;
+      }
+      const mapping = terminologyContext.aliasMappings.get(aliasKey);
+      if (!mapping) {
+        reject(terminologyContext.canonicalKeys.has(correctionText(proposedTo)) ? "explicit_alias_required" : "unknown_canonical");
+        continue;
+      }
+      if (proposedTo.normalize("NFKC") !== mapping.canonical.normalize("NFKC")) {
+        reject("canonical_mismatch");
+        continue;
+      }
+      const offsets = literalMatchOffsets(String(segment.text || ""), from);
+      if (!offsets.length) {
+        reject("from_not_found");
+        continue;
+      }
+      if (offsets.length !== 1) {
+        reject("from_not_unique");
+        continue;
+      }
+      const range = { start: offsets[0], end: offsets[0] + from.length, to: mapping.canonical };
+      if (accepted.some((item) => range.start < item.end && range.end > item.start)) {
+        reject("overlapping_replacement");
+        continue;
+      }
+      const candidate = `${String(segment.text || "").slice(0, range.start)}${range.to}${String(segment.text || "").slice(range.end)}`;
+      if (criticalFingerprint(segment.text) !== criticalFingerprint(candidate)) {
+        reject("critical_fact_change");
+        continue;
+      }
+      accepted.push(range);
+      acceptedTerminology.push(mapping.canonical);
+      corrections.push({
+        ...correctionLedgerEntry({
+          segmentId,
+          segment,
+          from,
+          to: mapping.canonical,
+          status: "accepted",
+          reason: "explicit_alias",
+          startOffset: range.start,
+          endOffset: range.end,
+        }),
+        order: proposal.order,
+      });
+    }
+    let text = String(segment.text || "");
+    for (const replacement of accepted.sort((left, right) => right.start - left.start)) {
+      text = `${text.slice(0, replacement.start)}${replacement.to}${text.slice(replacement.end)}`;
+    }
+    return { ...segment, text };
+  });
+
+  return {
+    segments,
+    terminology: uniqueStrings(acceptedTerminology),
+    corrections: corrections.sort((left, right) => left.order - right.order).map(({ order: _order, ...entry }) => entry),
+  };
+}
+
+function rejectedPatchEntry(proposal, segment, reason) {
+  const replacement = proposal.replacement;
+  return correctionLedgerEntry({
+    segmentId: proposal.segmentId,
+    segment,
+    from: typeof replacement?.from === "string" ? replacement.from.trim() : "",
+    to: typeof replacement?.to === "string" ? replacement.to.trim() : "",
+    status: "rejected",
+    reason,
+  });
+}
+
+function correctionLedgerEntry({ segmentId, segment, from = "", to = "", status, reason, startOffset, endOffset }) {
+  return {
+    segmentId: Number.isInteger(segmentId) ? segmentId : null,
+    start_seconds: segment ? Math.max(0, Number(segment.start_seconds) || 0) : null,
+    source_hash: segment ? segmentSourceHash(segment, segmentId) : null,
+    from,
+    to,
+    status,
+    reason,
+    ...(Number.isInteger(startOffset) && Number.isInteger(endOffset) ? {
+      start_offset: startOffset,
+      end_offset: endOffset,
+    } : {}),
+  };
+}
+
+function literalMatchOffsets(value, search) {
+  const offsets = [];
+  let offset = String(value).indexOf(search);
+  while (offset !== -1) {
+    offsets.push(offset);
+    offset = String(value).indexOf(search, offset + 1);
+  }
+  return offsets;
+}
+
+function normalizeHighlights(value, segments = [], rawSegments = [], trustedTerms = [], correctionLedger, reconciliationLedger) {
+  if (!Array.isArray(value) || !value.length) return [];
+  const evidenceContext = prepareEvidenceContext(segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger);
+  return uniqueItems(value.map((item) => {
+    const evidence = verifiedEvidence(item?.start_seconds, item?.quote, segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger, item?.speaker, evidenceContext);
     if (!evidence) return null;
     return {
       start_seconds: evidence.start_seconds,
       speaker: evidence.speaker || stringOr(item?.speaker, "发言人"),
       quote: evidence.quote,
-      reason: stringOr(item?.reason, ""),
+      reason: "",
     };
-  }).filter(Boolean).slice(0, 20) : [];
+  }).filter(Boolean), (item) => `${item.start_seconds}:${comparableText(item.quote)}`).slice(0, 20);
 }
 
 function normalizeSpeakerSummaries(value) {
@@ -955,16 +1234,18 @@ function normalizeSpeakerSummaries(value) {
   })).filter((item) => item.summary || item.key_points.length).slice(0, 30) : [];
 }
 
-function normalizeDecisionRecords(value, segments = [], rawSegments = [], trustedTerms = []) {
-  return Array.isArray(value) ? value.map((item) => {
-    const evidence = verifiedEvidence(item?.start_seconds, item?.evidence, segments, rawSegments, trustedTerms);
+function normalizeDecisionRecords(value, segments = [], rawSegments = [], trustedTerms = [], correctionLedger, reconciliationLedger) {
+  if (!Array.isArray(value) || !value.length) return [];
+  const evidenceContext = prepareEvidenceContext(segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger);
+  return uniqueItems(value.map((item) => {
+    if (!looksLikeDecisionEvidence(item?.evidence)) return null;
+    const evidence = verifiedEvidence(item?.start_seconds, item?.evidence, segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger, "", evidenceContext);
     if (!evidence || !looksLikeDecisionEvidence(evidence.quote)) return null;
     const decision = stringOr(item?.decision, "");
     const normalizedDecision = comparableText(decision);
     if (normalizedDecision.length < 2) return null;
-    const safeDecision = comparableText(evidence.quote).includes(normalizedDecision) ? decision : evidence.quote;
-    return { decision: safeDecision, start_seconds: evidence.start_seconds, evidence: evidence.quote };
-  }).filter((item) => item?.decision).slice(0, 30) : [];
+    return { decision: evidence.quote, start_seconds: evidence.start_seconds, evidence: evidence.quote };
+  }).filter((item) => item?.decision), (item) => `${item.start_seconds}:${comparableText(item.evidence)}`).slice(0, 30);
 }
 
 function looksLikeDecisionEvidence(value) {
@@ -993,8 +1274,9 @@ function interviewContextForPrompt(meeting) {
   ].join("\n");
 }
 
-function normalizeInterviewReport(value, requestedCompetencies = [], segments = [], rawSegments = [], trustedTerms = []) {
+function normalizeInterviewReport(value, requestedCompetencies = [], segments = [], rawSegments = [], trustedTerms = [], correctionLedger, reconciliationLedger) {
   const source = value && typeof value === "object" ? value : {};
+  const evidenceContext = prepareEvidenceContext(segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger);
   const groupedCompetencies = new Map();
   for (const item of Array.isArray(source.competencies) ? source.competencies : []) {
     const name = stringOr(item?.name, "未命名能力项");
@@ -1004,7 +1286,7 @@ function normalizeInterviewReport(value, requestedCompetencies = [], segments = 
   }
   const sourceCompetencies = [...groupedCompetencies.values()].map((item) => {
     const evidence = uniqueItems(item.evidence.map((entry) => (
-      verifiedEvidence(entry?.start_seconds, entry?.quote, segments, rawSegments, trustedTerms)
+      verifiedEvidence(entry?.start_seconds, entry?.quote, segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger, "", evidenceContext)
     )).filter(Boolean), (entry) => `${entry.start_seconds}:${comparableText(entry.quote)}`).slice(0, 6);
     return {
       name: item.name,
@@ -1015,7 +1297,10 @@ function normalizeInterviewReport(value, requestedCompetencies = [], segments = 
   }).filter((item) => item.name).slice(0, 20);
   const requestedNames = [...new Set(stringArray(requestedCompetencies))];
   const competencies = (requestedNames.length
-    ? requestedNames.map((name) => sourceCompetencies.find((item) => comparableText(item.name) === comparableText(name)) || { name, rating: "insufficient", assessment: "证据不足", evidence: [] })
+    ? requestedNames.map((name) => {
+      const matched = sourceCompetencies.find((item) => comparableText(item.name) === comparableText(name));
+      return matched ? { ...matched, name } : { name, rating: "insufficient", assessment: "证据不足", evidence: [] };
+    })
     : sourceCompetencies).slice(0, 20);
   const usedEvidence = new Set();
   for (const competency of competencies) {
@@ -1031,7 +1316,7 @@ function normalizeInterviewReport(value, requestedCompetencies = [], segments = 
     }
   }
   const required = requestedNames.length
-    ? requestedNames.map((name) => competencies.find((item) => item.name === name)).filter(Boolean)
+    ? requestedNames.map((name) => competencies.find((item) => comparableText(item.name) === comparableText(name))).filter(Boolean)
     : competencies;
   const verifiedEvidenceCount = required.reduce((total, item) => total + item.evidence.length, 0);
   const noVerifiedEvidence = verifiedEvidenceCount === 0;
@@ -1056,36 +1341,248 @@ function normalizeInterviewReport(value, requestedCompetencies = [], segments = 
   };
 }
 
-function verifiedEvidence(value, quoteValue, segments, rawSegments = [], trustedTerms = []) {
+function verifiedEvidence(value, quoteValue, segments, rawSegments = [], trustedTerms = [], correctionLedger, reconciliationLedger, speakerHintValue = "", preparedContext) {
   const time = evidenceTime(value);
   const quote = stringOr(quoteValue, "");
   const normalizedQuote = comparableText(quote);
   if (time == null || normalizedQuote.length < 2) return null;
-  const segmentIndex = (segments || []).findIndex((candidate, index, all) => {
+  const candidates = (segments || []).map((candidate, index, all) => {
     const start = Math.max(0, Number(candidate?.start_seconds) || 0);
     const explicitEnd = Number(candidate?.end_seconds);
     const nextStart = Number(all[index + 1]?.start_seconds);
     const end = Number.isFinite(explicitEnd) && explicitEnd > start
       ? explicitEnd
       : (Number.isFinite(nextStart) && nextStart > start ? nextStart : start + 5);
-    return time >= start - 0.5 && time <= end + 0.5 && comparableText(candidate?.text).includes(normalizedQuote);
-  });
+    if (time < start - 0.5 || time > end + 0.5) return null;
+    const atomicMatch = comparableText(candidate?.text).includes(normalizedQuote);
+    const groupMatch = atomicMatch || comparableText(evidenceContextGroup(all, index).text).includes(normalizedQuote);
+    if (!groupMatch) return null;
+    return { index, start, distance: Math.abs(start - time), speaker: comparableText(candidate?.speaker || "发言人") };
+  }).filter(Boolean);
+  const speakerHint = comparableText(speakerHintValue);
+  const speakerMatches = speakerHint ? candidates.filter((candidate) => candidate.speaker === speakerHint) : [];
+  const ranked = (speakerMatches.length ? speakerMatches : candidates)
+    .sort((left, right) => left.distance - right.distance || left.index - right.index);
+  if (!ranked.length || (ranked[1] && Math.abs(ranked[0].distance - ranked[1].distance) < 1e-9)) return null;
+  const segmentIndex = ranked[0].index;
   const segment = segments?.[segmentIndex];
   if (!segment) return null;
-  if (rawSegments.length) {
-    const rawSegment = rawSegments[segmentIndex] || rawSegments.find((candidate) => (
-      Math.abs((Number(candidate?.start_seconds) || 0) - (Number(segment.start_seconds) || 0)) <= 0.5
-    ));
-    if (!rawSegment) return null;
-    if (comparableText(rawSegment.speaker || "发言人") !== comparableText(segment.speaker || "发言人")) return null;
-    const correction = safeCorrection(rawSegment.text, segment.text, trustedTerms);
-    if (correction.rejected || correction.text !== segment.text) return null;
-  }
+  const contextGroup = evidenceContextGroup(segments, segmentIndex);
+  if (
+    contextGroup.text.length > MAX_READABLE_SEGMENT_CHARACTERS
+    || contextGroup.end_seconds - contextGroup.start_seconds > MAX_READABLE_SEGMENT_SECONDS
+  ) return null;
+  const contextualQuote = contextPreservingEvidenceQuote(contextGroup.text, quote);
+  if (!contextualQuote) return null;
+  const evidenceContext = preparedContext || prepareEvidenceContext(segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger);
+  if (evidenceContext.invalid || evidenceContext.segmentValidity?.[segmentIndex] === false) return null;
   return {
-    start_seconds: Math.max(0, Number(segment.start_seconds) || 0),
+    start_seconds: contextualQuote.normalize("NFKC").toLocaleLowerCase() === quote.normalize("NFKC").toLocaleLowerCase()
+      ? Math.max(0, Number(segment.start_seconds) || 0)
+      : contextGroup.start_seconds,
     speaker: stringOr(segment.speaker, "发言人"),
-    quote,
+    quote: contextualQuote,
   };
+}
+
+function prepareEvidenceContext(segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger) {
+  const displayed = segments || [];
+  if (!rawSegments?.length) return { invalid: false, segmentValidity: null };
+  const derivedFromRaw = replayTranscriptReconciliations(rawSegments, Array.isArray(reconciliationLedger) ? reconciliationLedger : []);
+  if (!derivedFromRaw) return { invalid: true, segmentValidity: [] };
+  if (Array.isArray(correctionLedger)) {
+    const replayed = replayCorrectedTranscriptWithJoins(derivedFromRaw, displayed, correctionLedger, trustedTerms);
+    return replayed
+      ? { invalid: false, segmentValidity: replayed.map(() => true) }
+      : { invalid: true, segmentValidity: [] };
+  }
+  const segmentValidity = displayed.map((segment, index) => {
+    const sourceSegment = derivedFromRaw[index];
+    if (!sourceSegment || !sameTranscriptGeometry(sourceSegment, segment)) return false;
+    const correction = safeCorrection(sourceSegment.text, segment.text, trustedTerms);
+    return !correction.rejected && correction.text === segment.text;
+  });
+  return { invalid: false, segmentValidity };
+}
+
+function evidenceContextGroup(segments, segmentIndex) {
+  const source = segments || [];
+  const selected = source[segmentIndex] || {};
+  let first = segmentIndex;
+  let last = segmentIndex;
+  let text = stringOr(selected.text, "");
+  let start = Math.max(0, Number(selected.start_seconds) || 0);
+  let end = Math.max(start, Number(selected.end_seconds) || start);
+
+  while (first > 0) {
+    const previous = source[first - 1];
+    const current = source[first];
+    const joined = joinTranscriptText(stringOr(previous?.text, ""), text);
+    const joinedStart = Math.max(0, Number(previous?.start_seconds) || 0);
+    if (
+      previous?.join_next !== true
+      || !canJoinTranscriptSegments(previous, current)
+      || joined.length > MAX_READABLE_SEGMENT_CHARACTERS
+      || end - joinedStart > MAX_READABLE_SEGMENT_SECONDS
+    ) break;
+    first -= 1;
+    text = joined;
+    start = joinedStart;
+  }
+
+  while (last < source.length - 1) {
+    const current = source[last];
+    const next = source[last + 1];
+    const joined = joinTranscriptText(text, stringOr(next?.text, ""));
+    const joinedEnd = Math.max(end, Number(next?.end_seconds) || Number(next?.start_seconds) || end);
+    if (
+      current?.join_next !== true
+      || !canJoinTranscriptSegments(current, next)
+      || joined.length > MAX_READABLE_SEGMENT_CHARACTERS
+      || joinedEnd - start > MAX_READABLE_SEGMENT_SECONDS
+    ) break;
+    last += 1;
+    text = joined;
+    end = joinedEnd;
+  }
+
+  return { text, start_seconds: start, end_seconds: end };
+}
+
+function contextPreservingEvidenceQuote(segmentValue, quoteValue) {
+  const segment = String(segmentValue || "").trim();
+  const quote = String(quoteValue || "").trim();
+  if (!segment || !quote) return null;
+  const haystack = segment.toLocaleLowerCase();
+  const needle = quote.toLocaleLowerCase();
+  const start = haystack.indexOf(needle);
+  if (start < 0) return comparableText(segment).includes(comparableText(quote)) ? segment : null;
+  if (haystack.indexOf(needle, start + Math.max(1, needle.length)) >= 0) return null;
+  return segment;
+}
+
+function replayCorrectedTranscriptWithJoins(sourceSegments, displayedSegments, correctionLedger, trustedTerms) {
+  if (sourceSegments.length !== displayedSegments?.length) return null;
+  const correctionsBySegment = acceptedCorrectionsBySegment(correctionLedger);
+  const corrected = [];
+  for (let index = 0; index < sourceSegments.length; index += 1) {
+    const source = sourceSegments[index];
+    const displayed = displayedSegments[index];
+    if (!sameTranscriptGeometry(source, displayed)) return null;
+    const text = replayAcceptedCorrections(source, index, correctionsBySegment.get(index) || [], trustedTerms);
+    if (text == null) return null;
+    corrected.push({ ...source, text, join_next: displayed?.join_next === true });
+  }
+  const replayed = normalizeSemanticJoins(corrected, sourceSegments);
+  const matches = replayed.every((segment, index) => (
+    segment.text === String(displayedSegments[index]?.text || "")
+    && (segment.join_next === true) === (displayedSegments[index]?.join_next === true)
+  ));
+  return matches ? replayed : null;
+}
+
+function sameTranscriptGeometry(left, right) {
+  return comparableText(left?.speaker || "发言人") === comparableText(right?.speaker || "发言人")
+    && Number(left?.start_seconds) === Number(right?.start_seconds)
+    && Number(left?.end_seconds) === Number(right?.end_seconds);
+}
+
+function acceptedCorrectionsBySegment(correctionLedger) {
+  const grouped = new Map();
+  for (const entry of correctionLedger) {
+    if (entry?.status !== "accepted" || !Number.isInteger(entry.segmentId)) continue;
+    if (!grouped.has(entry.segmentId)) grouped.set(entry.segmentId, []);
+    grouped.get(entry.segmentId).push(entry);
+  }
+  return grouped;
+}
+
+function replayAcceptedCorrections(segment, segmentId, entries, _trustedTerms) {
+  if (!entries.length) return String(segment?.text || "");
+  const source = String(segment?.text || "");
+  const sourceHash = segmentSourceHash(segment, segmentId);
+  const ranges = [];
+  for (const entry of entries) {
+    const start = Number(entry.start_offset);
+    const end = Number(entry.end_offset);
+    if (
+      entry.source_hash !== sourceHash
+      || entry.reason !== "explicit_alias"
+      || !Number.isInteger(start)
+      || !Number.isInteger(end)
+      || start < 0
+      || end <= start
+      || end > source.length
+      || typeof entry.from !== "string"
+      || typeof entry.to !== "string"
+      || !entry.to.trim()
+      || source.slice(start, end) !== entry.from
+      || ranges.some((range) => start < range.end && end > range.start)
+    ) return null;
+    ranges.push({ start, end, to: entry.to });
+  }
+  let text = source;
+  for (const range of ranges.sort((left, right) => right.start - left.start)) {
+    text = `${text.slice(0, range.start)}${range.to}${text.slice(range.end)}`;
+  }
+  return criticalFingerprint(source) === criticalFingerprint(text) ? text : null;
+}
+
+function reusableCorrectionPatches(correctionLedger, batch, batchStartId, terminologyContext) {
+  if (!Array.isArray(correctionLedger)) return [];
+  const grouped = new Map();
+  for (const entry of correctionLedger) {
+    const segmentId = Number(entry?.segmentId);
+    const localIndex = segmentId - batchStartId;
+    const segment = batch[localIndex];
+    const start = Number(entry?.start_offset);
+    const end = Number(entry?.end_offset);
+    const mapping = terminologyContext.aliasMappings.get(correctionText(entry?.from));
+    if (
+      entry?.status !== "accepted"
+      || entry.reason !== "explicit_alias"
+      || !Number.isInteger(segmentId)
+      || !segment
+      || entry.source_hash !== segmentSourceHash(segment, segmentId)
+      || !Number.isInteger(start)
+      || !Number.isInteger(end)
+      || start < 0
+      || end <= start
+      || String(segment.text || "").slice(start, end) !== entry.from
+      || !mapping
+      || String(entry.to || "").normalize("NFKC") !== mapping.canonical.normalize("NFKC")
+    ) continue;
+    if (!grouped.has(segmentId)) grouped.set(segmentId, []);
+    grouped.get(segmentId).push({ from: entry.from, to: mapping.canonical });
+  }
+  return [...grouped].map(([id, replacements]) => ({ id, replacements }));
+}
+
+function mergeCorrectionPatches(modelPatches, reusablePatches) {
+  const signatures = new Set();
+  for (const patch of modelPatches) {
+    const segmentId = correctionSegmentId(patch?.id);
+    if (segmentId == null) continue;
+    for (const replacement of Array.isArray(patch?.replacements) ? patch.replacements : []) {
+      signatures.add(JSON.stringify([segmentId, replacement?.from, replacement?.to]));
+    }
+  }
+  const reusable = reusablePatches.map((patch) => ({
+    ...patch,
+    replacements: patch.replacements.filter((replacement) => {
+      const signature = JSON.stringify([Number(patch.id), replacement.from, replacement.to]);
+      if (signatures.has(signature)) return false;
+      signatures.add(signature);
+      return true;
+    }),
+  })).filter((patch) => patch.replacements.length);
+  return [...modelPatches, ...reusable];
+}
+
+function correctionSegmentId(value) {
+  if (typeof value !== "number" && !(typeof value === "string" && value.trim())) return null;
+  const segmentId = Number(value);
+  return Number.isInteger(segmentId) ? segmentId : null;
 }
 
 function safeCorrection(sourceValue, correctedValue, trustedTerms = []) {
@@ -1126,17 +1623,6 @@ function changedRangeInReplacement(left, right) {
     rightEnd -= 1;
   }
   return { start, end: rightEnd };
-}
-
-function occurrenceCount(value, search) {
-  if (!search) return 0;
-  let count = 0;
-  let offset = value.indexOf(search);
-  while (offset !== -1) {
-    count += 1;
-    offset = value.indexOf(search, offset + search.length);
-  }
-  return count;
 }
 
 function comparableText(value) {
@@ -1236,14 +1722,14 @@ function toInterviewMarkdown(meeting) {
   const report = meeting.interviewReport || {};
   const transcriptSegments = readableTranscriptSegments(meeting.segments);
   const coverage = report.competencies?.filter((item) => item.evidence?.length).map((item) => (
-    `- ${item.name}：${item.evidence.length} 条候选原话，需人工判断`
+    `- ${item.name}：${item.evidence.length} 条逐字稿原话，需核对说话人并人工判断`
   )) || [];
   const competencies = report.competencies?.length ? report.competencies.flatMap((item) => [
     `### ${item.name} · ${ratingLabel(item.rating)}`,
     "",
     item.assessment || "证据不足",
     "",
-    ...(item.evidence?.length ? item.evidence.map((evidence) => `- [${formatTimestamp(evidence.start_seconds)}] “${evidence.quote}”`) : ["- 无可核验证据"]),
+    ...(item.evidence?.length ? item.evidence.map((evidence) => `- [${formatTimestamp(evidence.start_seconds)}] ${evidence.speaker || "发言人"}：“${evidence.quote}”`) : ["- 无可核验证据"]),
     "",
   ]) : ["无能力项评估", ""];
   return [
@@ -1253,10 +1739,10 @@ function toInterviewMarkdown(meeting) {
     `- 面试轮次：${context.stage || "未提供"}`,
     `- 创建时间：${new Date(meeting.createdAt).toLocaleString("zh-CN")}`,
     `- 时长：${formatTimestamp(meeting.duration)}`, "",
-    "> 此报告只整理经时间和原文校验的候选证据，不判断原话是否证明能力，不用于自动录用决定。请回听复核并忽略敏感个人属性。", "",
+    "> 此报告只整理经时间、说话人与原文校验的逐字稿证据，不判断原话是否来自候选人或证明能力，不用于自动录用决定。请回听复核并忽略敏感个人属性。", "",
     "## 证据复核", "",
     report.overview || meeting.summary || "证据不足", "",
-    "## 证据覆盖", "", ...(coverage.length ? coverage : ["无通过校验的候选原话"]), "",
+    "## 证据覆盖", "", ...(coverage.length ? coverage : ["无通过校验的逐字稿原话"]), "",
     "## 能力证据", "", ...competencies,
     "## 风险与待核实项", "", ...(report.risks?.length ? report.risks.map((item) => `- ${item}`) : ["无"]), "",
     "## 建议追问", "", ...(report.follow_ups?.length ? report.follow_ups.map((item) => `- ${item}`) : ["无"]), "",
@@ -1277,11 +1763,11 @@ export function toVtt(meeting) {
 }
 
 export function publicMeeting(meeting) {
-  const decisionRecords = normalizeDecisionRecords(meeting.decision_records, meeting.segments, meeting.rawSegments, meeting.terminology);
+  const decisionRecords = normalizeDecisionRecords(meeting.decision_records, meeting.segments, meeting.rawSegments, meeting.terminology, meeting.corrections, meeting.asrReconciliations);
   const result = {
     schema: 3, title: meeting.title, createdAt: meeting.createdAt, duration: meeting.duration,
     language: meeting.language || "", summary: meeting.summary || "", keywords: meeting.keywords || [],
-    highlights: normalizeHighlights(meeting.highlights, meeting.segments, meeting.rawSegments, meeting.terminology), speaker_summaries: normalizeSpeakerSummaries(meeting.speaker_summaries),
+    highlights: normalizeHighlights(meeting.highlights, meeting.segments, meeting.rawSegments, meeting.terminology, meeting.corrections, meeting.asrReconciliations), speaker_summaries: normalizeSpeakerSummaries(meeting.speaker_summaries),
     decisions: decisionRecords.map((item) => item.decision), decision_records: decisionRecords,
     action_items: meeting.action_items || [], segments: publicTranscriptSegments(meeting.segments || []),
   };
@@ -1293,10 +1779,19 @@ export function publicMeeting(meeting) {
       stage: meeting.interviewContext?.stage || "",
       competencies: stringArray(meeting.interviewContext?.competencies),
     };
-    result.interviewReport = normalizeInterviewReport(meeting.interviewReport, result.interviewContext.competencies, result.segments, meeting.rawSegments, meeting.terminology);
+    result.interviewReport = normalizeInterviewReport(meeting.interviewReport, result.interviewContext.competencies, result.segments, meeting.rawSegments, meeting.terminology, meeting.corrections, meeting.asrReconciliations);
     if (!result.interviewReport.competencies.some((item) => item.evidence.length)) result.summary = result.interviewReport.overview;
   }
   return result;
+}
+
+function publicTranscriptSegment(segment) {
+  return {
+    start_seconds: Math.max(0, Number(segment?.start_seconds) || 0),
+    end_seconds: Math.max(0, Number(segment?.end_seconds) || 0),
+    speaker: String(segment?.speaker || "发言人 1"),
+    text: String(segment?.text || ""),
+  };
 }
 
 export function buildShareHtml(meeting) {
@@ -1306,6 +1801,10 @@ export function buildShareHtml(meeting) {
     .replace("AI 辅助评估仅供面试官复核，不用于自动录用决定；请忽略敏感个人属性并核对原始证据。", "程序只校验时间和原话，不判断是否证明能力；请回听复核，不用于自动录用决定，并忽略敏感个人属性。")
     .replace("<h2>辅助结论</h2>", "<h2>证据复核</h2>")
     .replace('cl={high:"高",medium:"中",low:"低"}', 'cl={high:"有证据",medium:"有证据",low:"证据不足"}')
+    .replace(
+      `(c.evidence||[]).map(v=>'<div class="evidence">['+t(v.start_seconds)+'] “'+e(v.quote)+'”</div>')`,
+      `(c.evidence||[]).map(v=>'<div class="evidence">['+t(v.start_seconds)+'] '+e(v.speaker||"发言人")+' · “'+e(v.quote)+'”</div>')`,
+    )
     .replace("置信度 ", "证据状态 ");
 }
 

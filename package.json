@@ -1,6 +1,6 @@
 {
   "name": "yanlan-ai",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "type": "module",
   "description": "Yanlan: an open-source AI meeting workspace, MiMo transcription CLI, and Agent Skill.",
   "license": "MIT",
@@ -16,7 +16,7 @@
   "bin": {
     "yanlan": "./bin/yanlan.mjs"
   },
-  "files": ["bin/", "src/api.js", "src/cli.js", "skills/yanlan-transcribe/", "LICENSE", "README.md"],
+  "files": ["bin/", "src/api.js", "src/asr-pipeline.js", "src/asr-quality.js", "src/cli.js", "skills/yanlan-transcribe/", "LICENSE", "README.md"],
   "publishConfig": {
     "access": "public"
   },

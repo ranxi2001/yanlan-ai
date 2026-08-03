@@ -9,6 +9,7 @@ import {
   formatTimestamp,
   joinApiUrl,
   normalizeMimoBaseUrl,
+  mapWithConcurrency,
   parseTranscriptionResponse,
   publicMeeting,
   readableTranscriptSegments,
@@ -21,6 +22,7 @@ import {
   transcribeAudio,
   transcribeAudioWithRetry,
 } from "../src/api.js";
+import { reconcileTranscriptSegments, segmentSourceHash, transcribePcmAdaptively } from "../src/asr-pipeline.js";
 
 const config = {
   asrBaseUrl: "https://mimo.example/v1",
@@ -95,9 +97,32 @@ test("API requests reject credential-bearing remote HTTP endpoints", async () =>
 
 test("normalizes verbose and plain transcription responses", () => {
   assert.deepEqual(parseTranscriptionResponse({ segments: [{ start: 1.5, end: 2.5, speaker: "A", text: "你好" }] }).segments[0], {
-    start_seconds: 1.5, end_seconds: 2.5, speaker: "A", text: "你好",
+    start_seconds: 1.5, end_seconds: 2.5, timing_source: "provider", speaker: "A", text: "你好",
   });
-  assert.equal(parseTranscriptionResponse({ text: "只有全文" }).segments[0].text, "只有全文");
+  assert.deepEqual(parseTranscriptionResponse({ text: "只有全文" }).segments[0], {
+    start_seconds: 0, end_seconds: 0, timing_source: "inferred", speaker: "发言人 1", text: "只有全文",
+  });
+  assert.deepEqual(parseTranscriptionResponse({ segments: [{ begin_time: 1_500, end_time: 2_500, text: "毫秒时间" }] }).segments[0], {
+    start_seconds: 1.5, end_seconds: 2.5, timing_source: "provider", speaker: "发言人 1", text: "毫秒时间",
+  });
+});
+
+test("invalid provider timestamps cannot authorize adaptive boundary deletion", async () => {
+  for (const invalidStart of [-1, "not-a-time"]) {
+    const parsed = parseTranscriptionResponse({ segments: [
+      { start: 0, end: 6, speaker: "A", text: "完成服务部署" },
+      { start: invalidStart, end: 10, speaker: "A", text: "服务部署，然后验证" },
+    ] });
+    assert.equal(parsed.segments[1].timing_source, "inferred");
+
+    const result = await transcribePcmAdaptively({
+      pcm: new Float32Array(100).fill(0.1),
+      sampleRate: 10,
+      transcribe: async () => parsed,
+    });
+    assert.deepEqual(result.segments.map((segment) => segment.text), ["完成服务部署", "服务部署，然后验证"]);
+    assert.deepEqual(result.reconciliations, []);
+  }
 });
 
 test("official MiMo ASR uses chat completions data-URL protocol", async () => {
@@ -325,22 +350,49 @@ test("public insights omit incomplete timestamp evidence", () => {
   assert.deepEqual(data.decision_records, []);
 });
 
-test("GPT correction preserves timestamps while applying corrected text", async () => {
+test("GPT correction requests compact patches and preserves segment metadata", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, options) => {
     assert.equal(url, "https://gpt.example/v1/chat/completions");
     assert.equal(options.headers.Authorization, "Bearer gpt-secret");
-    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ segments: [
-      { id: 0, speaker: "Alice", text: "今天讨论 OneFly。" },
-      { id: 1, speaker: "小明", text: "由小明明天完成。" },
-    ], terminology: ["OneFly"] }) } }] }), { headers: { "content-type": "application/json" } });
+    const body = JSON.parse(options.body);
+    assert.match(body.messages[0].content, /"patches"/);
+    assert.match(body.messages[0].content, /不得返回完整逐字稿/);
+    assert.doesNotMatch(body.messages[0].content, /"segments":\[/);
+    const input = body.messages[1].content.split("待检查片段：")[1];
+    assert.match(input, /"speaker":"发言人 1"/);
+    assert.doesNotMatch(input, /start_seconds|end_seconds/);
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ patches: [{
+      id: 0,
+      speaker: "Alice",
+      start_seconds: 999,
+      replacements: [{ from: "万福来", to: "OneFly" }],
+    }] }) } }] }), { headers: { "content-type": "application/json" } });
   };
   try {
-    const result = await correctTranscript({ config, meeting });
-    assert.equal(result.segments[0].start_seconds, 0);
-    assert.equal(result.segments[0].text, "今天讨论 OneFly。");
+    const result = await correctTranscript({ config: { ...config, contextHint: "术语：万福来 -> OneFly" }, meeting });
+    assert.deepEqual(result.segments[0], { ...meeting.segments[0], text: "今天讨论OneFly。", join_next: false });
+    assert.deepEqual(result.segments[1], { ...meeting.segments[1], join_next: false });
+    assert.equal(result.segments[0].text, "今天讨论OneFly。");
     assert.equal(result.segments[0].speaker, "发言人 1");
     assert.deepEqual(result.terminology, ["OneFly"]);
+    assert.equal(result.rejectedCorrections, 0);
+    assert.deepEqual(
+      result.corrections.map(({ segmentId, start_seconds, from, to, status, reason, start_offset, end_offset }) => ({
+        segmentId, start_seconds, from, to, status, reason, start_offset, end_offset,
+      })),
+      [{
+        segmentId: 0,
+        start_seconds: 0,
+        from: "万福来",
+        to: "OneFly",
+        status: "accepted",
+        reason: "explicit_alias",
+        start_offset: 4,
+        end_offset: 7,
+      }],
+    );
+    assert.match(result.corrections[0].source_hash, /^fnv1a32:[0-9a-f]{8}$/);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -359,21 +411,13 @@ test("GPT correction converts fixed Chinese chunks into readable semantic paragr
       { start_seconds: 50, end_seconds: 53, speaker: "发言人 1", text: "你发现没有花的。" },
     ],
   };
-  const correctedText = [
-    "赵丽蓉是一个非常漂亮、非常美丽的研究生宝宝，她是",
-    "合肥工业大学物流和工程与管理的研究生，他现在",
-    "正在找工作，投递了拼多多和百度的管培生，他一定会找到",
-    "非常好的工作的，孩子一定能考上公务员。我们敬请期待他的",
-    "的收获吧。\n这个断句不太好，是不是？对。",
-    "你发现没有花的。",
-  ];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, options) => {
     const body = JSON.parse(options.body);
-    assert.match(body.messages[0].content, /固定时长切片|join_next/);
+    assert.match(body.messages[0].content, /固定时长切片|join_after/);
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
-      segments: correctedText.map((text, id) => ({ id, speaker: "发言人 1", text, join_next: id < 4 })),
-      terminology: [],
+      patches: [],
+      join_after: [0, 1, 2, 3],
     }) } }] }));
   };
   try {
@@ -389,7 +433,7 @@ test("GPT correction converts fixed Chinese chunks into readable semantic paragr
     assert.match(readable[0].text, /她是合肥工业大学/);
     assert.match(readable[0].text, /他现在正在找工作/);
     assert.match(readable[0].text, /他一定会找到非常好的工作/);
-    assert.match(readable[0].text, /收获吧。\n这个断句不太好/);
+    assert.match(readable[0].text, /收获吧。这个断句不太好/);
     assert.equal(readable[1].start_seconds, 50);
 
     const completed = { ...source, rawSegments: source.segments, segments: result.segments };
@@ -410,7 +454,7 @@ test("GPT correction converts fixed Chinese chunks into readable semantic paragr
   }
 });
 
-test("semantic joins reject speaker changes, large gaps, and structurally invalid model output", async () => {
+test("semantic joins reject speaker changes, large gaps, and invalid join ids", async () => {
   const source = {
     ...meeting,
     segments: [
@@ -420,11 +464,9 @@ test("semantic joins reject speaker changes, large gaps, and structurally invali
     ],
   };
   const originalFetch = globalThis.fetch;
-  let invalid = false;
   globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
-    segments: invalid
-      ? [{ id: 0, text: "恶意改写", join_next: true }, { id: 0, text: "重复 ID", join_next: true }, { id: 2, text: "还在投递", join_next: true }]
-      : source.segments.map((segment, id) => ({ id, speaker: "A", text: segment.text, join_next: true })),
+    patches: [],
+    join_after: [0, 1, 99, "invalid"],
   }) } }] }));
   try {
     const guarded = await correctTranscript({ config, meeting: source });
@@ -457,11 +499,7 @@ test("semantic joins reject speaker changes, large gaps, and structurally invali
     ];
     assert.deepEqual(layoutGuards.map((segments) => readableTranscriptSegments(segments).length), [2, 2, 2, 2, 2]);
 
-    invalid = true;
-    const rejected = await correctTranscript({ config, meeting: source });
-    assert.equal(rejected.rejectedCorrections, 3);
-    assert.equal(rejected.semanticJoins, 0);
-    assert.deepEqual(rejected.segments.map((segment) => segment.text), source.segments.map((segment) => segment.text));
+    assert.equal(guarded.rejectedCorrections, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -479,10 +517,11 @@ test("correction batches include a bounded following-segment preview for cross-b
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, options) => {
     const user = JSON.parse(options.body).messages[1].content;
-    const payload = JSON.parse(user.slice(user.indexOf("待校对片段：\n") + "待校对片段：\n".length));
+    const payload = JSON.parse(user.slice(user.indexOf("待检查片段：\n") + "待检查片段：\n".length));
     payloads.push(payload);
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
-      segments: payload.segments.map((segment) => ({ ...segment, join_next: segment.id === 0 })),
+      patches: [],
+      join_after: payload.segments[0]?.id === 0 ? [0] : [],
     }) } }] }));
   };
   try {
@@ -519,24 +558,237 @@ test("readable semantic joins preserve natural spacing across Chinese and Englis
   assert.equal(mixed[0].text, "讨论项目 launch plan。");
 });
 
-test("GPT correction rejects material rewrites", async () => {
+test("GPT correction applies multiple independent explicit mappings in one segment", async () => {
+  const source = {
+    ...meeting,
+    segments: [{ start_seconds: 4, end_seconds: 9, speaker: "A", text: "result binding 交给 d-schedule 处理。" }],
+  };
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
-    segments: [
-      { id: 0, speaker: "Alice", text: "预算已经获批，产品今天正式上线。" },
-      { id: 1, speaker: "小明", text: "客户已经签约并完成全部付款。" },
-    ],
+    patches: [{ id: 0, replacements: [
+      { from: "result binding", to: "ResourceBinding" },
+      { from: "d-schedule", to: "Descheduler" },
+    ] }],
   }) } }] }));
   try {
-    const result = await correctTranscript({ config, meeting });
-    assert.deepEqual(result.segments.map((segment) => segment.text), meeting.segments.map((segment) => segment.text));
-    assert.equal(result.rejectedCorrections, 2);
+    const result = await correctTranscript({
+      config: { ...config, contextHint: "术语：result binding -> ResourceBinding；别名：d-schedule -> Descheduler" },
+      meeting: source,
+    });
+    assert.equal(result.segments[0].text, "ResourceBinding 交给 Descheduler 处理。");
+    assert.equal(result.segments[0].start_seconds, 4);
+    assert.equal(result.segments[0].end_seconds, 9);
+    assert.equal(result.segments[0].speaker, "A");
+    assert.deepEqual(result.terminology, ["ResourceBinding", "Descheduler"]);
+    assert.deepEqual(result.corrections.map(({ from, to, status, reason }) => ({ from, to, status, reason })), [
+      { from: "result binding", to: "ResourceBinding", status: "accepted", reason: "explicit_alias" },
+      { from: "d-schedule", to: "Descheduler", status: "accepted", reason: "explicit_alias" },
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("GPT correction rejects semantic reversals and critical value changes", async () => {
+test("multiple accepted patches replay exactly when validating public evidence", async () => {
+  const source = {
+    ...meeting,
+    rawSegments: [{ start_seconds: 4, end_seconds: 9, speaker: "A", text: "result binding 交给 d-schedule 处理并确认发布。" }],
+    segments: [{ start_seconds: 4, end_seconds: 9, speaker: "A", text: "result binding 交给 d-schedule 处理并确认发布。" }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    patches: [{ id: 0, replacements: [
+      { from: "result binding", to: "ResourceBinding" },
+      { from: "d-schedule", to: "Descheduler" },
+    ] }],
+  }) } }] }));
+  try {
+    const corrected = await correctTranscript({
+      config: { ...config, contextHint: "术语：result binding -> ResourceBinding；别名：d-schedule -> Descheduler" },
+      meeting: source,
+    });
+    const shared = publicMeeting({
+      ...source,
+      ...corrected,
+      highlights: [{ start_seconds: 4, speaker: "A", quote: "确认发布", reason: "明确确认" }],
+      decision_records: [{ decision: "确认发布", start_seconds: 4, evidence: "确认发布" }],
+    });
+    assert.deepEqual(shared.highlights.map((item) => item.quote), ["ResourceBinding 交给 Descheduler 处理并确认发布。"]);
+    assert.deepEqual(shared.decision_records.map((item) => item.evidence), ["ResourceBinding 交给 Descheduler 处理并确认发布。"]);
+    assert.equal(Object.hasOwn(shared, "corrections"), false);
+    assert.equal(Object.hasOwn(shared, "rawSegments"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("public evidence replays the persisted reconciliation ledger", () => {
+  const rawSegments = [
+    { start_seconds: 0, end_seconds: 6, timing_source: "provider", speaker: "A", text: "我觉得可以，嗯。" },
+    { start_seconds: 5.5, end_seconds: 10, timing_source: "provider", speaker: "A", text: "嗯，我们确认发布" },
+  ];
+  const reconciled = reconcileTranscriptSegments(rawSegments);
+  const source = {
+    ...meeting,
+    rawSegments,
+    segments: reconciled.segments,
+    asrReconciliations: reconciled.reconciliations,
+    corrections: [],
+    highlights: [{ start_seconds: 5.5, speaker: "A", quote: "确认发布", reason: "确认" }],
+    decision_records: [{ decision: "确认发布", start_seconds: 5.5, evidence: "确认发布" }],
+  };
+
+  const shared = publicMeeting(source);
+  assert.deepEqual(shared.highlights.map((item) => item.quote), ["我们确认发布"]);
+  assert.deepEqual(shared.decision_records.map((item) => item.evidence), ["我们确认发布"]);
+  assert.equal(Object.hasOwn(shared.segments[0], "timing_source"), false);
+
+  const tampered = publicMeeting({
+    ...source,
+    asrReconciliations: source.asrReconciliations.map((entry) => ({ ...entry, algorithm_version: "future-version" })),
+  });
+  assert.deepEqual(tampered.highlights, []);
+  assert.deepEqual(tampered.decision_records, []);
+});
+
+test("public evidence rejects a reconciliation ledger that inserts new claims", () => {
+  const raw = { start_seconds: 0, end_seconds: 5, timing_source: "provider", speaker: "A", text: "原始内容" };
+  const maliciousLedger = [{
+    algorithm_version: "boundary-v1",
+    segmentId: 0,
+    source_hash: segmentSourceHash(raw, 0),
+    start_offset: raw.text.length,
+    end_offset: raw.text.length,
+    from: "",
+    to: "确认发布",
+    at_seconds: 0,
+    reason: "exact_overlap",
+    removed_characters: 0,
+    removed_from: "next",
+  }];
+  const shared = publicMeeting({
+    ...meeting,
+    rawSegments: [raw],
+    segments: [{ ...raw, text: `${raw.text}确认发布` }],
+    asrReconciliations: maliciousLedger,
+    corrections: [],
+    highlights: [{ start_seconds: 0, speaker: "A", quote: "确认发布", reason: "伪造" }],
+    decision_records: [{ decision: "确认发布", start_seconds: 0, evidence: "确认发布" }],
+  });
+
+  assert.deepEqual(shared.highlights, []);
+  assert.deepEqual(shared.decision_records, []);
+});
+
+test("terminology mappings are parsed from full context without accepting truncation markers", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    patches: [{ id: 0, replacements: [{ from: "万福来", to: "CanonicalLongName" }] }],
+  }) } }] }));
+  try {
+    const result = await correctTranscript({
+      config: { ...config, contextHint: `${"背景资料".repeat(600)}\n术语：万福来 -> CanonicalLongName` },
+      meeting,
+    });
+    assert.equal(result.segments[0].text, "今天讨论CanonicalLongName。");
+    assert.equal(result.corrections[0].to, "CanonicalLongName");
+    assert.doesNotMatch(result.segments[0].text, /\.\.\./);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("terminology entry limits fail explicitly before any model request", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => { requests += 1; throw new Error("must not request"); };
+  try {
+    const entries = Array.from({ length: 201 }, (_, index) => `错词${index} -> 正词${index}`).join("、");
+    await assert.rejects(() => correctTranscript({
+      config: { ...config, contextHint: `术语：${entries}` },
+      meeting,
+    }), /超过 200 项/);
+    assert.equal(requests, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GPT correction keeps canonical-only terms as rejected candidates", async () => {
+  const source = {
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 3, speaker: "A", text: "项目叫万福来。" }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    patches: [{ id: 0, replacements: [{ from: "万福来", to: "OneFly" }] }],
+  }) } }] }));
+  try {
+    const result = await correctTranscript({ config: { ...config, contextHint: "项目名 OneFly" }, meeting: source });
+    assert.equal(result.segments[0].text, source.segments[0].text);
+    assert.deepEqual(result.terminology, []);
+    assert.equal(result.rejectedCorrections, 1);
+    assert.equal(result.corrections[0].reason, "explicit_alias_required");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GPT correction rejects malformed patch responses instead of reporting success", async () => {
+  const originalFetch = globalThis.fetch;
+  const responses = ["not json", "{}"];
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: responses.shift() } }] }));
+  try {
+    for (let index = 0; index < 2; index += 1) {
+      await assert.rejects(() => correctTranscript({
+        config: { ...config, contextHint: "术语：万福来 -> OneFly" },
+        meeting,
+      }), /缺少 patches 数组.*保留原逐字稿/);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GPT correction rejects unknown entities", async () => {
+  const source = {
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 3, speaker: "A", text: "项目叫万福来。" }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    patches: [{ id: 0, replacements: [{ from: "万福来", to: "OtherProject" }] }],
+  }) } }] }));
+  try {
+    const result = await correctTranscript({ config: { ...config, contextHint: "项目名 OneFly" }, meeting: source });
+    assert.equal(result.segments[0].text, source.segments[0].text);
+    assert.equal(result.rejectedCorrections, 1);
+    assert.equal(result.corrections[0].reason, "unknown_canonical");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GPT correction rejects an ambiguous from value", async () => {
+  const source = {
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 3, speaker: "A", text: "万福来与万福来共同发布。" }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    patches: [{ id: 0, replacements: [{ from: "万福来", to: "OneFly" }] }],
+  }) } }] }));
+  try {
+    const result = await correctTranscript({ config: { ...config, contextHint: "术语：万福来 -> OneFly" }, meeting: source });
+    assert.equal(result.segments[0].text, source.segments[0].text);
+    assert.equal(result.rejectedCorrections, 1);
+    assert.equal(result.corrections[0].reason, "from_not_unique");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GPT correction rejects explicit patches that alter protected facts", async () => {
   const source = {
     ...meeting,
     segments: [
@@ -548,18 +800,23 @@ test("GPT correction rejects semantic reversals and critical value changes", asy
     ],
   };
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ segments: [
-    { id: 0, speaker: "A", text: "我反对这个方案。" },
-    { id: 1, speaker: "A", text: "我建议录用。" },
-    { id: 2, speaker: "A", text: "预算是 $100。" },
-    { id: 3, speaker: "A", text: "计划在 8 月 11 日发布。" },
-    { id: 4, speaker: "候选人", text: "这个方案风险很低。" },
-  ], terminology: ["反对", "$100"] }) } }] }));
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ patches: [
+    { id: 0, replacements: [{ from: "支持", to: "反对" }] },
+    { id: 1, replacements: [{ from: "不建议录用", to: "建议录用" }] },
+    { id: 2, replacements: [{ from: "¥100", to: "$100" }] },
+    { id: 3, replacements: [{ from: "8 月 10 日", to: "8 月 11 日" }] },
+    { id: 4, replacements: [{ from: "风险很高", to: "风险很低" }] },
+  ] }) } }] }));
   try {
-    const result = await correctTranscript({ config, meeting: source });
+    const result = await correctTranscript({
+      config: { ...config, contextHint: "术语：支持 -> 反对；术语：不建议录用 -> 建议录用；术语：¥100 -> $100；术语：8 月 10 日 -> 8 月 11 日；术语：风险很高 -> 风险很低" },
+      meeting: source,
+    });
     assert.deepEqual(result.segments.map((segment) => segment.text), source.segments.map((segment) => segment.text));
     assert.equal(result.rejectedCorrections, 5);
     assert.deepEqual(result.terminology, []);
+    assert.deepEqual(result.corrections.map((item) => item.reason), Array(5).fill("critical_fact_change"));
+    assert.deepEqual(result.segments.map(({ start_seconds, end_seconds, speaker }) => ({ start_seconds, end_seconds, speaker })), source.segments.map(({ start_seconds, end_seconds, speaker }) => ({ start_seconds, end_seconds, speaker })));
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -574,8 +831,7 @@ test("GPT correction does not trust arbitrary short terms from an interview JD",
   };
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
-    segments: [{ id: 0, speaker: "候选人", text: "这个方案风险很低。" }],
-    terminology: ["低"],
+    patches: [{ id: 0, replacements: [{ from: "高", to: "低" }] }],
   }) } }] }));
   try {
     const result = await correctTranscript({ config, meeting: source });
@@ -583,45 +839,6 @@ test("GPT correction does not trust arbitrary short terms from an interview JD",
     assert.equal(result.segments[0].speaker, "面试官");
     assert.equal(result.rejectedCorrections, 1);
     assert.deepEqual(result.terminology, []);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("GPT correction rejects a semantic reversal even when the replacement is an explicit multi-character term", async () => {
-  const source = {
-    ...meeting,
-    segments: [{ start_seconds: 0, end_seconds: 3, speaker: "A", text: "这个方案属于高风险。" }],
-  };
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
-    segments: [{ id: 0, speaker: "A", text: "这个方案属于低风险。" }],
-    terminology: ["低风险"],
-  }) } }] }));
-  try {
-    const result = await correctTranscript({ config: { ...config, contextHint: "术语：低风险" }, meeting: source });
-    assert.equal(result.segments[0].text, "这个方案属于高风险。");
-    assert.equal(result.rejectedCorrections, 1);
-    assert.deepEqual(result.terminology, []);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("GPT correction can unify a second occurrence of an explicit term", async () => {
-  const source = {
-    ...meeting,
-    segments: [{ start_seconds: 0, end_seconds: 3, speaker: "A", text: "OneFly 与万福来项目。" }],
-  };
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
-    segments: [{ id: 0, speaker: "A", text: "OneFly 与 OneFly 项目。" }],
-    terminology: ["OneFly"],
-  }) } }] }));
-  try {
-    const result = await correctTranscript({ config, meeting: source });
-    assert.equal(result.segments[0].text, "OneFly 与 OneFly 项目。");
-    assert.deepEqual(result.terminology, ["OneFly"]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -642,24 +859,87 @@ test("GPT correction bounds context and preserves an oversized segment without s
     const user = body.messages[1].content;
     prompts.push(user);
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
-      segments: [{ id: 1, speaker: "A", text: "项目叫 OneFly。" }],
-      terminology: ["OneFly"],
+      patches: [{ id: 1, replacements: [{ from: "万福来", to: "OneFly" }] }],
     }) } }] }));
   };
   try {
     const result = await correctTranscript({
-      config: { ...config, contextHint: `项目名：OneFly；${"无关背景".repeat(5_000)}` },
+      config: { ...config, contextHint: `术语：万福来 -> OneFly；${"无关背景".repeat(5_000)}` },
       meeting: source,
     });
     assert.equal(prompts.length, 1);
     assert.ok(prompts[0].length <= 18_000);
     assert.equal(result.segments[0].text, source.segments[0].text);
-    assert.equal(result.segments[1].text, "项目叫 OneFly。");
+    assert.equal(result.segments[1].text, "项目叫OneFly。");
     assert.equal(result.rejectedCorrections, 1);
     assert.deepEqual(result.terminology, ["OneFly"]);
+    assert.deepEqual(result.corrections.map(({ segmentId, status, reason }) => ({ segmentId, status, reason })), [
+      { segmentId: 0, status: "rejected", reason: "segment_too_large" },
+      { segmentId: 1, status: "accepted", reason: "explicit_alias" },
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("GPT correction uses bounded concurrency and preserves batch order", async () => {
+  const source = {
+    ...meeting,
+    segments: Array.from({ length: 10 }, (_, index) => ({
+      start_seconds: index * 3,
+      end_seconds: index * 3 + 2,
+      speaker: `发言人 ${index + 1}`,
+      text: `SEGMENT_${index} ${"批次内容".repeat(700)}`,
+    })),
+  };
+  const originalFetch = globalThis.fetch;
+  let activeRequests = 0;
+  let maxActiveRequests = 0;
+  globalThis.fetch = async () => {
+    activeRequests += 1;
+    maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ patches: [] }) } }] }));
+    } finally {
+      activeRequests -= 1;
+    }
+  };
+  try {
+    const result = await correctTranscript({ config, meeting: source });
+    assert.equal(maxActiveRequests, 3);
+    assert.deepEqual(result.segments.map((segment) => segment.start_seconds), source.segments.map((segment) => segment.start_seconds));
+    assert.deepEqual(result.segments.map((segment) => segment.text), source.segments.map((segment) => segment.text));
+    assert.deepEqual(result.corrections, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("bounded concurrency stops scheduling after failure and drains in-flight work", async () => {
+  let rejectFirst;
+  let resolveSecond;
+  const firstGate = new Promise((resolve, reject) => { rejectFirst = reject; });
+  const secondGate = new Promise((resolve) => { resolveSecond = resolve; });
+  const started = [];
+  let settled = false;
+  const run = mapWithConcurrency([0, 1, 2, 3], 2, async (value) => {
+    started.push(value);
+    if (value === 0) return firstGate;
+    if (value === 1) return secondGate;
+    return value;
+  }).finally(() => { settled = true; });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(started, [0, 1]);
+  rejectFirst(new Error("leaf failed"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(settled, false);
+  assert.deepEqual(started, [0, 1]);
+  resolveSecond(1);
+  await assert.rejects(run, /leaf failed/);
+  assert.equal(settled, true);
+  assert.deepEqual(started, [0, 1]);
 });
 
 test("GPT summary parses structured JSON", async () => {
@@ -671,7 +951,7 @@ test("GPT summary parses structured JSON", async () => {
     assert.equal(result.action_items[0].owner, "小明");
     assert.equal(result.highlights[0].start_seconds, 3);
     assert.equal(result.speaker_summaries[0].key_points[0], "明天完成");
-    assert.equal(result.decision_records[0].evidence, "由小明明天完成");
+    assert.equal(result.decision_records[0].evidence, "由小明明天完成。");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -700,11 +980,50 @@ test("semantic display joins do not move evidence timestamps or collapse VTT cue
   }) } }] }));
   try {
     const result = await summarizeTranscript({ config, meeting: source });
-    assert.equal(result.highlights[0].start_seconds, 10);
-    assert.equal(publicMeeting({ ...source, ...result }).highlights[0].start_seconds, 10);
+    assert.equal(result.highlights[0].start_seconds, 0);
+    assert.equal(publicMeeting({ ...source, ...result }).highlights[0].start_seconds, 0);
     assert.equal(readableTranscriptSegments(source.segments).length, 1);
     assert.equal((toVtt(source).match(/-->/g) || []).length, 2);
     assert.match(toVtt(source), /00:00:10\.000 --> 00:00:20\.000/);
+
+    const production = publicMeeting({
+      ...source,
+      corrections: [],
+      asrReconciliations: [],
+      highlights: [{ start_seconds: 0, speaker: "A", quote: "她现在", reason: "合法前半句" }],
+    });
+    assert.deepEqual(production.highlights.map((item) => item.quote), ["她现在正在找工作。"]);
+
+    const tampered = publicMeeting({
+      ...source,
+      corrections: [],
+      asrReconciliations: [],
+      segments: [{ ...source.segments[0], text: "她现" }, source.segments[1]],
+      highlights: [{ start_seconds: 0, speaker: "A", quote: "她现", reason: "非法删改" }],
+    });
+    assert.deepEqual(tampered.highlights, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("text requests retry a transient 429 before returning the summary", async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+        status: 429,
+        headers: { "retry-after": "0" },
+      });
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ title: "已恢复", summary: "完成" }) } }] }));
+  };
+  try {
+    const result = await summarizeTranscript({ config, meeting });
+    assert.equal(attempts, 2);
+    assert.equal(result.title, "已恢复");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -727,9 +1046,9 @@ test("summary drops quotes that do not match the referenced transcript segment",
   }) } }] }));
   try {
     const result = await summarizeTranscript({ config, meeting });
-    assert.deepEqual(result.highlights.map((item) => item.quote), ["由小明明天完成"]);
-    assert.deepEqual(result.decision_records.map((item) => item.decision), ["明天完成"]);
-    assert.deepEqual(result.decisions, ["明天完成"]);
+    assert.deepEqual(result.highlights.map((item) => item.quote), ["由小明明天完成。"]);
+    assert.deepEqual(result.decision_records.map((item) => item.decision), ["由小明明天完成。"]);
+    assert.deepEqual(result.decisions, ["由小明明天完成。"]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -786,7 +1105,7 @@ test("evidence comparison preserves semantic symbols", async () => {
   }) } }] }));
   try {
     const result = await summarizeTranscript({ config, meeting: symbolMeeting });
-    assert.deepEqual(result.highlights.map((item) => item.quote), ["预算是 ¥100"]);
+    assert.deepEqual(result.highlights.map((item) => item.quote), ["预算是 ¥100，技术栈是 C++。"]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -838,31 +1157,42 @@ test("Responses API uses instructions/input and parses typed output", async () =
 });
 
 test("long meeting summaries use bounded transcript batches and retain verified evidence", async () => {
-  const segments = Array.from({ length: 9 }, (_, index) => ({
+  const segments = [...Array.from({ length: 9 }, (_, index) => ({
     start_seconds: index * 10,
     end_seconds: index * 10 + 9,
     speaker: `发言人 ${index + 1}`,
-    text: `${index === 0 ? "LONG_START 会议开场。" : ""}${"常规讨论内容。".repeat(1_300)}${index === 8 ? "最终确认发布天穹计划。LONG_END" : ""}`,
-  }));
-  const longMeeting = { ...meeting, duration: 90, segments };
+    text: `${index === 0 ? "LONG_START 会议开场。" : ""}${"常规讨论内容。".repeat(1_300)}`,
+  })),
+  { start_seconds: 90, end_seconds: 99, speaker: "发言人 10", text: "最终确认发布天穹计划。" },
+  { start_seconds: 100, end_seconds: 109, speaker: "发言人 11", text: "LONG_END" }];
+  const longMeeting = { ...meeting, duration: 110, segments };
   const requests = [];
+  let activeRequests = 0;
+  let maxActiveRequests = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, options) => {
-    const user = JSON.parse(options.body).messages[1].content;
-    requests.push(user);
-    let result;
-    if (user.includes("相邻分段摘要")) {
-      result = { title: "长会议", summary: "会议覆盖常规讨论并最终确认天穹计划发布。", keywords: ["天穹计划"] };
-    } else if (user.includes("最终确认发布天穹计划")) {
-      result = {
-        summary: "最终确认天穹计划发布。",
-        highlights: [{ start_seconds: 80, speaker: "发言人 9", quote: "最终确认发布天穹计划", reason: "明确发布决定" }],
-        decision_records: [{ decision: "发布天穹计划", start_seconds: 80, evidence: "最终确认发布天穹计划" }],
-      };
-    } else {
-      result = { summary: user.includes("LONG_START") ? "会议开始常规讨论。" : "会议继续常规讨论。" };
+    activeRequests += 1;
+    maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+    try {
+      const user = JSON.parse(options.body).messages[1].content;
+      requests.push(user);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      let result;
+      if (user.includes("相邻分段摘要")) {
+        result = { title: "长会议", summary: "会议覆盖常规讨论并最终确认天穹计划发布。", keywords: ["天穹计划"] };
+      } else if (user.includes("最终确认发布天穹计划")) {
+        result = {
+          summary: "最终确认天穹计划发布。",
+          highlights: [{ start_seconds: 90, speaker: "发言人 10", quote: "最终确认发布天穹计划", reason: "明确发布决定" }],
+          decision_records: [{ decision: "发布天穹计划", start_seconds: 90, evidence: "最终确认发布天穹计划" }],
+        };
+      } else {
+        result = { summary: user.includes("LONG_START") ? "会议开始常规讨论。" : "会议继续常规讨论。" };
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) } }] }), { headers: { "content-type": "application/json" } });
+    } finally {
+      activeRequests -= 1;
     }
-    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) } }] }), { headers: { "content-type": "application/json" } });
   };
   try {
     const result = await summarizeTranscript({ config, meeting: longMeeting });
@@ -870,11 +1200,12 @@ test("long meeting summaries use bounded transcript batches and retain verified 
     const mergeRequests = requests.filter((user) => user.includes("相邻分段摘要"));
     assert.ok(transcriptRequests.length > 4);
     assert.ok(mergeRequests.length > 1);
+    assert.equal(maxActiveRequests, 3);
     assert.ok(requests.every((user) => user.length <= 18_000));
     assert.ok(requests.every((user) => !(user.includes("LONG_START") && user.includes("LONG_END"))));
     assert.match(result.summary, /天穹计划/);
-    assert.deepEqual(result.highlights.map((item) => item.quote), ["最终确认发布天穹计划"]);
-    assert.deepEqual(result.decision_records.map((item) => item.decision), ["发布天穹计划"]);
+    assert.deepEqual(result.highlights.map((item) => item.quote), ["最终确认发布天穹计划。"]);
+    assert.deepEqual(result.decision_records.map((item) => item.decision), ["最终确认发布天穹计划。"]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -936,7 +1267,7 @@ test("interview mode generates evidence-based report and privacy-safe exports", 
     assert.equal(publicData.interviewContext.role, "平台工程师");
     assert.equal(publicData.interviewReport.recommendation, "follow_up");
     assert.doesNotMatch(JSON.stringify(publicData), /机密平台|Alice|内部问题|rawSegments/);
-    assert.match(toMarkdown(completed), /不判断原话是否证明能力/);
+    assert.match(toMarkdown(completed), /不判断原话是否来自候选人或证明能力/);
     assert.match(toMarkdown(completed), /\[00:03\]/);
     const shareHtml = buildShareHtml(completed);
     assert.match(shareHtml, /程序只校验时间和原话/);
@@ -976,7 +1307,7 @@ test("interview output never turns an unrelated quote into an automatic competen
     const competency = result.interviewReport.competencies[0];
     assert.equal(competency.rating, "mixed");
     assert.equal(competency.assessment, "仅展示可核验原话；是否支持该能力项需面试官人工判断。");
-    assert.equal(competency.evidence[0].quote, "今天天气很好");
+    assert.equal(competency.evidence[0].quote, "今天天气很好。");
     assert.deepEqual(result.interviewReport.competencies.map((item) => item.name), ["系统设计"]);
     assert.deepEqual(result.interviewReport.strengths, []);
     assert.equal(result.interviewReport.recommendation, "follow_up");
@@ -988,16 +1319,21 @@ test("interview output never turns an unrelated quote into an automatic competen
 });
 
 test("long interviews merge same-competency evidence from bounded transcript batches", async () => {
-  const segments = Array.from({ length: 8 }, (_, index) => ({
-    start_seconds: index * 10,
-    end_seconds: index * 10 + 9,
+  const segments = [
+    { start_seconds: 0, end_seconds: 9, speaker: "候选人", text: "候选人说明系统边界。" },
+    ...Array.from({ length: 8 }, (_, index) => ({
+    start_seconds: index * 10 + 10,
+    end_seconds: index * 10 + 19,
     speaker: "候选人",
-    text: `${index === 0 ? "候选人说明系统边界。LONG_INTERVIEW_START" : ""}${"面试过程记录。".repeat(700)}${index === 7 ? "候选人说明故障回滚。LONG_INTERVIEW_END" : ""}`,
-  }));
+    text: `${index === 0 ? "LONG_INTERVIEW_START" : ""}${"面试过程记录。".repeat(700)}`,
+  })),
+    { start_seconds: 90, end_seconds: 99, speaker: "候选人", text: "候选人说明故障回滚。" },
+    { start_seconds: 100, end_seconds: 109, speaker: "候选人", text: "LONG_INTERVIEW_END" },
+  ];
   const interview = {
     ...meeting,
     mode: "interview",
-    duration: 80,
+    duration: 110,
     segments,
     interviewContext: { role: "平台工程师", competencies: ["系统设计"] },
   };
@@ -1008,7 +1344,7 @@ test("long interviews merge same-competency evidence from bounded transcript bat
     requests.push(user);
     const evidence = [];
     if (user.includes("候选人说明系统边界")) evidence.push({ start_seconds: 0, quote: "候选人说明系统边界" });
-    if (user.includes("候选人说明故障回滚")) evidence.push({ start_seconds: 70, quote: "候选人说明故障回滚" });
+    if (user.includes("候选人说明故障回滚")) evidence.push({ start_seconds: 90, quote: "候选人说明故障回滚" });
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
       title: "长面试",
       interview_report: {
@@ -1025,7 +1361,7 @@ test("long interviews merge same-competency evidence from bounded transcript bat
     assert.ok(requests.every((user) => !(user.includes("LONG_INTERVIEW_START") && user.includes("LONG_INTERVIEW_END"))));
     assert.equal(competency.rating, "mixed");
     assert.equal(competency.assessment, "仅展示可核验原话；是否支持该能力项需面试官人工判断。");
-    assert.deepEqual(competency.evidence.map((item) => item.quote), ["候选人说明系统边界", "候选人说明故障回滚"]);
+    assert.deepEqual(competency.evidence.map((item) => item.quote), ["候选人说明系统边界。", "候选人说明故障回滚。"]);
     assert.deepEqual(result.interviewReport.strengths, []);
   } finally {
     globalThis.fetch = originalFetch;
@@ -1181,4 +1517,424 @@ test("long transcript questions select bounded relevant excerpts and fall back t
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("public evidence rejects a fabricated boundary deletion that removes a negation", () => {
+  const rawSegments = [
+    { start_seconds: 0, end_seconds: 6, timing_source: "provider", speaker: "A", text: "讨论预算方案" },
+    { start_seconds: 5.5, end_seconds: 10, timing_source: "provider", speaker: "A", text: "不要批准预算" },
+  ];
+  const target = rawSegments[1];
+  const maliciousLedger = [{
+    algorithm_version: "boundary-v1",
+    segmentId: 1,
+    source_hash: segmentSourceHash(target, 1),
+    start_offset: 0,
+    end_offset: 2,
+    from: "不要",
+    to: "",
+    at_seconds: 5.5,
+    reason: "exact_overlap",
+    removed_characters: 2,
+    removed_from: "next",
+  }];
+  const shared = publicMeeting({
+    ...meeting,
+    rawSegments,
+    segments: [rawSegments[0], { ...target, text: "批准预算" }],
+    asrReconciliations: maliciousLedger,
+    corrections: [],
+    highlights: [{ start_seconds: 5.5, speaker: "A", quote: "批准预算" }],
+    decision_records: [{ decision: "批准预算", start_seconds: 5.5, evidence: "批准预算" }],
+  });
+
+  assert.deepEqual(shared.highlights, []);
+  assert.deepEqual(shared.decision_records, []);
+});
+
+test("legacy meetings without a reconciliation ledger replay their original timeline unchanged", () => {
+  const rawSegments = [
+    { start_seconds: 0, end_seconds: 6, timing_source: "provider", speaker: "A", text: "完成服务部署" },
+    { start_seconds: 5.5, end_seconds: 10, timing_source: "provider", speaker: "A", text: "服务部署，然后确认发布" },
+  ];
+  const shared = publicMeeting({
+    ...meeting,
+    rawSegments,
+    segments: rawSegments,
+    highlights: [{ start_seconds: 5.5, speaker: "A", quote: "确认发布" }],
+    decision_records: [{ decision: "确认发布", start_seconds: 5.5, evidence: "确认发布" }],
+  });
+
+  assert.deepEqual(shared.highlights.map((item) => item.quote), ["服务部署，然后确认发布"]);
+  assert.deepEqual(shared.decision_records.map((item) => item.evidence), ["服务部署，然后确认发布"]);
+});
+
+test("public evidence rejects transcript timestamps that drift from raw ASR geometry", () => {
+  const raw = { start_seconds: 0, end_seconds: 5, speaker: "A", text: "确认发布" };
+  const shared = publicMeeting({
+    ...meeting,
+    rawSegments: [raw],
+    segments: [{ ...raw, start_seconds: 3_600, end_seconds: 3_605 }],
+    asrReconciliations: [],
+    corrections: [],
+    highlights: [{ start_seconds: 3_600, speaker: "A", quote: "确认发布" }],
+  });
+
+  assert.deepEqual(shared.highlights, []);
+});
+
+test("accepted term patches remain replayable after display terminology deduplication", async () => {
+  const rawSegments = [
+    { start_seconds: 0, end_seconds: 4, speaker: "A", text: "万福来确认需求" },
+    { start_seconds: 4, end_seconds: 8, speaker: "A", text: "万福莱确认发布" },
+  ];
+  const source = { ...meeting, rawSegments, segments: rawSegments, asrReconciliations: [] };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    patches: [
+      { id: 0, replacements: [{ from: "万福来", to: "OneFly" }] },
+      { id: 1, replacements: [{ from: "万福莱", to: "onefly" }] },
+    ],
+    join_after: [],
+  }) } }] }));
+  try {
+    const corrected = await correctTranscript({
+      config: { ...config, contextHint: "术语：万福来 -> OneFly、万福莱 -> onefly" },
+      meeting: source,
+    });
+    assert.deepEqual(corrected.terminology, ["OneFly"]);
+    assert.equal(corrected.corrections.filter((item) => item.status === "accepted").length, 2);
+
+    const shared = publicMeeting({
+      ...source,
+      ...corrected,
+      highlights: [{ start_seconds: 4, speaker: "A", quote: "确认发布" }],
+    });
+    assert.deepEqual(shared.highlights.map((item) => item.quote), ["onefly确认发布"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("explicit terminology mappings can normalize case and spacing", async () => {
+  const rawSegments = [
+    { start_seconds: 0, end_seconds: 4, speaker: "A", text: "onefly确认需求" },
+    { start_seconds: 4, end_seconds: 8, speaker: "A", text: "open sandbox确认发布" },
+  ];
+  const source = { ...meeting, rawSegments, segments: rawSegments, asrReconciliations: [] };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    patches: [
+      { id: 0, replacements: [{ from: "onefly", to: "OneFly" }] },
+      { id: 1, replacements: [{ from: "open sandbox", to: "OpenSandbox" }] },
+    ],
+    join_after: [],
+  }) } }] }));
+  try {
+    const corrected = await correctTranscript({
+      config: { ...config, contextHint: "术语：onefly -> OneFly、open sandbox -> OpenSandbox" },
+      meeting: source,
+    });
+    assert.deepEqual(corrected.segments.map((item) => item.text), ["OneFly确认需求", "OpenSandbox确认发布"]);
+    assert.equal(corrected.rejectedCorrections, 0);
+    const shared = publicMeeting({
+      ...source,
+      ...corrected,
+      highlights: [{ start_seconds: 4, speaker: "A", quote: "确认发布" }],
+    });
+    assert.deepEqual(shared.highlights.map((item) => item.quote), ["OpenSandbox确认发布"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("correction retry reuses valid accepted patches and ignores invalid model ids", async () => {
+  const raw = { start_seconds: 0, end_seconds: 5, speaker: "A", text: "万福来确认发布" };
+  const source = { ...meeting, rawSegments: [raw], segments: [raw], asrReconciliations: [] };
+  const correctionConfig = { ...config, contextHint: "术语：万福来 -> OneFly" };
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      patches: [{ id: 0, replacements: [{ from: "万福来", to: "OneFly" }] }],
+      join_after: [],
+    }) } }] }));
+    const first = await correctTranscript({ config: correctionConfig, meeting: source });
+
+    globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ patches: [], join_after: [] }) } }] }));
+    const retried = await correctTranscript({ config: correctionConfig, meeting: { ...source, ...first } });
+    assert.equal(retried.segments[0].text, "OneFly确认发布");
+
+    for (const id of [null, "", false]) {
+      globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+        patches: [{ id, replacements: [{ from: "万福来", to: "OneFly" }] }],
+        join_after: [],
+      }) } }] }));
+      const result = await correctTranscript({ config: correctionConfig, meeting: { ...source, ...first } });
+      assert.equal(result.segments[0].text, "OneFly确认发布");
+      assert.equal(result.corrections.some((item) => item.status === "accepted"), true);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("all accepted mappings remain available beyond the old sixty-term display cap", async () => {
+  const rawSegments = Array.from({ length: 61 }, (_, index) => ({
+    start_seconds: index,
+    end_seconds: index + 1,
+    speaker: "A",
+    text: `错词${index}确认发布`,
+  }));
+  const mappings = rawSegments.map((_, index) => `错词${index} -> 正词${index}`).join("、");
+  const patches = rawSegments.map((_, index) => ({
+    id: index,
+    replacements: [{ from: `错词${index}`, to: `正词${index}` }],
+  }));
+  const source = { ...meeting, rawSegments, segments: rawSegments, asrReconciliations: [] };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ patches, join_after: [] }) } }] }));
+  try {
+    const corrected = await correctTranscript({ config: { ...config, contextHint: `术语：${mappings}` }, meeting: source });
+    assert.equal(corrected.terminology.length, 61);
+    assert.equal(corrected.corrections.filter((item) => item.status === "accepted").length, 61);
+    const shared = publicMeeting({
+      ...source,
+      ...corrected,
+      highlights: [{ start_seconds: 60, speaker: "A", quote: "确认发布" }],
+    });
+    assert.deepEqual(shared.highlights.map((item) => item.quote), ["正词60确认发布"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("duplicate quotes use the model speaker hint and reject an unhinted timestamp tie", () => {
+  const segments = [
+    { start_seconds: 0, end_seconds: 10, speaker: "A", text: "确认发布" },
+    { start_seconds: 0, end_seconds: 10, speaker: "B", text: "确认发布" },
+  ];
+  const shared = publicMeeting({
+    ...meeting,
+    segments,
+    highlights: [{ start_seconds: 0, speaker: "B", quote: "确认发布" }],
+    decision_records: [{ decision: "确认发布", start_seconds: 0, evidence: "确认发布" }],
+  });
+
+  assert.deepEqual(shared.highlights.map((item) => item.speaker), ["B"]);
+  assert.deepEqual(shared.decision_records, []);
+});
+
+test("evidence quotes preserve Chinese and English negation context", () => {
+  const chinese = publicMeeting({
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: "我不建议录用候选人。" }],
+    highlights: [{ start_seconds: 0, speaker: "A", quote: "建议录用候选人" }],
+  });
+  const english = publicMeeting({
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: "I do not recommend, hiring the candidate." }],
+    highlights: [{ start_seconds: 0, speaker: "A", quote: "hiring the candidate" }],
+  });
+
+  assert.deepEqual(chinese.highlights.map((item) => item.quote), ["我不建议录用候选人。"]);
+  assert.deepEqual(english.highlights.map((item) => item.quote), ["I do not recommend, hiring the candidate."]);
+});
+
+test("validated semantic joins restore preceding negation and its timestamp", () => {
+  const rawSegments = [
+    { start_seconds: 0, end_seconds: 5, speaker: "A", text: "我不建议。" },
+    { start_seconds: 5, end_seconds: 10, speaker: "A", text: "录用候选人。" },
+  ];
+  const segments = [
+    { ...rawSegments[0], text: "我不建议", join_next: true },
+    { ...rawSegments[1], join_next: false },
+  ];
+  const shared = publicMeeting({
+    ...meeting,
+    rawSegments,
+    segments,
+    asrReconciliations: [],
+    corrections: [],
+    highlights: [{ start_seconds: 5, speaker: "A", quote: "录用候选人" }],
+  });
+
+  assert.deepEqual(shared.highlights.map(({ start_seconds, quote }) => ({ start_seconds, quote })), [{
+    start_seconds: 0,
+    quote: "我不建议录用候选人。",
+  }]);
+});
+
+test("decision titles cannot reverse the polarity of contextual evidence", () => {
+  const shared = publicMeeting({
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: "我们不确认发布。" }],
+    decision_records: [{ decision: "确认发布", start_seconds: 0, evidence: "确认发布" }],
+  });
+
+  assert.deepEqual(shared.decision_records, [{
+    decision: "我们不确认发布。",
+    start_seconds: 0,
+    evidence: "我们不确认发布。",
+  }]);
+  assert.deepEqual(shared.decisions, ["我们不确认发布。"]);
+});
+
+test("interview competency matching preserves the requested display name across casing", async () => {
+  const interview = {
+    ...meeting,
+    mode: "interview",
+    interviewContext: { role: "Platform Engineer", competencies: ["System Design"] },
+    segments: [{ start_seconds: 0, end_seconds: 5, speaker: "Candidate", text: "I designed the service boundary." }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    interview_report: {
+      competencies: [{ name: "system design", evidence: [{ start_seconds: 0, quote: "designed the service boundary" }] }],
+    },
+  }) } }] }));
+  try {
+    const result = await summarizeTranscript({ config, meeting: interview });
+    assert.equal(result.interviewReport.competencies[0].name, "System Design");
+    assert.equal(result.interviewReport.competencies[0].evidence.length, 1);
+    assert.equal(result.interviewReport.recommendation, "follow_up");
+    assert.match(result.interviewReport.overview, /1\/1/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("evidence always preserves conditional, modal, and hearsay context", () => {
+  const cases = [
+    { text: "如果条件满足，就录用候选人。", quote: "录用候选人", expected: "如果条件满足，就录用候选人。" },
+    { text: "We might hire the candidate.", quote: "hire the candidate", expected: "We might hire the candidate." },
+    { text: "听说他支持这个方案。", quote: "支持这个方案", expected: "听说他支持这个方案。" },
+  ];
+
+  for (const item of cases) {
+    const shared = publicMeeting({
+      ...meeting,
+      segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: item.text }],
+      highlights: [{ start_seconds: 0, speaker: "A", quote: item.quote }],
+    });
+    assert.deepEqual(shared.highlights.map((entry) => entry.quote), [item.expected]);
+  }
+});
+
+test("decision records publish only the complete verified evidence clause", () => {
+  const cases = [
+    { text: "如果条件满足，就确认发布。", claim: "确认发布", expected: "如果条件满足，就确认发布。" },
+    { text: "我们可能确认发布。", claim: "确认发布", expected: "我们可能确认发布。" },
+    { text: "听说负责人确认发布。", claim: "确认发布", expected: "听说负责人确认发布。" },
+    { text: "We might approve the release.", claim: "approve the release", expected: "We might approve the release." },
+  ];
+
+  for (const item of cases) {
+    const shared = publicMeeting({
+      ...meeting,
+      segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: item.text }],
+      decision_records: [{ decision: item.claim, start_seconds: 0, evidence: item.claim }],
+    });
+    assert.deepEqual(shared.decision_records, [{ decision: item.expected, start_seconds: 0, evidence: item.expected }]);
+  }
+});
+
+test("punctuation never strips conditions or hearsay from evidence", () => {
+  const cases = [
+    { text: "如果条件满足；就确认发布。", claim: "就确认发布", expected: "如果条件满足；就确认发布。" },
+    { text: "If all tests pass; approve the release.", claim: "approve the release", expected: "If all tests pass; approve the release." },
+    { text: "这只是听说；负责人确认发布。", claim: "负责人确认发布", expected: "这只是听说；负责人确认发布。" },
+  ];
+
+  for (const item of cases) {
+    const shared = publicMeeting({
+      ...meeting,
+      segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: item.text }],
+      highlights: [{ start_seconds: 0, speaker: "A", quote: item.claim }],
+      decision_records: [{ decision: item.claim, start_seconds: 0, evidence: item.claim }],
+    });
+    assert.equal(shared.highlights[0].quote, item.expected);
+    assert.equal(shared.decision_records[0].decision, item.expected);
+  }
+});
+
+test("highlight rationales are not published as verified facts", () => {
+  const shared = publicMeeting({
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: "我们不支持这个方案。" }],
+    highlights: [{ start_seconds: 0, speaker: "A", quote: "不支持这个方案", reason: "明确支持，应立即采用" }],
+  });
+
+  assert.equal(shared.highlights[0].quote, "我们不支持这个方案。");
+  assert.equal(shared.highlights[0].reason, "");
+});
+
+test("context expansion deduplicates highlights and decisions after validation", () => {
+  const shared = publicMeeting({
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: "负责人最终确认发布天穹计划。" }],
+    highlights: [
+      { start_seconds: 0, speaker: "A", quote: "确认发布" },
+      { start_seconds: 0, speaker: "A", quote: "发布天穹计划" },
+    ],
+    decision_records: [
+      { decision: "确认发布", start_seconds: 0, evidence: "确认发布" },
+      { decision: "发布天穹计划", start_seconds: 0, evidence: "发布天穹计划" },
+    ],
+  });
+
+  assert.equal(shared.highlights.length, 1);
+  assert.equal(shared.decision_records.length, 1);
+  assert.equal(shared.highlights[0].quote, "负责人最终确认发布天穹计划。");
+});
+
+test("interview evidence keeps the actual transcript speaker in exports and shares", () => {
+  const interview = {
+    ...meeting,
+    mode: "interview",
+    interviewContext: { candidateAlias: "候选人", role: "平台工程师", stage: "技术一面", competencies: ["系统设计"] },
+    segments: [{ start_seconds: 0, end_seconds: 5, speaker: "面试官", text: "请说明你如何设计系统边界。" }],
+    interviewReport: {
+      competencies: [{ name: "系统设计", evidence: [{ start_seconds: 0, quote: "请说明你如何设计系统边界" }] }],
+    },
+  };
+  const shared = publicMeeting(interview);
+  const evidence = shared.interviewReport.competencies[0].evidence[0];
+
+  assert.equal(evidence.speaker, "面试官");
+  assert.match(toMarkdown(interview), /面试官：“请说明你如何设计系统边界。”/);
+  assert.doesNotMatch(toMarkdown(interview), /候选原话/);
+  assert.match(buildShareHtml(interview), /v\.speaker\|\|"发言人"/);
+});
+
+test("large-meeting evidence validation replays correction state once per view", () => {
+  const segmentCount = 2_000;
+  const segments = Array.from({ length: segmentCount }, (_, index) => ({
+    start_seconds: index * 2,
+    end_seconds: index * 2 + 1,
+    speaker: "A",
+    text: `片段${index}确认发布。`,
+  }));
+  const highlights = Array.from({ length: 50 }, (_, index) => {
+    const segmentIndex = index * 39;
+    return { start_seconds: segmentIndex * 2, speaker: "A", quote: "确认发布" };
+  });
+  const corrections = segments.map((segment, segmentId) => ({
+    segmentId,
+    source_hash: segmentSourceHash(segment, segmentId),
+    status: "rejected",
+    reason: "explicit_alias_required",
+  }));
+  const startedAt = performance.now();
+  const shared = publicMeeting({
+    ...meeting,
+    rawSegments: segments,
+    segments,
+    asrReconciliations: [],
+    corrections,
+    highlights,
+  });
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.equal(shared.highlights.length, 20);
+  assert.ok(elapsedMs < 1_500, `evidence validation took ${elapsedMs.toFixed(1)}ms`);
 });
