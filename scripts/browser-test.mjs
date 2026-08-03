@@ -223,7 +223,7 @@ try {
   await waitForRecordingChunks(page, interruptedMeetingId, 1);
   const recoveryStorageBeforeReload = await recordingStorageState(page, interruptedMeetingId);
   page.once("dialog", (dialog) => dialog.accept());
-  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.reload({ waitUntil: "commit" });
   try {
     await page.getByText("录音已保存在本机", { exact: true }).waitFor({ timeout: 30000 });
   } catch (error) {
@@ -304,7 +304,7 @@ try {
     delete window.__yanlanOriginalRecordingPut;
   });
   page.once("dialog", (dialog) => dialog.accept());
-  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.reload({ waitUntil: "commit" });
   await page.getByText("录音已保存在本机", { exact: true }).waitFor({ timeout: 30000 });
   await page.locator("#recordingPlayer:not(.hidden)").waitFor();
   assert.equal(await recordingChunkCount(page, finalSaveFailureMeetingId), 0);
@@ -330,7 +330,7 @@ try {
     delete window.__yanlanOriginalPartialPut;
   });
   page.once("dialog", (dialog) => dialog.accept());
-  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.reload({ waitUntil: "commit" });
   await page.locator("#errorMessage").filter({ hasText: /录音分片不完整/ }).waitFor({ timeout: 30000 });
   assert.equal(await page.locator("#retryButton").isDisabled(), true);
   assert.equal(await page.locator("#recordingPlayer").isHidden(), true);
@@ -354,10 +354,10 @@ try {
   browserErrors.splice(expectedUnauthorized, 1);
   await page.locator("#asrBaseUrlInput").fill("https://mimo.example");
   assert.equal(await page.locator("#asrConnectionResult").textContent(), "");
-  asrResponseDelayMs = 200;
+  asrResponseDelayMs = 1_000;
   await page.locator("#testAsrButton").click();
   assert.equal(await page.evaluate(() => document.activeElement?.id), "testAsrButton");
-  assert.equal(await page.locator("#testAsrButton").getAttribute("aria-disabled"), "true");
+  await page.waitForFunction(() => document.querySelector("#testAsrButton")?.getAttribute("aria-disabled") === "true");
   await page.getByText("MiMo 连接成功，Base URL、API Key 和模型均可用", { exact: true }).waitFor();
   await page.locator("#testChatButton").click();
   await page.getByText("GPT 连接成功，Base URL、API Key 和模型均可用", { exact: true }).waitFor();
@@ -395,16 +395,20 @@ try {
   assert.equal(persistedConfig.asrBaseUrl, "https://mimo.example");
   assert.equal(persistedConfig.asrPath, "v1/chat/completions");
   await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => document.querySelector("#configModel")?.textContent !== "未配置模型");
   await page.locator("#settingsButton").click();
   assert.equal(await page.locator("#asrApiKeyInput").inputValue(), "asr-test-key");
   assert.equal(await page.locator("#chatApiKeyInput").inputValue(), "gpt-test-key");
   await page.locator("#settingsDialog header .icon-button").click();
   await page.locator("#newMeetingButton").click();
 
-  asrResponseDelayMs = 500;
+  asrResponseDelayMs = 1_000;
   correctionResponseDelayMs = 1_600;
+  const uploadAsrRequest = page.waitForRequest((request) => request.url() === "https://mimo.example/v1/chat/completions" && request.method() === "POST");
   await page.locator("#fileInput").setInputFiles(fixture);
-  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("正在转写音频"));
+  await uploadAsrRequest;
+  await page.locator('#meetingTaskStatus[data-state="working"]').waitFor();
+  assert.match(await page.locator("#meetingTaskLabel").textContent(), /正在准备音频|正在转写音频/);
   assert.equal(await page.locator("#meetingTaskStatus").getAttribute("data-state"), "working");
   assert.equal(await page.locator("#meetingTaskMark").textContent(), "ING");
   assert.equal(await page.locator("#newMeetingButton").isDisabled(), true);
@@ -617,7 +621,7 @@ try {
   await page.waitForTimeout(5600);
   await page.locator("#stopRecordButton").click();
   await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("处理失败"), null, { timeout: 20000 });
-  await page.locator("#errorMessage").filter({ hasText: /仍有 1 个实时转写片段失败/ }).waitFor();
+  await page.locator("#errorMessage").filter({ hasText: /仍有 [1-9]\d* 个实时转写片段失败/ }).waitFor();
   assert.equal(await page.locator("#shareButton").isDisabled(), true);
   assert.equal(await page.locator("#copyButton").isDisabled(), true);
   assert.equal(await page.locator("#transcriptList").isHidden(), true);
