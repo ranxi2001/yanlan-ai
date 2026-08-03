@@ -17,6 +17,7 @@ export function createResponsesAdapter({
         input,
         tools,
         store: Boolean(store),
+        parallel_tool_calls: false,
       };
       if (Number.isInteger(maxOutputTokens) && maxOutputTokens > 0) body.max_output_tokens = maxOutputTokens;
       if (!store && includeEncryptedReasoning) body.include = ["reasoning.encrypted_content"];

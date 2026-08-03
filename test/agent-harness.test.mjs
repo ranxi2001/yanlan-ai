@@ -582,4 +582,5 @@ test("Responses adapter sends an explicit model output budget", async () => {
   await adapter.create({ instructions: "Use tools.", input: [], tools: [] });
   assert.equal(body.max_output_tokens, 2_048);
   assert.equal(body.store, false);
+  assert.equal(body.parallel_tool_calls, false);
 });

@@ -445,6 +445,7 @@ function assertResponsesContract(requests) {
     assert.equal(request.model, "gpt-5.6-luna");
     assert.equal(request.max_output_tokens, 4_096);
     assert.equal(request.store, false);
+    assert.equal(request.parallel_tool_calls, false);
     assert.deepEqual(request.include, ["reasoning.encrypted_content"]);
     assert.deepEqual(request.tools.map((tool) => tool.name), expectedTools);
     assert.equal(request.tools.every((tool) => (
