@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 import { buildShareHtml } from "../src/api.js";
@@ -8,7 +9,7 @@ let developmentServer;
 let baseUrl = process.env.APP_URL || "";
 if (!baseUrl) {
   developmentServer = await createServer({
-    root: new URL("..", import.meta.url).pathname,
+    root: fileURLToPath(new URL("..", import.meta.url)),
     logLevel: "error",
     server: {
       host: "127.0.0.1",
@@ -40,6 +41,7 @@ let correctionResponseDelayMs = 0;
 let asrRequestCount = 0;
 let correctionRequestCount = 0;
 let summaryRequestCount = 0;
+let agentCallSequence = 0;
 page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
 page.on("pageerror", (error) => browserErrors.push(error.message));
 page.on("requestfailed", (request) => {
@@ -85,11 +87,16 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
   assert.equal(request.messages, undefined);
   const system = request.instructions;
   const user = request.input;
-  const correctionRequest = system.includes("逐字稿校对");
+  const correctionRequest = Array.isArray(request.tools)
+    && request.tools.some((tool) => tool.name === "finalize_correction");
   const summaryRequest = system.includes("会议纪要助手") || system.includes("面试证据提取助手");
-  if (correctionRequest) correctionRequestCount += 1;
+  const agentOutputs = correctionRequest
+    ? request.input.filter((item) => item?.type === "function_call_output")
+    : [];
+  const agentStart = correctionRequest && agentOutputs.length === 0;
+  if (agentStart) correctionRequestCount += 1;
   if (summaryRequest) summaryRequestCount += 1;
-  if (correctionRequest && transientCorrectionFailures > 0) {
+  if (agentStart && transientCorrectionFailures > 0) {
     transientCorrectionFailures -= 1;
     await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "temporary correction failure" } }) });
     return;
@@ -99,16 +106,72 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
     await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "temporary summary failure" } }) });
     return;
   }
-  if (correctionRequest && correctionResponseDelayMs) {
+  if (agentStart && correctionResponseDelayMs) {
     const delay = correctionResponseDelayMs;
     correctionResponseDelayMs = 0;
     await new Promise((resolve) => setTimeout(resolve, delay));
   }
   let content;
   if (correctionRequest) {
-    content = user.includes("目标岗位：")
-      ? JSON.stringify({ patches: [{ id: 0, replacements: [{ from: "服务降机", to: "服务降级" }] }], join_after: [] })
-      : JSON.stringify({ patches: [{ id: 0, replacements: [{ from: "万福来", to: "OneFly" }] }], join_after: [] });
+    agentCallSequence += 1;
+    const initialItem = request.input.find((item) => item?.role === "user" && typeof item.content === "string");
+    const initial = JSON.parse(initialItem.content);
+    const readOutput = agentOutputs.find((item) => item.call_id.startsWith("browser_read_"));
+    const inspectOutput = agentOutputs.find((item) => item.call_id.startsWith("browser_inspect_"));
+    const validateOutput = agentOutputs.find((item) => item.call_id.startsWith("browser_validate_"));
+    let output;
+    if (!readOutput) {
+      output = [{
+        id: `browser_fc_read_${agentCallSequence}`,
+        type: "function_call",
+        status: "completed",
+        call_id: `browser_read_${agentCallSequence}`,
+        name: "read_transcript_window",
+        arguments: JSON.stringify({ start_segment: 0, max_segments: 60 }),
+      }];
+    } else if (!inspectOutput) {
+      output = [{
+        id: `browser_fc_inspect_${agentCallSequence}`,
+        type: "function_call",
+        status: "completed",
+        call_id: `browser_inspect_${agentCallSequence}`,
+        name: "inspect_terminology_signals",
+        arguments: JSON.stringify({}),
+      }];
+    } else if (!validateOutput) {
+      const readResult = JSON.parse(readOutput.output);
+      const transcript = readResult.segments.map((segment) => segment.text).join("\n");
+      const mappings = initial.explicit_mappings.filter((mapping) => transcript.includes(mapping.alias));
+      output = [{
+        id: `browser_fc_validate_${agentCallSequence}`,
+        type: "function_call",
+        status: "completed",
+        call_id: `browser_validate_${agentCallSequence}`,
+        name: "validate_mapping_group",
+        arguments: JSON.stringify({ mappings }),
+      }];
+    } else {
+      assert.equal(JSON.parse(inspectOutput.output).ok, true);
+      assert.equal(JSON.parse(validateOutput.output).ok, true);
+      const readResult = JSON.parse(readOutput.output);
+      const transcript = readResult.segments.map((segment) => segment.text).join("\n");
+      const mappings = initial.explicit_mappings.filter((mapping) => transcript.includes(mapping.alias));
+      output = [{
+        id: `browser_fc_finalize_${agentCallSequence}`,
+        type: "function_call",
+        status: "completed",
+        call_id: `browser_finalize_${agentCallSequence}`,
+        name: "finalize_correction",
+        arguments: JSON.stringify({ mappings, join_after: [] }),
+      }];
+    }
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      id: `browser_agent_response_${agentCallSequence}`,
+      status: "completed",
+      output,
+    }) });
+    gptResponses += 1;
+    return;
   } else if (system.includes("面试证据提取助手")) {
     assert.match(system, /不得根据声音、口音/);
     assert.match(user, /目标岗位：平台工程师/);
@@ -167,9 +230,9 @@ try {
   await page.locator("#mimoHelpButton").click();
   await page.getByText("配置 MiMo 语音转写", { exact: true }).waitFor();
   await page.getByText("Token Plan 当前面向 AI 编程工具，会议转写应使用按量 API Key。", { exact: false }).waitFor();
-  await page.screenshot({ path: new URL("../artifacts/mimo-help-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/mimo-help-desktop.png", import.meta.url)), fullPage: true });
   await page.locator('#mimoHelpDialog [value="default"]').click();
-  await page.screenshot({ path: new URL("../artifacts/recommended-providers-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/recommended-providers-desktop.png", import.meta.url)), fullPage: true });
   await page.locator("#settingsDialog header .icon-button").click();
   assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.open), false);
   await page.locator("#settingsButton").click();
@@ -178,7 +241,7 @@ try {
   assert.deepEqual(await settingsActionButtons.evaluateAll((buttons) => buttons.map((button) => getComputedStyle(button).fontSize)), Array(5).fill("11px"));
   assert.deepEqual(await settingsActionButtons.evaluateAll((buttons) => buttons.map((button) => getComputedStyle(button).minHeight)), Array(5).fill("34px"));
   await page.locator("#saveSettingsButton").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: new URL("../artifacts/settings-actions-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/settings-actions-desktop.png", import.meta.url)), fullPage: true });
   await page.locator('#settingsDialog footer [value="cancel"]').click();
   assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.open), false);
 
@@ -213,7 +276,7 @@ try {
   const recorderDownload = page.waitForEvent("download");
   await page.locator('[data-export="audio"]').click();
   assert.match((await recorderDownload).suggestedFilename(), /\.(webm|ogg|m4a)$/);
-  await page.screenshot({ path: new URL("../artifacts/recorder-only-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/recorder-only-desktop.png", import.meta.url)), fullPage: true });
   await page.locator("#newMeetingButton").click();
 
   await page.locator("#startRecordButton").click();
@@ -361,10 +424,10 @@ try {
   await page.getByText("MiMo 连接成功，Base URL、API Key 和模型均可用", { exact: true }).waitFor();
   await page.locator("#testChatButton").click();
   await page.getByText("GPT 连接成功，Base URL、API Key 和模型均可用", { exact: true }).waitFor();
-  await page.screenshot({ path: new URL("../artifacts/connection-tests-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/connection-tests-desktop.png", import.meta.url)), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator("#chatConnectionResult").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: new URL("../artifacts/connection-tests-mobile.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/connection-tests-mobile.png", import.meta.url)), fullPage: true });
   assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);
   await page.setViewportSize({ width: 1440, height: 960 });
   transientAsrFailures = 2;
@@ -382,7 +445,7 @@ try {
   await page.getByText("API Key 已填入，请检查后保存设置", { exact: true }).waitFor();
   assert.equal(await page.locator("#asrApiKeyInput").inputValue(), "asr-test-key");
   assert.equal(await page.locator("#chatApiKeyInput").inputValue(), "gpt-test-key");
-  await page.screenshot({ path: new URL("../artifacts/responses-settings-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/responses-settings-desktop.png", import.meta.url)), fullPage: true });
   assert.equal(await page.locator("#settingsDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);
   await page.locator("#chunkSecondsInput").selectOption("5");
   await page.locator("#contextHintInput").fill("项目名：万福来 -> OneFly；负责人：小明；术语：服务降机 -> 服务降级");
@@ -418,7 +481,7 @@ try {
     return event.defaultPrevented;
   }), true);
   await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("Agent 正在校正逐字稿与断句"));
-  await page.screenshot({ path: new URL("../artifacts/task-status-ing-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/task-status-ing-desktop.png", import.meta.url)), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(250);
   assert.ok(await page.locator("#sidebar").evaluate((element) => element.getBoundingClientRect().right <= 1));
@@ -430,7 +493,7 @@ try {
   });
   assert.ok(mobileTaskLayout.left >= mobileTaskLayout.topbarLeft && mobileTaskLayout.right <= mobileTaskLayout.topbarRight);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
-  await page.screenshot({ path: new URL("../artifacts/task-status-ing-mobile.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/task-status-ing-mobile.png", import.meta.url)), fullPage: true });
   await page.setViewportSize({ width: 1440, height: 960 });
   try {
     await page.getByText("OneFly 项目周会", { exact: true }).first().waitFor({ timeout: 15000 });
@@ -449,7 +512,8 @@ try {
   assert.equal(await page.locator("#meetingTaskLabel").textContent(), "已完成");
   assert.equal(await page.locator("#newMeetingButton").isEnabled(), true);
   assert.doesNotMatch(await page.locator("#meetingMeta").textContent(), /已完成|正在/);
-  assert.equal(await page.locator(".correction-note").textContent().then((text) => text.trim()), "已统一 1 个术语");
+  await page.getByText("Luna Agent · 4 轮 · 4 次工具调用", { exact: true }).waitFor();
+  await page.getByText("已统一 1 个术语", { exact: true }).waitFor();
   const correctionLedger = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].corrections);
   assert.deepEqual(correctionLedger.map(({
     segmentId, start_seconds, from, to, status, reason, start_offset, end_offset,
@@ -467,13 +531,13 @@ try {
 
   await page.locator('[data-insight="highlights"]').click();
   await page.locator(".highlight-item[data-seek='0']", { hasText: "由小明明天完成" }).waitFor();
-  await page.screenshot({ path: new URL("../artifacts/meeting-highlights-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/meeting-highlights-desktop.png", import.meta.url)), fullPage: true });
   await page.locator('[data-insight="speakers"]').click();
   await page.getByText("确认了 OneFly 项目的交付安排。", { exact: true }).waitFor();
   await page.locator('[data-insight="actions"]').click();
   await page.locator("#insightContent").getByText("今天讨论OneFly项目，由小明明天完成。", { exact: true }).waitFor();
   await page.getByText("完成 OneFly 项目", { exact: true }).waitFor();
-  await page.screenshot({ path: new URL("../artifacts/meeting-decisions-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/meeting-decisions-desktop.png", import.meta.url)), fullPage: true });
 
   await page.locator('[data-insight="qa"]').click();
   await page.locator("#questionInput").fill("谁负责项目，什么时候完成？");
@@ -513,7 +577,7 @@ try {
   await page.locator('[data-insight="summary"]').click();
   await page.locator("#toast").evaluate((element) => { element.className = "toast"; });
   await page.waitForTimeout(200);
-  await page.screenshot({ path: new URL("../artifacts/desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/desktop.png", import.meta.url)), fullPage: true });
   const desktopOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   assert.equal(desktopOverflow, false);
 
@@ -531,7 +595,7 @@ try {
   assert.equal(await retrySummary.getAttribute("aria-label"), "重试生成智能纪要");
   await page.getByText("本次未生成关键词；摘要与关键词将随智能纪要一并重新生成", { exact: true }).waitFor();
   assert.equal(await page.getByText("无关键词", { exact: true }).count(), 0);
-  await page.screenshot({ path: new URL("../artifacts/insight-retry-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/insight-retry-desktop.png", import.meta.url)), fullPage: true });
   const asrRequestsBeforeRetries = asrRequestCount;
   const summariesBeforeRetry = summaryRequestCount;
   await retrySummary.click();
@@ -569,7 +633,7 @@ try {
   assert.equal(await mobile.locator("[data-retry-insight]").count(), 0);
   await mobile.locator("#insightsButton").click();
   await mobile.waitForTimeout(250);
-  await mobile.screenshot({ path: new URL("../artifacts/mobile-share.png", import.meta.url).pathname, fullPage: true });
+  await mobile.screenshot({ path: fileURLToPath(new URL("../artifacts/mobile-share.png", import.meta.url)), fullPage: true });
   const mobileOverflow = await mobile.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   assert.equal(mobileOverflow, false);
   await mobile.close();
@@ -604,7 +668,7 @@ try {
   await semanticPage.getByText("优化 4 处断句", { exact: true }).waitFor();
   assert.equal(await semanticPage.locator(".segment-text").first().evaluate((element) => getComputedStyle(element).whiteSpace), "pre-line");
   assert.equal(await semanticPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
-  await semanticPage.screenshot({ path: new URL("../artifacts/semantic-transcript-desktop.png", import.meta.url).pathname, fullPage: true });
+  await semanticPage.screenshot({ path: fileURLToPath(new URL("../artifacts/semantic-transcript-desktop.png", import.meta.url)), fullPage: true });
   await semanticContext.close();
 
   await page.locator("#newMeetingButton").click();
@@ -696,7 +760,7 @@ try {
   await page.keyboard.press("Escape");
   await page.locator('[data-insight="summary"]').click();
   await page.locator("#toast").evaluate((element) => { element.className = "toast"; });
-  await page.screenshot({ path: new URL("../artifacts/interview-desktop.png", import.meta.url).pathname, fullPage: true });
+  await page.screenshot({ path: fileURLToPath(new URL("../artifacts/interview-desktop.png", import.meta.url)), fullPage: true });
 
   const interviewMobile = await context.newPage();
   await interviewMobile.setViewportSize({ width: 390, height: 844 });
@@ -705,7 +769,7 @@ try {
   await interviewMobile.waitForTimeout(250);
   await interviewMobile.getByText("证据复核", { exact: true }).waitFor();
   await interviewMobile.locator(".interview-disclaimer").waitFor();
-  await interviewMobile.screenshot({ path: new URL("../artifacts/interview-mobile-share.png", import.meta.url).pathname, fullPage: true });
+  await interviewMobile.screenshot({ path: fileURLToPath(new URL("../artifacts/interview-mobile-share.png", import.meta.url)), fullPage: true });
   assert.equal(await interviewMobile.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
   await interviewMobile.close();
 
@@ -718,7 +782,7 @@ try {
   await legacy.goto(baseUrl, { waitUntil: "networkidle" });
   await legacy.locator("#sidebarOpen").click();
   await legacy.locator("#openSettingsButton").click();
-  await legacy.screenshot({ path: new URL("../artifacts/recommended-providers-mobile.png", import.meta.url).pathname, fullPage: true });
+  await legacy.screenshot({ path: fileURLToPath(new URL("../artifacts/recommended-providers-mobile.png", import.meta.url)), fullPage: true });
   assert.equal(await legacy.locator("#chatModelInput").inputValue(), "gpt-4o-mini");
   assert.equal(await legacy.locator("#chatProtocolInput").inputValue(), "chat-completions");
   assert.equal(await legacy.locator("#chatPathInput").inputValue(), "chat/completions");
@@ -730,10 +794,10 @@ try {
   await legacy.locator("#mimoHelpButton").click();
   await legacy.locator("#mimoHelpDialog").waitFor();
   assert.equal(await legacy.locator("#mimoHelpDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);
-  await legacy.screenshot({ path: new URL("../artifacts/mimo-help-mobile.png", import.meta.url).pathname, fullPage: true });
+  await legacy.screenshot({ path: fileURLToPath(new URL("../artifacts/mimo-help-mobile.png", import.meta.url)), fullPage: true });
   await legacy.locator('#mimoHelpDialog [value="default"]').click();
   await legacy.locator("#chatProtocolInput").scrollIntoViewIfNeeded();
-  await legacy.screenshot({ path: new URL("../artifacts/responses-settings-mobile.png", import.meta.url).pathname, fullPage: true });
+  await legacy.screenshot({ path: fileURLToPath(new URL("../artifacts/responses-settings-mobile.png", import.meta.url)), fullPage: true });
   assert.equal(await legacy.locator("#settingsDialog").evaluate((element) => element.scrollWidth > element.clientWidth), false);
   const keyActionLayout = await legacy.locator(".settings-key-actions").evaluate((element) => {
     const [importButton, exportButton, clearButton] = [...element.children].map((button) => button.getBoundingClientRect());

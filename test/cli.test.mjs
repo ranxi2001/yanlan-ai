@@ -171,12 +171,24 @@ test("CLI replaces an existing output only with --force", async () => {
   }
 });
 
-test("CLI atomically replaces an output path without following a swapped symlink", async () => {
+test("CLI atomically replaces an output path without following a swapped symlink", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "yanlan-cli-race-"));
   const input = join(directory, "recording.mp3");
   const output = join(directory, "recording.txt");
   await writeFile(input, "audio bytes");
   await writeFile(output, "old transcript");
+  const probe = join(directory, "symlink-probe.txt");
+  try {
+    await symlink(input, probe);
+    await unlink(probe);
+  } catch (error) {
+    if (["EPERM", "EACCES", "ENOTSUP"].includes(error?.code)) {
+      t.skip(`symlink creation is unavailable: ${error.code}`);
+      await rm(directory, { recursive: true, force: true });
+      return;
+    }
+    throw error;
+  }
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     await unlink(output);
@@ -245,7 +257,8 @@ test("CLI retries transient ASR failures within the user timeout budget", async 
     assert.equal(code, 0);
     assert.equal(stdout.value(), "retry succeeded\n");
     assert.equal(requests, 3);
-    assert.deepEqual(timeouts, [300000]);
+    assert.equal(timeouts[0], 300000);
+    assert.deepEqual(timeouts.slice(1), Array(requests).fill(120000));
   } finally {
     globalThis.fetch = originalFetch;
     AbortSignal.timeout = originalTimeout;

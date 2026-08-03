@@ -160,12 +160,12 @@
           </div>
         </section>
         <section class="settings-section">
-          <h3><i data-lucide="sparkles"></i>GPT 总结与提问</h3>
+          <h3><i data-lucide="sparkles"></i>GPT Luna Agent 与纪要</h3>
           <div class="settings-fields">
             <label class="field field-wide"><span>GPT Base URL</span><input id="chatBaseUrlInput" type="url" placeholder="https://example.com/v1" autocomplete="url" /></label>
             <div class="field field-wide"><label for="chatApiKeyInput">GPT API Key</label><div class="key-input-row"><span class="secret-input"><input id="chatApiKeyInput" type="password" placeholder="仅保存在此浏览器" maxlength="8192" autocomplete="off" aria-describedby="chatConnectionResult" /><button class="toggle-key-button" data-key-input="chatApiKeyInput" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏 GPT 密钥"><i data-lucide="eye"></i></button></span><button class="secondary-button connection-test-button" id="testChatButton" type="button" title="发送最小提示并验证当前配置" aria-label="测试 GPT 连接" aria-describedby="chatTestDescription chatConnectionResult"><i data-lucide="plug-zap"></i><span>测试</span></button></div><span class="visually-hidden" id="chatTestDescription">发送一句最小测试提示，可能产生极少量 API 用量。</span><p class="connection-test-result" id="chatConnectionResult" role="status"></p></div>
             <label class="field"><span>文本模型</span><input id="chatModelInput" value="gpt-5.6-luna" /></label>
-            <label class="field"><span>调用协议</span><select id="chatProtocolInput"><option value="responses" selected>Responses（推荐）</option><option value="chat-completions">Chat Completions（兼容）</option></select></label>
+            <label class="field"><span>调用协议</span><select id="chatProtocolInput"><option value="responses" selected>Responses（Agent Mode）</option><option value="chat-completions">Chat Completions（兼容）</option></select></label>
             <label class="field"><span>相对路径</span><input id="chatPathInput" value="responses" /></label>
             <label class="field field-wide"><span>会议背景 / 专有名词</span><textarea id="contextHintInput" rows="3" placeholder="例如：项目名：万福来 -> OneFly；术语：d-schedule -> Descheduler；参会人：小明、Alice"></textarea></label>
           </div>

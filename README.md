@@ -15,7 +15,7 @@
 
 [在线体验](https://onefly.top/yanlan-ai/) · [报告问题](https://github.com/ranxi2001/yanlan-ai/issues/new/choose) · [参与贡献](./CONTRIBUTING.md)
 
-言澜是一个纯前端、可自行部署的开源 AI 语音记录工具，支持普通会议和面试专用模式。它采用双模型管线：MiMo 负责语音识别，GPT 结合会议或岗位上下文校正专有名词和前后不一致，再生成会议纪要或带时间证据的面试复核材料。文本模型默认使用 `gpt-5.6-luna` 和 Responses API。
+言澜是一个纯前端、可自行部署的开源 AI 语音记录工具，支持普通会议和面试专用模式。它内置由应用掌控的 Responses Agent Harness：`gpt-5.6-luna` 作为 supervisor 维护上下文、选择工具并验证完成条件，`mimo-v2.5-asr` 负责初始转写，也可被 Luna 作为受控工具调用来复核疑难短音频。模型只能提交证据与术语提案，确定性 runtime 保留逐字稿、时间轴和说话人的最终写入权。
 
 ![言澜会议工作台](./docs/yanlan-workspace.png)
 
@@ -24,7 +24,8 @@
 - 浏览器录音，分段实时转写，并把录音分片持续写入 IndexedDB；意外刷新后可恢复已经落盘的音频
 - 无需 API Key 也可作为纯本地录音器使用，结束后直接播放或导出音频
 - 上传常见格式的音频并分段转写；默认 MiMo data URL 路径在解码时仅保留当前 PCM 分片，不再复制整段单声道音频
-- 保留原始 ASR 片段，GPT 只提出最小术语补丁；程序仅自动应用用户明确配置的 `错误写法 -> 规范写法` 映射，并保存接受/拒绝台账，不改变时间轴与说话人归属
+- 保留原始 ASR 片段；Luna Agent 可按需读取逐字稿窗口、提交术语候选、全录音扫描 alias、验证映射组，并对不确定处调用 MiMo 复核。只有 `finalize_correction` 工具能提交结果；程序把通过验证的同一实体统一为一个 canonical，每次替换都保存可回放台账，不改变时间轴与说话人归属
+- Responses tool loop 使用严格 JSON Schema、精确 `call_id`、不可变运行状态、调用预算和追加式 trace；模型的 reasoning/function items 会随工具结果原样回传，避免多轮推理断裂
 - 会议概览、关键词、可回听金句、发言人总结、带原话证据的关键决策、行动项和逐字稿问答
 - 面试前录入候选人代称、岗位、轮次、能力项和 JD
 - 面试后按能力项整理证据、缺口和下一轮追问；程序只验证时间与原话，不自动判断原话是否证明能力，也不自动推进/淘汰候选人
@@ -106,7 +107,7 @@ npm run dev
 
 1. MiMo ASR 的 API Key；官方 Base URL、模型和 10 秒实时分段均已预填，可按需调整
 2. GPT 的 Base URL、API Key、模型名、调用协议和相对路径
-3. 可选的通用背景和专有名词；需要自动校正时使用 `术语：result binding -> ResourceBinding` 这样的明确映射，只填写规范词会提供模型上下文但不会自动改写原文
+3. 可选的通用背景和专有名词；`术语：result binding -> ResourceBinding` 这样的明确映射会确定性覆盖整段录音，只填写规范词时仅允许重复出现且通过整段一致性校验的候选自动统一
 
 两组配置旁的“测试”按钮会直接使用表单中尚未保存的值。MiMo 测试发送 1 秒低音量 WAV，GPT 测试发送一句最小提示，因此会产生极少量真实 API 用量；测试不会自动保存配置。
 
@@ -114,7 +115,7 @@ npm run dev
 
 MiMo Base URL 默认使用服务根地址 `https://api.xiaomimimo.com`，版本与接口格式由内部相对路径 `v1/chat/completions` 管理。粘贴带 `/v1` 的旧 Base URL 或完整请求地址时，网页会自动归一化为服务根地址，最终请求仍是 `POST /v1/chat/completions`。GPT Base URL 和相对路径仍按填写内容使用。项目没有 `.env` 文件，也不在源码中内置 Key。
 
-新配置默认使用 Responses API。如果 Base URL 已经包含 `/v1`（例如 `https://api.openai.com/v1`），相对路径填写 `responses`，最终请求就是 `POST /v1/responses`。不支持 Responses 的兼容网关可以在设置中切换回 Chat Completions；已有浏览器配置会继续沿用原协议，不会被静默覆盖。
+新配置默认使用 Responses API，并以此开启 Agent Mode。如果 Base URL 已经包含 `/v1`（例如 `https://api.openai.com/v1`），相对路径填写 `responses`，最终请求就是 `POST /v1/responses`。不支持 Responses 的兼容网关可以切换回 Chat Completions，但该协议只走旧版兼容校正，不具备工具循环或 MiMo 按需复核；已有浏览器配置会继续沿用原协议，不会被静默覆盖。
 
 ## 跨域与本地网关
 
@@ -144,8 +145,8 @@ flowchart LR
 - “导出 Key”生成的 JSON 含有明文凭据，应只保存在可信设备和受控位置；导入只读取两组 Key，不接受文件中的 Base URL 或其他配置。
 - 录音分片在录制期间持续提交到本机 IndexedDB，正常结束后合并为完整录音并清理临时分片。
 - 页面意外关闭后可恢复已提交的连续分片；尚未触发保存的最后约一秒仍可能丢失，重要录音应在结束后及时导出备份。
-- 音频片段会发送给配置的 MiMo API；逐字稿会发送给配置的 GPT API。
-- Responses 请求显式设置 `store: false`，不使用服务端会话状态；第三方网关仍以其自身隐私政策为准。
+- 音频片段会发送给配置的 MiMo API；逐字稿窗口会发送给配置的 GPT API。Agent 只有在术语证据不足时才可请求最多 30 秒的 MiMo 音频复核，并受独立调用预算限制。
+- Responses 请求显式设置 `store: false`；Harness 在本机回放完整 typed output 来维持工具上下文，并把不含 Key 和逐字稿正文的运行 trace 保存在当前会议中。第三方网关仍以其自身隐私政策为准。
 - 本地网关只在 `npm run local` 启动，静态在线版不会代管或保存用户 Key。
 - 分享链接和离线网页不包含 API Key、原始录音、问答历史或原始 ASR 备份。
 - 面试分享稿不包含完整 JD 和面试官姓名，只包含候选人代称、岗位、轮次、能力项、证据复核材料和逐字稿。
@@ -167,6 +168,22 @@ npm run build
 npm run check
 ```
 
+仓库内真实云原生片段的离线术语一致性回归：
+
+```bash
+npm run eval:terminology
+```
+
+上面的离线回归使用脚本化候选，只验证确定性归一化与台账。要测 Luna 自己的术语发现召回率，可运行不向模型泄露 canonical 或 aliases 的真实 Agent eval：
+
+```bash
+YANLAN_LUNA_BASE_URL="https://example.com/v1" \
+YANLAN_LUNA_API_KEY="your-key" \
+npm run eval:terminology:agent
+```
+
+可选设置 `MIMO_API_KEY`，让 Agent eval 同时开放 MiMo 短音频复核工具；需要本机可执行 `ffmpeg`。
+
 浏览器端到端验收会自行启动隔离的本地服务并生成测试音频：
 
 ```bash
@@ -175,7 +192,7 @@ npm run test:browser
 
 ## 项目状态
 
-`v0.5.1` 基于一段 61 分钟真实会议的匿名测量，增加大文件快速预检、ASR 质量门与自适应重试、稳定时间排序、可审计术语补丁、并发长总结、完整原话证据约束和录音恢复一致性修复；`v0.5.0` 简化 MiMo 配置并自动迁移旧 Base URL，增加 Key JSON 导入导出、MiMo/GPT 连接测试、推荐服务 CORS 说明、GPT 失败重试，以及不破坏原子时间轴的中文语义断句；`v0.4.6` 强化录音增量持久化与崩溃恢复、ASR 重试和完整性阻断、模型改写限制、逐字稿证据验证、长内容分批处理、音频内存边界、CLI 输出保护及 CI 浏览器验收；`v0.4.5` 发布音频转文字 CLI 与 Agent Skill。下一阶段重点包括说话人分离、逐字稿编辑、协作批注、团队权限和更多模型适配。路线和优先级通过 GitHub Issues 公开维护。
+当前主线已加入自研 Responses Agent Harness，并以录音级术语一致性作为首个 profile：Luna 负责推理和工具选择，MiMo 提供受控音频证据，程序负责 invariant、提交和 trace。`v0.5.1` 基于一段 61 分钟真实会议的匿名测量，增加大文件快速预检、ASR 质量门与自适应重试、稳定时间排序、可审计术语补丁、并发长总结、完整原话证据约束和录音恢复一致性修复；`v0.5.0` 简化 MiMo 配置并自动迁移旧 Base URL，增加 Key JSON 导入导出、MiMo/GPT 连接测试、推荐服务 CORS 说明、GPT 失败重试，以及不破坏原子时间轴的中文语义断句。下一阶段将把异常 ASR 路由和长纪要也迁移为 profile，并继续推进说话人分离、逐字稿编辑与协作批注。
 
 会议产品、开源语音组件与 Agent/MCP 的技术取舍见[竞品架构调研](./docs/competitive-architecture.md)。
 

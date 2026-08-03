@@ -47,6 +47,7 @@ const connectionTestRuns = {
   chat: { token: 0, controller: null },
 };
 const insightRetryRuns = new Map();
+const meetingProcessingRuns = new Map();
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
@@ -733,8 +734,14 @@ async function handleFileSelection(event) {
   }
 }
 
-async function processStoredAudio(meeting, blob, fileName, probedDuration = audioDurationOrNull(meeting.duration)) {
-  const uploadError = mimoUploadLimitError(blob, probedDuration);
+async function processStoredAudio(
+  meeting,
+  blob,
+  fileName,
+  probedDuration = audioDurationOrNull(meeting.duration),
+  processingConfig = { ...state.config },
+) {
+  const uploadError = mimoUploadLimitError(blob, probedDuration, processingConfig);
   if (uploadError) throw uploadError;
   meeting.status = "transcribing";
   meeting.processingDetail = "正在准备音频";
@@ -751,28 +758,28 @@ async function processStoredAudio(meeting, blob, fileName, probedDuration = audi
   meeting.corrections = [];
   meeting.rejectedCorrections = 0;
   saveAndRender();
-  const transcription = await transcribeStoredBlob(meeting, blob, fileName, probedDuration);
+  const transcription = await transcribeStoredBlob(meeting, blob, fileName, probedDuration, processingConfig);
   meeting.rawSegments = transcription.rawSegments;
   meeting.segments = transcription.segments;
   if (!meeting.segments.length) throw new Error("MiMo 没有返回可用的逐字稿");
-  await enrichMeeting(meeting);
+  await enrichMeeting(meeting, processingConfig);
 }
 
-async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = audioDurationOrNull(meeting.duration)) {
-  if (state.config.asrProtocol === "openai-transcriptions") {
+async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = audioDurationOrNull(meeting.duration), processingConfig = { ...state.config }) {
+  if (processingConfig.asrProtocol === "openai-transcriptions") {
     updateMeetingTaskProgress(meeting, "正在上传并转写音频");
-    const result = await transcribeAudioWithRetry({ config: state.config, blob, fileName, language: meeting.language });
+    const result = await transcribeAudioWithRetry({ config: processingConfig, blob, fileName, language: meeting.language });
     const rawSegments = normalizeSegments(result.segments, meeting.duration);
     const reconciled = reconcileTranscriptSegments(rawSegments);
     meeting.asrReconciliations = reconciled.reconciliations;
     return { rawSegments, segments: reconciled.segments };
   }
-  const uploadError = mimoUploadLimitError(blob, probedDuration);
+  const uploadError = mimoUploadLimitError(blob, probedDuration, processingConfig);
   if (uploadError) throw uploadError;
   try {
     const decoded = await decodeAudio(blob);
     meeting.duration = storedAudioDuration(decoded.length / decoded.sampleRate);
-    const chunkSamples = Math.max(15, Number(state.config.chunkSeconds) * 3) * decoded.sampleRate;
+    const chunkSamples = Math.max(15, Number(processingConfig.chunkSeconds) * 3) * decoded.sampleRate;
     const jobs = [];
     for (let offset = 0, index = 0; offset < decoded.length; offset += chunkSamples, index += 1) {
       const end = Math.min(decoded.length, offset + chunkSamples);
@@ -793,7 +800,7 @@ async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = au
               updateMeetingTaskProgress(meeting, `异常片段细分复核 · ${formatTimestamp(startSeconds)}`);
             }
             return transcribeAudioWithRetry({
-              config: state.config,
+              config: processingConfig,
               blob: encodeWav(part, decoded.sampleRate),
               fileName: `part-${String(index).padStart(4, "0")}-${Math.round(startSeconds * 1_000)}.wav`,
               language: meeting.language,
@@ -819,7 +826,7 @@ async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = au
       throw new Error("浏览器无法分段解码该音频，且原文件超过 40 MiB，已停止整文件 data URL 上传；请切分文件或改用标准 Transcriptions 协议");
     }
     updateMeetingTaskProgress(meeting, "正在使用兼容方式转写音频");
-    const result = await transcribeAudioWithRetry({ config: state.config, blob, fileName, language: meeting.language });
+    const result = await transcribeAudioWithRetry({ config: processingConfig, blob, fileName, language: meeting.language });
     requireTranscriptionQuality(result, meeting.duration, meeting);
     const rawSegments = normalizeSegments(result.segments, meeting.duration);
     const reconciled = reconcileTranscriptSegments(rawSegments);
@@ -861,6 +868,42 @@ async function decodeAudio(blob) {
   }
 }
 
+function createMeetingAudioRangeTranscriber(meeting, processingConfig = state.config) {
+  let decodedPromise;
+  const asrConfig = { ...processingConfig };
+  return async ({ start_seconds: requestedStart, end_seconds: requestedEnd, signal }) => {
+    const start = Math.max(0, Number(requestedStart) || 0);
+    const requestedEndSeconds = Math.max(0, Number(requestedEnd) || 0);
+    const knownDuration = Number(meeting.duration) || 0;
+    const end = knownDuration > 0 ? Math.min(knownDuration, requestedEndSeconds) : requestedEndSeconds;
+    if (!(end > start) || end - start > 30) throw new Error("MiMo 复核音频范围必须大于 0 秒且不超过 30 秒");
+    decodedPromise ||= getRecording(meeting.id).then((record) => {
+      if (!record?.blob) throw new Error("本机没有找到可供 MiMo 复核的录音");
+      return decodeAudio(record.blob);
+    });
+    const decoded = await decodedPromise;
+    const sampleStart = Math.max(0, Math.floor(start * decoded.sampleRate));
+    const sampleEnd = Math.min(decoded.length, Math.ceil(end * decoded.sampleRate));
+    if (sampleEnd <= sampleStart) throw new Error("MiMo 复核音频范围超出录音长度");
+    const pcm = mixAudioRange(decoded.buffer, sampleStart, sampleEnd);
+    const result = await transcribeAudioWithRetry({
+      config: asrConfig,
+      blob: encodeWav(pcm, decoded.sampleRate),
+      fileName: `agent-review-${Math.round(start * 1_000)}-${Math.round(end * 1_000)}.wav`,
+      language: meeting.language,
+      signal,
+    });
+    return {
+      text: result.text,
+      segments: (result.segments || []).map((segment) => ({
+        start_seconds: start + Math.max(0, Number(segment.start_seconds) || 0),
+        end_seconds: start + Math.max(0, Number(segment.end_seconds) || 0),
+        text: String(segment.text || ""),
+      })),
+    };
+  };
+}
+
 function mixAudioRange(buffer, start, end) {
   const output = new Float32Array(Math.max(0, end - start));
   for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
@@ -870,25 +913,53 @@ function mixAudioRange(buffer, start, end) {
   return output;
 }
 
-function mimoUploadLimitError(blob, duration) {
-  const message = mimoUploadLimitMessage({ protocol: state.config.asrProtocol, size: blob?.size, duration });
+function mimoUploadLimitError(blob, duration, processingConfig = state.config) {
+  const message = mimoUploadLimitMessage({ protocol: processingConfig.asrProtocol, size: blob?.size, duration });
   return message ? new Error(message) : null;
 }
 
-async function enrichMeeting(meeting) {
+async function enrichMeeting(meeting, processingConfig = { ...state.config }) {
+  meetingProcessingRuns.get(meeting.id)?.abort(new DOMException("Meeting processing superseded", "AbortError"));
+  const controller = new AbortController();
+  meetingProcessingRuns.set(meeting.id, controller);
+  try {
+    await enrichMeetingRun(meeting, { ...processingConfig }, controller.signal);
+  } finally {
+    if (meetingProcessingRuns.get(meeting.id) === controller) meetingProcessingRuns.delete(meeting.id);
+  }
+}
+
+async function enrichMeetingRun(meeting, processingConfig, signal) {
   meeting.status = "correcting";
   delete meeting.processingDetail;
   resetCorrectionResult(meeting);
   saveAndRender();
   try {
-    const corrected = await correctTranscript({ config: state.config, meeting });
+    const corrected = await correctTranscript({
+      config: processingConfig,
+      meeting,
+      signal,
+      transcribeAudioRange: createMeetingAudioRangeTranscriber(meeting, processingConfig),
+    });
     meeting.segments = corrected.segments;
     meeting.terminology = corrected.terminology;
     meeting.rejectedCorrections = corrected.rejectedCorrections;
     meeting.semanticJoins = corrected.semanticJoins;
     meeting.corrections = corrected.corrections;
+    if (corrected.agentRun) meeting.agentRun = corrected.agentRun;
   } catch (error) {
+    if (signal.aborted) return;
     meeting.correctionError = error.message;
+    if (Array.isArray(error.agentTrace)) {
+      meeting.agentRun = {
+        id: error.agentTrace[0]?.run_id || "",
+        profile: "terminology-supervisor",
+        model: processingConfig.chatModel,
+        status: "failed",
+        usage: error.agentUsage || {},
+        trace: error.agentTrace,
+      };
+    }
     const reconciled = reconcileTranscriptSegments(meeting.rawSegments || []);
     meeting.segments = reconciled.segments;
     meeting.asrReconciliations = reconciled.reconciliations;
@@ -898,15 +969,19 @@ async function enrichMeeting(meeting) {
     meeting.semanticJoins = 0;
   }
 
+  if (signal.aborted || !state.meetings.some((item) => item.id === meeting.id)) return;
+
   meeting.status = "summarizing";
   resetSummaryResult(meeting);
   saveAndRender();
   try {
-    const summary = await summarizeTranscript({ config: state.config, meeting });
+    const summary = await summarizeTranscript({ config: processingConfig, meeting, signal });
     applySummaryResult(meeting, summary);
   } catch (error) {
+    if (signal.aborted) return;
     meeting.summaryError = error.message;
   }
+  if (signal.aborted || !state.meetings.some((item) => item.id === meeting.id)) return;
   meeting.status = "done";
   delete meeting.processingDetail;
   saveAndRender();
@@ -923,6 +998,10 @@ async function retryInsightProcessing(step) {
   const meeting = activeMeeting();
   if (!meeting || meeting.readOnly || !["correction", "summary"].includes(step) || insightRetryRuns.has(meeting.id)) return;
   if (!requireChatConfig()) return;
+  const retryConfig = { ...state.config };
+  meetingProcessingRuns.get(meeting.id)?.abort(new DOMException("Meeting retry superseded", "AbortError"));
+  const controller = new AbortController();
+  meetingProcessingRuns.set(meeting.id, controller);
   insightRetryRuns.set(meeting.id, step);
   render();
   focusInsightRetryButton(meeting.id, step);
@@ -932,17 +1011,23 @@ async function retryInsightProcessing(step) {
   try {
     if (step === "correction") {
       const previousTranscript = transcriptContentSignature(meeting.segments);
-      const corrected = await correctTranscript({ config: state.config, meeting });
+      const corrected = await correctTranscript({
+        config: retryConfig,
+        meeting,
+        signal: controller.signal,
+        transcribeAudioRange: createMeetingAudioRangeTranscriber(meeting, retryConfig),
+      });
       meeting.segments = corrected.segments;
       meeting.terminology = corrected.terminology;
       meeting.rejectedCorrections = corrected.rejectedCorrections;
       meeting.semanticJoins = corrected.semanticJoins;
       meeting.corrections = corrected.corrections;
+      if (corrected.agentRun) meeting.agentRun = corrected.agentRun;
       meeting.correctionError = "";
       if (transcriptContentSignature(corrected.segments) !== previousTranscript) {
         resetSummaryResult(meeting);
         try {
-          const summary = await summarizeTranscript({ config: state.config, meeting });
+          const summary = await summarizeTranscript({ config: retryConfig, meeting, signal: controller.signal });
           applySummaryResult(meeting, summary);
         } catch (error) {
           meeting.summaryError = error.message;
@@ -951,15 +1036,29 @@ async function retryInsightProcessing(step) {
       }
     } else {
       resetSummaryResult(meeting);
-      const summary = await summarizeTranscript({ config: state.config, meeting });
+      const summary = await summarizeTranscript({ config: retryConfig, meeting, signal: controller.signal });
       applySummaryResult(meeting, summary);
     }
     succeeded = true;
   } catch (error) {
-    if (step === "correction") meeting.correctionError = error.message;
+    if (controller.signal.aborted) return;
+    if (step === "correction") {
+      meeting.correctionError = error.message;
+      if (Array.isArray(error.agentTrace)) {
+        meeting.agentRun = {
+          id: error.agentTrace[0]?.run_id || "",
+          profile: "terminology-supervisor",
+          model: retryConfig.chatModel,
+          status: "failed",
+          usage: error.agentUsage || {},
+          trace: error.agentTrace,
+        };
+      }
+    }
     else meeting.summaryError = error.message;
     requestError = error;
   } finally {
+    if (meetingProcessingRuns.get(meeting.id) === controller) meetingProcessingRuns.delete(meeting.id);
     saveMeetings();
     insightRetryRuns.delete(meeting.id);
     render();
@@ -987,6 +1086,7 @@ function resetCorrectionResult(meeting) {
   meeting.rejectedCorrections = 0;
   meeting.semanticJoins = 0;
   meeting.corrections = [];
+  delete meeting.agentRun;
 }
 
 function resetSummaryResult(meeting) {
@@ -1064,6 +1164,7 @@ async function startRecording() {
     sessionStorage.setItem(ACTIVE_RECORDING_SESSION_KEY, meeting.recordingSessionId);
     const recorder = {
       meeting, stream, audioContext, source, processor, mediaRecorder, mediaChunkCount: 0, persistedMediaChunkCount: 0, persistedChunkIndexes: new Set(),
+      config: { ...state.config },
       pendingPcm: [], pendingSamples: 0, processedSamples: 0, sampleRate: audioContext.sampleRate,
       startedAt: performance.now(), queue: Promise.resolve(), persistQueue: Promise.resolve(), pendingRequests: 0,
       errors: [], failedChunks: [], persistenceErrors: [], failedPersistence: [], silentChunks: 0, closing: false, stopped: false, finalizing: false, lastHeartbeatAt: 0,
@@ -1097,7 +1198,7 @@ function capturePcm(recorder, inputBuffer) {
   if (recorder.transcriptionEnabled) {
     recorder.pendingPcm.push(mono);
     recorder.pendingSamples += mono.length;
-    if (recorder.pendingSamples >= Number(state.config.chunkSeconds) * recorder.sampleRate) flushLiveChunk(recorder);
+    if (recorder.pendingSamples >= Number(recorder.config.chunkSeconds) * recorder.sampleRate) flushLiveChunk(recorder);
   }
   if ((performance.now() - recorder.startedAt) / 1000 >= MAX_RECORDING_SECONDS) stopRecording();
 }
@@ -1109,7 +1210,7 @@ function flushLiveChunk(recorder) {
   recorder.processedSamples += recorder.pendingSamples;
   recorder.pendingPcm = [];
   recorder.pendingSamples = 0;
-  const chunkNumber = Math.round(start / Math.max(1, Number(state.config.chunkSeconds)));
+  const chunkNumber = Math.round(start / Math.max(1, Number(recorder.config.chunkSeconds)));
   const chunk = {
     chunkNumber,
     start,
@@ -1193,7 +1294,7 @@ async function transcribeLiveChunk(recorder, chunk) {
       sampleRate: chunk.sampleRate,
       startSeconds: chunk.start,
       transcribe: ({ pcm, startSeconds }) => transcribeAudioWithRetry({
-        config: state.config,
+        config: recorder.config,
         blob: encodeWav(pcm, chunk.sampleRate),
         fileName: `live-${String(chunk.chunkNumber).padStart(4, "0")}-${Math.round(startSeconds * 1_000)}.wav`,
         language: recorder.meeting.language,
@@ -1310,7 +1411,7 @@ async function finishStoppedRecording(recorder) {
     const reconciled = reconcileTranscriptSegments(meeting.rawSegments);
     meeting.segments = reconciled.segments;
     meeting.asrReconciliations = reconciled.reconciliations;
-    await enrichMeeting(meeting);
+    await enrichMeeting(meeting, recorder.config);
   } catch (error) {
     if (!meeting.hasRecording) {
       meeting.recordingHeartbeat = 0;
@@ -1408,6 +1509,7 @@ async function removeMeeting(id) {
   }
   if (!meeting || !window.confirm(`删除“${meeting.title}”及保存在本机的录音？此操作无法撤销。`)) return;
   try {
+    meetingProcessingRuns.get(id)?.abort(new DOMException("Meeting deleted", "AbortError"));
     await deleteRecording(id);
     state.meetings = state.meetings.filter((item) => item.id !== id);
     if (state.activeId === id) state.activeId = state.meetings[0]?.id || null;
@@ -2005,14 +2107,18 @@ function summaryRetryState(meeting) {
 function correctionNotice(meeting) {
   const recovered = meeting.asrQualityEvents?.filter((item) => item.action === "split").length || 0;
   const quality = recovered ? `<p class="correction-note"><i data-lucide="scan-search"></i>已细分复核 ${recovered} 个异常转写片段</p>` : "";
-  if (meeting.correctionError) return `${quality}<div class="inline-warning insight-retry-notice" role="status" aria-live="polite" aria-atomic="true"><span>逐字稿校正未完成：${escapeHtml(meeting.correctionError)}</span>${insightRetryButton(meeting, "correction")}</div>`;
+  const runUsage = meeting.agentRun?.usage || {};
+  const agent = meeting.agentRun?.profile && Number(runUsage.modelTurns) > 0
+    ? `<p class="correction-note"><i data-lucide="route"></i>Luna Agent · ${Number(runUsage.modelTurns)} 轮 · ${Number(runUsage.toolCalls) || 0} 次工具调用</p>`
+    : "";
+  if (meeting.correctionError) return `${quality}${agent}<div class="inline-warning insight-retry-notice" role="status" aria-live="polite" aria-atomic="true"><span>逐字稿校正未完成：${escapeHtml(meeting.correctionError)}</span>${insightRetryButton(meeting, "correction")}</div>`;
   const correctionDetails = [
     meeting.terminology?.length ? `已统一 ${meeting.terminology.length} 个术语` : "",
     meeting.semanticJoins ? `优化 ${meeting.semanticJoins} 处断句` : "",
   ].filter(Boolean).join(" · ");
   const accepted = correctionDetails ? `<p class="correction-note"><i data-lucide="spell-check-2"></i>${correctionDetails}</p>` : "";
   const rejected = meeting.rejectedCorrections ? `<p class="inline-warning">已保留原始文本：${meeting.rejectedCorrections} 个校正建议未通过安全校验</p>` : "";
-  return `${quality}${accepted}${rejected}`;
+  return `${quality}${agent}${accepted}${rejected}`;
 }
 function ratingLabel(value) { return ({ strong: "突出", adequate: "符合", mixed: "有待确认", weak: "不足", insufficient: "证据不足" })[value] || "证据不足"; }
 

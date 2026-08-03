@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "cloud-native-weekly-01-descheduler",
+  "audio": {
+    "path": "cloud-native-weekly-01_00-00-00_to_00-05-00.webm",
+    "sha256": "30ad20a77a8a084fabdd9ac6ddd3089698e39b595531e9564a29d668e3ec016a"
+  },
+  "share_html": {
+    "path": "扩展 DisScheduler 任务类型适配方案讨论-分享稿.html"
+  },
+  "terminology": {
+    "canonical": "Descheduler",
+    "aliases": [
+      "dis scheduler",
+      "disk scheduler",
+      "Y调度",
+      "DisScheduler",
+      "d schedule"
+    ],
+    "expected_occurrences": 7
+  }
+}

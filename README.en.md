@@ -15,7 +15,7 @@
 
 [Live demo](https://onefly.top/yanlan-ai/) · [Report an issue](https://github.com/ranxi2001/yanlan-ai/issues/new/choose) · [Contribute](./CONTRIBUTING.md)
 
-Yanlan is an open-source, self-hostable AI audio workspace that runs entirely in the browser and supports both general meetings and interview-specific workflows. It uses a dual-model pipeline: MiMo transcribes the audio, while GPT uses meeting or role context to correct domain terms and inconsistencies before producing meeting notes or an interview review packet backed by timestamped evidence. The default text model is `gpt-5.6-luna`, called through the Responses API.
+Yanlan is an open-source, self-hostable AI audio workspace that runs entirely in the browser and supports general meetings and interview-specific workflows. Its application-owned Responses Agent Harness uses `gpt-5.6-luna` as the supervisor that maintains context, selects tools, and satisfies completion invariants. `mimo-v2.5-asr` performs the initial transcription and can be invoked by Luna as a controlled tool for uncertain short audio ranges. Models submit evidence and terminology proposals; deterministic runtime code retains final authority over transcript text, timestamps, and speakers.
 
 ![Yanlan meeting workspace](./docs/yanlan-workspace.png)
 
@@ -24,7 +24,8 @@ Yanlan is an open-source, self-hostable AI audio workspace that runs entirely in
 - Record in the browser, transcribe in near real time by segment, and continuously commit audio chunks to IndexedDB so persisted audio can be recovered after an accidental refresh
 - Use Yanlan as a local recorder without any API key, then play or export the audio directly
 - Upload and chunk common audio formats; the default MiMo data-URL path mixes only the current PCM range instead of duplicating the entire decoded recording
-- Preserve raw ASR segments while GPT proposes minimal terminology patches; only explicit user mappings such as `wrong form -> canonical form` are applied automatically, every accepted or rejected patch is recorded, and timeline/speaker metadata never comes from GPT
+- Preserve raw ASR segments while the Luna agent reads transcript windows, submits candidates, scans aliases recording-wide, validates mapping groups, and optionally asks MiMo to recheck uncertain audio. Only `finalize_correction` can commit an artifact; deterministic code applies validated mappings and records every accepted or rejected occurrence without changing timeline or speaker metadata
+- Run the Responses tool loop with strict JSON Schema, exact `call_id` correlation, immutable state, budgets, and append-only traces; reasoning and function items are replayed verbatim with tool results across turns
 - Generate an overview, keywords, replayable highlights, speaker summaries, source-backed decisions, action items, and transcript Q&A
 - Enter a candidate alias, role, interview round, competencies, and job description before an interview
 - Organize interview evidence, gaps, and follow-up questions by competency; code validates timestamps and quotes but never decides whether a quote proves a competency, and never advances/rejects a candidate
@@ -108,7 +109,7 @@ Open `http://127.0.0.1:4173`. Recording, playback, and audio export work without
 
 1. The MiMo ASR API key; the official base URL, model, and 10-second live segmentation are prefilled and remain adjustable where applicable
 2. GPT base URL, API key, model, protocol, and relative API path
-3. Optional shared background and domain terms. Use an explicit mapping such as `Term: result binding -> ResourceBinding` for automatic correction; canonical-only terms provide context but never authorize a rewrite
+3. Optional shared background and domain terms. An explicit mapping such as `Term: result binding -> ResourceBinding` is applied across the entire recording; canonical-only terms authorize automatic normalization only for repeated candidates that pass recording-wide consistency checks
 
 Each Test button uses the current unsaved form values. The MiMo test sends a one-second low-volume WAV and the GPT test sends one minimal prompt, so both may consume a very small amount of real API usage. Testing does not save the configuration.
 
@@ -116,7 +117,7 @@ Choose Interview when creating a record, then provide the role context. The comp
 
 The MiMo base URL defaults to the service root `https://api.xiaomimimo.com`; the version and API format live in the internal relative path `v1/chat/completions`. If a legacy base URL containing `/v1` or a complete request URL is pasted, the web app normalizes it back to the service root while preserving the final `POST /v1/chat/completions` request. GPT base URLs and relative paths are still used as entered. The project has no `.env` file and does not embed API keys in source code.
 
-New configurations use the Responses API by default. If the base URL already includes `/v1`, such as `https://api.openai.com/v1`, enter `responses` as the relative path to produce `POST /v1/responses`. Compatible gateways without Responses support can use Chat Completions instead. Existing browser configurations retain their selected protocol.
+New configurations use the Responses API by default, which enables Agent Mode. If the base URL already includes `/v1`, such as `https://api.openai.com/v1`, enter `responses` as the relative path to produce `POST /v1/responses`. Gateways without Responses support can use Chat Completions, but that compatibility path uses the legacy correction request without a tool loop or on-demand MiMo review. Existing browser configurations retain their selected protocol.
 
 ## CORS and the Local Relay
 
@@ -146,8 +147,8 @@ The relay listens only on `127.0.0.1`, validates Host and Origin, accepts only `
 - Export Key produces JSON containing plaintext credentials. Keep it only on a trusted device in a controlled location. Import reads only the two keys and ignores any endpoint or other configuration fields.
 - Recording chunks are committed to IndexedDB throughout capture, then atomically combined into the complete recording and removed after a normal stop.
 - After an accidental close, Yanlan can recover consecutive chunks that were already committed. The final chunk of roughly one second may not yet have been emitted, so export a backup after important recordings.
-- Audio segments are sent to the configured MiMo API; transcripts are sent to the configured GPT API.
-- Responses requests explicitly set `store: false` and do not use server-side session state. Third-party gateways remain subject to their own privacy policies.
+- Audio segments are sent to the configured MiMo API; transcript windows are sent to the configured GPT API. The agent may request a MiMo recheck of at most 30 seconds only when terminology evidence is insufficient, under a separate call budget.
+- Responses requests explicitly set `store: false`. The harness replays complete typed output locally to preserve tool context and stores a run trace without keys or transcript bodies in the meeting. Third-party gateways remain subject to their own privacy policies.
 - The local relay runs only through `npm run local`. The static live version never proxies or stores user keys.
 - Shared links and offline pages exclude API keys, original recordings, Q&A history, and raw ASR backups.
 - Interview shares exclude the complete job description and interviewer names. They contain only the candidate alias, role, round, competencies, evidence review material, and transcript.
@@ -169,6 +170,22 @@ The generated `dist/` directory can be deployed to GitHub Pages, Cloudflare Page
 npm run check
 ```
 
+Run the offline terminology-consistency regression against the bundled real cloud-native fixture:
+
+```bash
+npm run eval:terminology
+```
+
+That offline regression uses scripted candidates and validates deterministic normalization and ledger replay. To measure Luna's own discovery recall without exposing the expected canonical or aliases in its prompt, run the live Agent eval:
+
+```bash
+YANLAN_LUNA_BASE_URL="https://example.com/v1" \
+YANLAN_LUNA_API_KEY="your-key" \
+npm run eval:terminology:agent
+```
+
+Optionally set `MIMO_API_KEY` to expose the short-audio review tool during the eval; local `ffmpeg` is required.
+
 The browser end-to-end test starts an isolated local server and generates its own audio fixture:
 
 ```bash
@@ -177,7 +194,7 @@ npm run test:browser
 
 ## Project Status
 
-`v0.5.1` is informed by anonymized measurements from a 61-minute real meeting and adds large-file preflight rejection, ASR quality gates with adaptive retries, stable timeline ordering, auditable terminology patches, concurrent long-form summaries, complete transcript-backed evidence, and recording recovery consistency fixes. `v0.5.0` simplified MiMo setup and migrated legacy base URLs, added JSON key backup, independent MiMo/GPT connection tests, CORS guidance for the recommended provider, GPT retry controls, and Chinese semantic segmentation without collapsing the atomic timeline. `v0.4.6` added incremental recording persistence and crash recovery, ASR retries and completeness gating, bounded GPT corrections, transcript-backed evidence validation, long-content batching, audio memory boundaries, protected CLI outputs, and browser E2E coverage in CI. `v0.4.5` introduced the audio transcription CLI and Agent Skill.
+The current mainline includes an application-owned Responses Agent Harness with recording-wide terminology consistency as its first profile: Luna owns reasoning and tool selection, MiMo provides controlled audio evidence, and deterministic code owns invariants, commit, and trace. `v0.5.1` is informed by anonymized measurements from a 61-minute real meeting and adds large-file preflight rejection, ASR quality gates with adaptive retries, stable timeline ordering, auditable terminology patches, concurrent long-form summaries, complete transcript-backed evidence, and recording recovery consistency fixes. `v0.5.0` simplified MiMo setup and migrated legacy base URLs, added JSON key backup, independent MiMo/GPT connection tests, CORS guidance, GPT retry controls, and Chinese semantic segmentation without collapsing the atomic timeline.
 
 The next priorities include speaker diarization, transcript editing, collaborative annotations, team permissions, and more model integrations. Roadmap discussions and priorities are maintained in GitHub Issues.
 

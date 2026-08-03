@@ -769,20 +769,187 @@ test("GPT correction rejects unknown entities", async () => {
   }
 });
 
-test("GPT correction rejects an ambiguous from value", async () => {
+test("explicit terminology mappings replace every repeated occurrence in a segment", async () => {
   const source = {
     ...meeting,
     segments: [{ start_seconds: 0, end_seconds: 3, speaker: "A", text: "万福来与万福来共同发布。" }],
   };
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
-    patches: [{ id: 0, replacements: [{ from: "万福来", to: "OneFly" }] }],
+    patches: [],
   }) } }] }));
   try {
     const result = await correctTranscript({ config: { ...config, contextHint: "术语：万福来 -> OneFly" }, meeting: source });
-    assert.equal(result.segments[0].text, source.segments[0].text);
-    assert.equal(result.rejectedCorrections, 1);
-    assert.equal(result.corrections[0].reason, "from_not_unique");
+    assert.equal(result.segments[0].text, "OneFly与OneFly共同发布。");
+    assert.equal(result.rejectedCorrections, 0);
+    assert.deepEqual(result.corrections.map(({ from, to, status, reason, start_offset, end_offset }) => ({
+      from, to, status, reason, start_offset, end_offset,
+    })), [
+      { from: "万福来", to: "OneFly", status: "accepted", reason: "explicit_alias", start_offset: 0, end_offset: 3 },
+      { from: "万福来", to: "OneFly", status: "accepted", reason: "explicit_alias", start_offset: 4, end_offset: 7 },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("explicit terminology matching treats spaces and dashes alike without rewriting inside Latin words", async () => {
+  const source = {
+    ...meeting,
+    segments: [{ start_seconds: 0, end_seconds: 3, speaker: "A", text: "happy app，交给 d schedule 处理。" }],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ patches: [], join_after: [] }) } }] }));
+  try {
+    const result = await correctTranscript({
+      config: { ...config, contextHint: "术语：app -> Application、d-schedule -> Descheduler" },
+      meeting: source,
+    });
+    assert.equal(result.segments[0].text, "happy Application，交给 Descheduler 处理。");
+    assert.deepEqual(result.corrections.toSorted((left, right) => left.start_offset - right.start_offset).map(({ from, to }) => ({ from, to })), [
+      { from: "app", to: "Application" },
+      { from: "d schedule", to: "Descheduler" },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("recording-wide consensus unifies repeated Descheduler variants across transcript and insights", async () => {
+  const rawSegments = [
+    { start_seconds: 0, end_seconds: 30, speaker: "发言人 1", text: "deployment 用那个 dis scheduler 是可以直接用的。" },
+    { start_seconds: 30, end_seconds: 90, speaker: "发言人 1", text: "原来的那个 disk scheduler 那一坨，disk scheduler 每两分钟轮询。" },
+    { start_seconds: 90, end_seconds: 120, speaker: "发言人 1", text: "适配这样的一个 Y调度 的发现接口。" },
+    { start_seconds: 120, end_seconds: 210, speaker: "发言人 1", text: "适配到这个 DisScheduler 上面去，思路又转到了 DisScheduler。" },
+    { start_seconds: 210, end_seconds: 240, speaker: "发言人 1", text: "继续讨论其他内容。" },
+    { start_seconds: 240, end_seconds: 270, speaker: "发言人 1", text: "在这个 d schedule 里面检查状态。" },
+  ];
+  const source = { ...meeting, rawSegments, segments: rawSegments, asrReconciliations: [] };
+  const patches = [
+    { id: 0, replacements: [{ from: "dis scheduler", to: "Descheduler" }] },
+    { id: 1, replacements: [{ from: "disk scheduler", to: "Descheduler" }] },
+    { id: 2, replacements: [{ from: "Y调度", to: "Descheduler" }] },
+    { id: 3, replacements: [{ from: "DisScheduler", to: "Descheduler" }] },
+    { id: 5, replacements: [{ from: "d schedule", to: "Descheduler" }] },
+  ];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ patches, join_after: [] }) } }] }));
+  try {
+    const corrected = await correctTranscript({ config: { ...config, contextHint: "术语：Descheduler" }, meeting: source });
+    const transcript = corrected.segments.map((segment) => segment.text).join("\n");
+    assert.equal((transcript.match(/Descheduler/gu) || []).length, 7);
+    assert.doesNotMatch(transcript, /dis scheduler|disk scheduler|DisScheduler|d schedule|Y调度/giu);
+    assert.deepEqual(corrected.terminology, ["Descheduler"]);
+    assert.equal(corrected.rejectedCorrections, 0);
+    assert.equal(corrected.corrections.length, 7);
+    assert.equal(corrected.corrections.every((entry) => entry.status === "accepted" && entry.reason === "recording_consensus"), true);
+    assert.deepEqual(corrected.corrections.filter((entry) => entry.segmentId === 1).map((entry) => entry.start_offset), [6, 25]);
+
+    globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      title: "扩展 DisScheduler 任务类型适配方案讨论",
+      summary: "disk scheduler 会发现调度问题，并把任务适配到 DisScheduler。",
+      keywords: ["DisScheduler"],
+      highlights: [{ start_seconds: 90, speaker: "发言人 1", quote: "Y调度", reason: "" }],
+      speaker_summaries: [{ speaker: "发言人 1", summary: "讨论 d schedule。", key_points: ["使用 dis scheduler"] }],
+      decisions: [], decision_records: [], action_items: [],
+    }) } }] }));
+    const summary = await summarizeTranscript({ config, meeting: { ...source, ...corrected } });
+    const shared = publicMeeting({ ...source, ...corrected, ...summary });
+    const exported = JSON.stringify(shared);
+    assert.doesNotMatch(exported, /dis scheduler|disk scheduler|DisScheduler|d schedule|Y调度/giu);
+    assert.match(shared.title, /Descheduler/u);
+    assert.match(shared.summary, /Descheduler/u);
+    assert.deepEqual(shared.keywords, ["Descheduler"]);
+    assert.match(buildShareHtml({ ...source, ...corrected, ...summary }), /Descheduler/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("recording-wide terminology conflicts preserve the entire alias group", async () => {
+  const source = {
+    ...meeting,
+    segments: [
+      { start_seconds: 0, end_seconds: 3, speaker: "A", text: "disk scheduler 开始检查。" },
+      { start_seconds: 3, end_seconds: 6, speaker: "A", text: "disk scheduler 完成检查。" },
+    ],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    patches: [
+      { id: 0, replacements: [{ from: "disk scheduler", to: "Descheduler" }] },
+      { id: 1, replacements: [{ from: "disk scheduler", to: "DiskScheduler" }] },
+    ],
+    join_after: [],
+  }) } }] }));
+  try {
+    const result = await correctTranscript({ config: { ...config, contextHint: "" }, meeting: source });
+    assert.deepEqual(result.segments.map((segment) => segment.text), source.segments.map((segment) => segment.text));
+    assert.equal(result.terminology.length, 0);
+    assert.equal(result.rejectedCorrections, 2);
+    assert.equal(result.corrections.every((entry) => entry.status === "rejected"), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("recording-wide terminology retry keeps a valid persisted canonical when the model later conflicts", async () => {
+  const rawSegments = [
+    { start_seconds: 0, end_seconds: 3, speaker: "A", text: "disk scheduler 开始检查。" },
+    { start_seconds: 3, end_seconds: 6, speaker: "A", text: "disk scheduler 完成检查。" },
+  ];
+  const source = { ...meeting, rawSegments, segments: rawSegments, asrReconciliations: [] };
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      patches: rawSegments.map((_, id) => ({ id, replacements: [{ from: "disk scheduler", to: "Descheduler" }] })),
+      join_after: [],
+    }) } }] }));
+    const first = await correctTranscript({ config: { ...config, contextHint: "" }, meeting: source });
+    assert.deepEqual(first.segments.map((segment) => segment.text), ["Descheduler 开始检查。", "Descheduler 完成检查。"]);
+
+    globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      patches: rawSegments.map((_, id) => ({ id, replacements: [{ from: "disk scheduler", to: "DiskScheduler" }] })),
+      join_after: [],
+    }) } }] }));
+    const retried = await correctTranscript({ config: { ...config, contextHint: "" }, meeting: { ...source, ...first } });
+    assert.deepEqual(retried.segments.map((segment) => segment.text), first.segments.map((segment) => segment.text));
+    assert.equal(retried.corrections.filter((entry) => entry.status === "accepted" && entry.reason === "recording_consensus").length, 2);
+    assert.equal(retried.rejectedCorrections, 2);
+    assert.equal(retried.corrections.filter((entry) => entry.status === "rejected").every((entry) => entry.reason === "canonical_mismatch"), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("recording-wide terminology consensus closes aliases across correction batches", async () => {
+  const source = {
+    ...meeting,
+    segments: [
+      { start_seconds: 0, end_seconds: 30, speaker: "A", text: `dis scheduler ${"前".repeat(7_400)}` },
+      { start_seconds: 30, end_seconds: 60, speaker: "A", text: `disk scheduler ${"后".repeat(1_000)}` },
+    ],
+  };
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async (url, options) => {
+    requests += 1;
+    const user = JSON.parse(options.body).messages[1].content;
+    const payload = JSON.parse(user.slice(user.indexOf("待检查片段：\n") + "待检查片段：\n".length));
+    const patches = payload.segments.map(({ id, text }) => ({
+      id,
+      replacements: [{ from: text.startsWith("dis scheduler") ? "dis scheduler" : "disk scheduler", to: "Descheduler" }],
+    }));
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ patches, join_after: [] }) } }] }));
+  };
+  try {
+    const result = await correctTranscript({ config: { ...config, contextHint: "" }, meeting: source });
+    assert.equal(requests, 2);
+    assert.equal(result.segments[0].text.startsWith("Descheduler "), true);
+    assert.equal(result.segments[1].text.startsWith("Descheduler "), true);
+    assert.equal(result.corrections.filter((entry) => entry.status === "accepted").length, 2);
+    assert.equal(result.rejectedCorrections, 0);
+    assert.deepEqual(result.segments.map(({ start_seconds, end_seconds, speaker }) => ({ start_seconds, end_seconds, speaker })), source.segments.map(({ start_seconds, end_seconds, speaker }) => ({ start_seconds, end_seconds, speaker })));
   } finally {
     globalThis.fetch = originalFetch;
   }
