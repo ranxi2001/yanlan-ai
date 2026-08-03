@@ -597,6 +597,7 @@ try {
     }]));
   });
   await semanticPage.goto(baseUrl, { waitUntil: "networkidle" });
+  await semanticPage.locator(".transcript-segment").first().waitFor();
   assert.equal(await semanticPage.locator(".transcript-segment").count(), 2);
   assert.deepEqual(await semanticPage.locator(".segment-time").allTextContents(), ["00:00", "00:50"]);
   await semanticPage.getByText(/她是合肥工业大学物流和工程与管理的研究生/).waitFor();
@@ -615,7 +616,7 @@ try {
   await page.locator("#recordingPlayer:not(.hidden)").waitFor();
 
   await page.locator("#newMeetingButton").click();
-  successfulAsrResponsesRemaining = 1;
+  successfulAsrResponsesRemaining = 0;
   await page.locator("#startRecordButton").click();
   await page.locator("#liveRecorder:not(.hidden)").waitFor();
   await page.waitForTimeout(5600);
