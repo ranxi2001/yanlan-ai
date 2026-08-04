@@ -8,42 +8,106 @@
 
 # Yanlan
 
-> Turn every conversation into traceable knowledge.
+> The open-source Agent Harness for recording-to-transcript and evidence-backed meeting intelligence.
 
 [![CI](https://github.com/ranxi2001/yanlan-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/ranxi2001/yanlan-ai/actions/workflows/ci.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-087e8b.svg)](./LICENSE)
 
 [Live demo](https://onefly.top/yanlan-ai/) · [Report an issue](https://github.com/ranxi2001/yanlan-ai/issues/new/choose) · [Contribute](./CONTRIBUTING.md)
 
-Yanlan is an open-source, self-hostable AI audio workspace that runs entirely in the browser and supports general meetings and interview-specific workflows. Its application-owned Responses Agent Harness uses `gpt-5.6-luna` as the supervisor that maintains context, selects tools, and satisfies completion invariants. `mimo-v2.5-asr` performs the initial transcription and can be invoked by Luna as a controlled tool for uncertain short audio ranges. Models submit evidence and terminology proposals; deterministic runtime code retains final authority over transcript text, timestamps, and speakers.
+Yanlan is a browser-first, self-hostable recording, transcription, and meeting-intelligence workspace. It is not a transcript UI with an LLM summary button attached. Its trusted processing core is an application-owned Agent Harness: initial ASR, quality gates, recovery, and export remain controlled pipelines outside the Harness; `gpt-5.6-luna` chooses tools and resolves ambiguity in terminology supervision and meeting analysis; `mimo-v2.5-asr` provides initial transcription and is exposed as a controlled short-audio review tool only to the terminology profile; deterministic runtime code owns fact validation and the final commit.
+
+**Our goal is to make Yanlan the first-choice open-source Agent Harness for recording-to-knowledge workflows.**
+
+## Why Yanlan Is an Agent Harness
+
+A model wrapper asks a model for an answer. An Agent Harness owns the control loop around that model: typed Responses items, strict tools, exact `call_id` correlation, immutable run state, budgets and cancellation, privacy-minimized runtime metadata traces, completion invariants, and deterministic finalizers.
+
+That boundary is central to Yanlan. Luna can choose the next allowlisted tool and repair a proposal after a structured violation, but fluent model output is not accepted as fact. Transcript changes must preserve source segments, timestamps, and speaker labels. Decisions and action items must resolve to exact records in an immutable evidence ledger. When an invariant fails, the Harness rejects the proposal instead of silently publishing a partial artifact.
+
+**The Agent decides. The Harness verifies. Runtime commits.**
+
+| Component | Responsibility | Cannot do |
+| --- | --- | --- |
+| MiMo ASR | Produce the initial segmented transcript and, only for the terminology profile, review an uncertain audio range of at most 90 seconds | Commit terminology changes, meeting conclusions, or external writes |
+| Luna supervisor | Reason over context replayed by the Harness, choose allowlisted tools, discover terms, resolve conflicts, and adjudicate meeting evidence | Rewrite trusted facts, fabricate citations, or bypass a finalizer |
+| Yanlan Harness | Own run state, permissions, budgets, typed-item replay, tool execution, and trace | Invent missing evidence or turn a rejected proposal into a successful artifact |
+| Profile finalizers | Replay a minimal terminology patch or derive a meeting artifact from verified ledger IDs; validate coverage, source identity, timeline, speaker labels, conflicts, and evidence references; then commit atomically | Fill in missing evidence, rewrite transcript meaning, or relax invariants to accommodate an answer |
+
+## Architecture
+
+```mermaid
+flowchart LR
+  A[Browser recording / audio file] --> B[MiMo initial ASR]
+  B --> C[Raw transcript<br/>immutable timeline]
+
+  subgraph H[Application-owned Responses Agent Harness]
+    R[typed-item runner]
+    S[profile state<br/>budget / cancel / trace]
+    T[strict tool registry]
+    F[profile finalizer<br/>+ deterministic invariants]
+    R <--> S
+    R --> T
+    T --> F
+  end
+
+  L[Luna supervisor] <--> R
+  C --> V[Independent model spelling review<br/>outside the Harness]
+  V -->|canonical review evidence| R
+  C -->|terminology profile: bounded windows| R
+  T <-->|terminology profile only: up to 90 seconds| M[controlled MiMo tool]
+  F -->|terminology artifact| D[Revised transcript<br/>+ correction ledger]
+  D --> E[Bounded model extraction + runtime grounding<br/>immutable meeting evidence ledger]
+  E -->|meeting profile| R
+  F -->|meeting artifact| O[Summary / highlights / decisions / actions]
+  D --> P[Workspace / Q&A / share / export]
+  O --> P
+```
+
+Initial ASR and quality gates form a controlled speech pipeline. Independent canonical-spelling review and bounded meeting-evidence extraction are controlled model steps outside the Harness; runtime grounding turns their output into bounded profile inputs. Luna handles terminology conflicts and meeting-commitment decisions that require cross-evidence judgment; fixed work remains ordinary code. Yanlan implements the Responses runner it needs directly, without taking a runtime dependency on LangGraph or the OpenAI Agents SDK, so the application retains control of state, permissions, evidence, and commit semantics.
+
+## Two Agent Profiles, One Trust Boundary
+
+| Profile | Luna can decide | Harness must verify | Committed artifact |
+| --- | --- | --- | --- |
+| Recording-wide terminology supervision | Read transcript windows, inspect terminology signals, submit or reject candidates, scan aliases, adjudicate conflicts, and optionally ask MiMo for review | Full-recording coverage, canonical uniqueness, source identity, minimal replacement, and unchanged timeline and speaker labels | Revised transcript plus a replayable correction ledger |
+| Intelligent meeting analysis | Classify every decision/action candidate, then select summary, highlight, and speaker evidence from an immutable ledger | Exact candidate coverage, valid evidence IDs, quote/time/speaker-label provenance, completion conditions, and atomic commit | Title, summary, keywords, highlights, speaker notes, decisions, and action items |
+
+Agent Mode uses the typed-item and function-call protocol of the Responses API. The Chat Completions compatibility path can still perform basic correction, but it does not provide this tool-loop contract. Interview reports currently use bounded batches plus deterministic evidence checks, while the CLI and Agent Skill currently perform transcription only; Yanlan does not present them as a third Agent profile that has not been built.
+
+The executable Harness contract lives in code and tests:
+
+- A runner can finish only when the response is complete, no call is pending, and the profile completion condition holds; a terminal tool can end a run directly
+- Every function tool uses strict JSON Schema, receives local argument validation, and preserves the model-provided `call_id`
+- Model-turn, tool-call, token, history, and time budgets plus cancellation signals bound execution; insufficient budget cannot leave half of a side-effect batch committed
+- Reasoning, function-call, and function-output items are replayed intact across turns, while profile state is updated immutably
+- Traces retain bounded runtime metadata such as turns, tools, identifiers, audio ranges, validation status, and usage, not API keys, raw audio, or complete transcript bodies
+
+Inspect the implementation directly: [Harness](./src/agent/harness.js), [tool registry](./src/agent/tool-registry.js), [terminology profile](./src/agent/profiles/terminology.js), [meeting profile](./src/agent/profiles/meeting-analysis.js), and [runtime contract tests](./test/agent-harness.test.mjs).
+
+## Built to Become the Open-Source Reference
+
+This position has to be earned through an inspectable control path, real-recording evaluations, and sustained iteration, not declared by a README badge. Yanlan already has the foundations:
+
+- **The complete control path is open source.** The web workspace, Agent loop, both profiles, deterministic finalizers, CLI, Skill, and evaluation harness live in one repository instead of exposing only a UI shell
+- **Evidence comes before prompting.** Models submit proposals; runtime code validates facts. Raw ASR, revised transcripts, correction ledgers, and meeting artifacts remain traceably connected
+- **The application owns Agent authority.** A model cannot swap itself, expand its tools, read arbitrary files, or commit an artifact directly; failures stop in an auditable state
+- **Local-first BYOK product design.** Recording and export work without a key. Audio lives in IndexedDB, workspace state in localStorage, and model data goes only to APIs configured by the user
+- **Web, CLI, and Agent Skill distribution.** The complete workspace serves people, the one-shot CLI serves scripts, and the Skill exposes the same transcription path to clients that support Agent Skills
+- **Evaluation is part of the product.** The repository includes fake Responses contract tests, a real-meeting terminology fixture, a public semantic canary, browser E2E, and privacy and race tests. More than “the model looked good” can be reproduced
+
+## Product Surface
 
 ![Yanlan meeting workspace](./docs/yanlan-workspace.png)
 
-## Features
-
-- Record in the browser, transcribe in near real time by segment, and continuously commit audio chunks to IndexedDB so persisted audio can be recovered after an accidental refresh
-- Use Yanlan as a local recorder without any API key, then play or export the audio directly
-- Upload and chunk common audio formats; the default MiMo data-URL path mixes only the current PCM range instead of duplicating the entire decoded recording
-- Preserve raw ASR segments while the Luna agent reads transcript windows, submits candidates, scans aliases recording-wide, validates mapping groups, and optionally asks MiMo to recheck uncertain audio. Conflicting independent spelling reviews require a final factual adjudication. Only `finalize_correction` can commit an artifact; deterministic code applies validated mappings and records every accepted or rejected occurrence without changing timeline or speaker metadata
-- Run the Responses tool loop with strict JSON Schema, exact `call_id` correlation, immutable state, budgets, and append-only traces; reasoning and function items are replayed verbatim with tool results across turns
-- Let the meeting-analysis agent classify every bounded decision/action candidate through `review_meeting_commitments`, then atomically commit transcript-verified evidence through `finalize_meeting_analysis`; the Harness rejects missing, duplicate, direct-question, and explicitly absent commitments, while Luna's conditional, modal, and hearsay classifications are checked by a public gold canary. Gateways without tool support fall back to the same evidence ledger
-- Preserve Agent-confirmed decisions and actions across repeated sharing and export with public source/commitment fingerprints only, without traces, model IDs, or additional transcript text; injected items without a matching fingerprint still use strict sanitization
-- Generate an overview, keywords, replayable highlights, speaker summaries, source-backed decisions, action items, and transcript Q&A
-- Enter a candidate alias, role, interview round, competencies, and job description before an interview
-- Organize interview evidence, gaps, and follow-up questions by competency; code validates timestamps and quotes but never decides whether a quote proves a competency, and never advances/rejects a candidate
-- Jump from interview evidence to the corresponding audio timestamp; only complete quotes found in the referenced atomic segment or validated semantic-join group are shown as evidence
-- Play recordings locally and seek by clicking transcript timestamps
-- Export the original recording, Markdown, WebVTT, JSON, or a standalone offline HTML page
-- Generate a read-only page containing the transcript, timestamps, and summary
-- Choose between direct browser requests and a local same-origin relay for user-defined API base URLs
-- Require HTTPS for remote model endpoints; HTTP is accepted only for loopback hosts (`localhost`, `127.0.0.0/8`, and `[::1]`)
-- Store recordings in IndexedDB and workspace data in localStorage; deletion writes a per-ID tombstone first so stale tabs cannot resurrect a deleted meeting
-- Import and export both API keys as versioned JSON; imports cannot change model endpoints or other settings
-- Test each MiMo or GPT base URL, key, and model before saving, with distinct guidance for authentication, quota, endpoint, network, and CORS failures
-- Retry GPT terminology correction or the complete insight bundle after failure; when correction changes the transcript, Yanlan refreshes every downstream insight instead of mixing result versions
-- Use GPT context to detect sentences continued across fixed audio chunks, grouping them for the workspace, Markdown, and offline shares while summaries, Q&A, evidence timestamps, and WebVTT keep the atomic timeline
-- Retry transient MiMo failures with timeouts and backoff; if any live segment still fails, stop before generating incomplete notes and keep the recording for retranscription
-- Process long transcripts in bounded summary/interview batches and retrieve question-relevant time ranges for Q&A instead of sending the whole meeting in one prompt
+| Surface | What is implemented |
+| --- | --- |
+| Recording and recovery | Browser recording, near-real-time segmented transcription, continuous IndexedDB commits, and recovery of persisted chunks after refresh; recording, playback, and export work without an API key |
+| File transcription | Chunk common audio formats while preserving raw ASR; apply quality gates, timeouts, and backoff; stop incomplete note generation on terminal failure and retain the recording for retranscription |
+| Trustworthy meeting knowledge | Recording-wide terminology consistency, overview, keywords, replayable highlights, speaker notes, quote-backed decisions and actions, and question-relevant transcript retrieval; transcript changes invalidate and regenerate downstream results |
+| Interview mode | Capture candidate alias, role, round, competencies, and job description; organize quotes, gaps, and follow-up questions by competency with timestamp replay; never score abilities or advance/reject a candidate automatically |
+| Share and export | Local playback with timestamp seeking; export original audio, Markdown, WebVTT, JSON, or standalone HTML; generate a read-only page with transcript, time, and summary |
+| BYOK boundaries | Direct browser calls or a local same-origin relay; test MiMo/GPT settings before saving; require HTTPS remotely; keep keys and meeting state in localStorage, audio in IndexedDB, and per-ID tombstones to prevent stale-tab resurrection |
 
 See Xiaomi's official [MiMo-V2.5-ASR repository](https://github.com/XiaomiMiMo/MiMo-V2.5-ASR) for model and deployment details. The web app fixes MiMo ASR to the official Chat Completions format, sending audio as a data URL with `asr_options`, so users no longer select a protocol or enter an endpoint path. The CLI retains a standard OpenAI Transcriptions mode for compatible gateways.
 

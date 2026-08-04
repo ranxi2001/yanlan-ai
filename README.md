@@ -8,42 +8,106 @@
 
 # 言澜 Yanlan
 
-> 让每一次发言，都沉淀为可追溯的知识。
+> 面向录音转文字与可信会议知识的开源 Agent Harness。
 
 [![CI](https://github.com/ranxi2001/yanlan-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/ranxi2001/yanlan-ai/actions/workflows/ci.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-087e8b.svg)](./LICENSE)
 
 [在线体验](https://onefly.top/yanlan-ai/) · [报告问题](https://github.com/ranxi2001/yanlan-ai/issues/new/choose) · [参与贡献](./CONTRIBUTING.md)
 
-言澜是一个纯前端、可自行部署的开源 AI 语音记录工具，支持普通会议和面试专用模式。它内置由应用掌控的 Responses Agent Harness：`gpt-5.6-luna` 作为 supervisor 维护上下文、选择工具并验证完成条件，`mimo-v2.5-asr` 负责初始转写，也可被 Luna 作为受控工具调用来复核疑难短音频。模型只能提交证据与术语提案，确定性 runtime 保留逐字稿、时间轴和说话人的最终写入权。
+言澜是一个浏览器优先、可自行部署的录音转文字与智能会议工作台。它不是在逐字稿后面接一个“总结按钮”。产品以应用掌控的 Agent Harness 为可信处理核心：初始 ASR、质量门、恢复和导出保留为 Harness 外的受控数据管线；`gpt-5.6-luna` 在术语监督与会议解析中选择工具、处理歧义；`mimo-v2.5-asr` 负责初始转写，也只在术语 profile 中作为受控短音频复核工具；确定性 runtime 掌握事实校验和最终提交权。
+
+**我们的目标：成为录音转文字 Agent Harness 领域的开源第一选择。**
+
+## 为什么是 Agent Harness
+
+普通模型封装只负责“问模型要一个答案”。Agent Harness 掌握模型外面的完整控制循环：typed Responses items、严格工具、精确 `call_id`、不可变运行状态、预算与取消、隐私最小化的运行元数据 trace、完成条件，以及确定性 finalizer。
+
+这条边界是言澜的核心产品设计。Luna 可以自主决定下一步调用哪个白名单工具，也可以根据 violation 继续修正；但流畅的模型输出不等于事实。逐字稿修改必须保留来源片段、时间轴和说话人标签，决策与行动项必须回指不可变证据账本中的精确记录。任何不变量失败时，Harness 都会拒绝提案并返回结构化错误，不会静默发布半成品。
+
+**Agent 决策，Harness 验证，runtime 提交。**
+
+| 单元 | 负责 | 无权做 |
+| --- | --- | --- |
+| MiMo ASR | 初始分段转写；仅按术语 profile 请求复核本会议中不超过 90 秒的疑难音频 | 提交术语修改、会议结论或外部写入 |
+| Luna supervisor | 基于 Harness 回放的上下文推理、选择白名单工具、发现术语、处理冲突、裁决会议证据 | 改写受信事实、伪造引用、绕过 finalizer |
+| Yanlan Harness | 持有 run state、权限、预算、typed-item 回放、工具执行和 trace | 猜测缺失证据，或把失败提案包装成成功 |
+| profile finalizers | 重放术语最小 patch，或从已验证账本 ID 派生会议 artifact；验证覆盖率、来源一致性、时间轴、说话人标签、冲突和证据引用，再原子提交 | 替模型补写缺失证据、改写逐字稿语义，或放宽不变量迁就结果 |
+
+## 架构
+
+```mermaid
+flowchart LR
+  A[浏览器录音 / 音频文件] --> B[MiMo 初始 ASR]
+  B --> C[原始逐字稿<br/>不可变时间轴]
+
+  subgraph H[应用掌控的 Responses Agent Harness]
+    R[typed-item runner]
+    S[profile state<br/>budget / cancel / trace]
+    T[strict tool registry]
+    F[profile finalizer<br/>+ deterministic invariants]
+    R <--> S
+    R --> T
+    T --> F
+  end
+
+  L[Luna supervisor] <--> R
+  C --> V[独立模型拼写复核<br/>Harness 外]
+  V -->|canonical review evidence| R
+  C -->|术语 profile：有界窗口| R
+  T <-->|仅术语 profile：最多 90 秒复核| M[MiMo 受控工具]
+  F -->|术语 artifact| D[修订逐字稿<br/>+ correction ledger]
+  D --> E[有界模型提取 + runtime grounding<br/>不可变会议证据账本]
+  E -->|会议 profile| R
+  F -->|会议 artifact| O[摘要 / 金句 / 决策 / 行动项]
+  D --> P[阅读 / 问答 / 分享 / 导出]
+  O --> P
+```
+
+初始 ASR 与质量门是受控语音管线；独立 canonical 拼写复核和有界会议证据提取是 Harness 外的受控模型步骤，其结果经过 runtime grounding 后才成为 profile 输入。真正需要跨证据判断的术语冲突与会议承诺裁决交给 Luna；固定步骤继续使用普通函数。言澜直接实现所需的 Responses runner，不依赖 LangGraph 或 OpenAI Agents SDK 作为运行时，因此应用始终掌握状态、权限、证据和提交语义。
+
+## 两个 Agent Profile，一条可信边界
+
+| Profile | Luna 自主完成 | Harness 强制验证 | 提交产物 |
+| --- | --- | --- | --- |
+| 录音级术语监督 | 读取逐字稿窗口、检查术语信号、提交或拒绝候选、扫描 alias、裁决冲突，必要时调用 MiMo 复核 | 全录音覆盖、canonical 唯一性、来源一致性、最小替换、时间轴与说话人标签不变 | 修订逐字稿和可回放 correction ledger |
+| 智能会议解析 | 逐条分类决定/行动候选，再从不可变账本选择摘要、金句和发言人证据 | 候选精确覆盖、证据 ID 合法、原话/时间/说话人标签来源、完成条件与原子提交 | 标题、摘要、关键词、金句、发言人要点、决策和行动项 |
+
+Agent Mode 只使用 Responses API 的 typed-item/function-call 协议。兼容 Chat Completions 的路径仍可完成基础校正，但不具备这套工具循环语义。面试报告当前使用有界批处理和确定性证据校验，CLI 与 Agent Skill 当前只负责音频转写；README 不把它们包装成尚未实现的第三个 Agent profile。
+
+Harness 的可执行 contract 已写入代码和测试：
+
+- Runner 只有在 response 完成、没有 pending call 且 profile 满足完成条件时才允许结束；terminal tool 可以直接结束 run
+- 每个 function tool 使用严格 JSON Schema，本地再次校验参数，并原样关联模型给出的 `call_id`
+- model turn、tool call、token、history、时间和取消信号共同限制运行；预算不足时不会先执行一半副作用
+- reasoning、function call 和 function output items 在多轮中完整回放，profile state 使用不可变更新
+- trace 记录有界运行元数据，例如轮次、工具、标识符、音频范围、验证状态和用量；不记录 API Key、原始音频或完整逐字稿正文
+
+核心实现可以直接检查：[Harness](./src/agent/harness.js)、[tool registry](./src/agent/tool-registry.js)、[术语 profile](./src/agent/profiles/terminology.js)、[会议 profile](./src/agent/profiles/meeting-analysis.js) 和 [runtime contract tests](./test/agent-harness.test.mjs)。
+
+## 为什么它有成为开源第一选择的潜力
+
+这个目标要靠可检查的控制路径、真实录音评测和长期迭代赢得，而不是靠 README 自封排名。言澜已经具备几项关键基础：
+
+- **完整控制路径开源**：网页工作台、Agent loop、两个 profile、确定性 finalizer、CLI、Skill 和 eval harness 都在同一个仓库，而不是只公开 UI 壳
+- **证据优先，而非提示词优先**：模型提出候选，runtime 验证事实；原始 ASR、修订稿、术语台账和会议 artifact 保持可追溯关系
+- **应用拥有 Agent 权限**：模型不能动态换模型、扩大工具范围、读取任意文件或直接提交 artifact；失败会停在可审计状态
+- **本地优先的 BYOK 产品**：无 Key 也能录音和导出；录音保存在 IndexedDB，会议状态保存在 localStorage，模型数据只发往用户配置的 API
+- **覆盖 Web、CLI 与 Agent Skill**：完整会议工作台服务人，一次性转写 CLI 服务脚本，Skill 让支持 Agent Skills 的客户端直接复用同一能力
+- **评测也是产品的一部分**：仓库包含 fake Responses contract tests、真实会议术语 fixture、公开语义 canary、浏览器 E2E 和隐私/竞态测试，可重复验证的不只是“模型看起来不错”
+
+## 产品能力
 
 ![言澜会议工作台](./docs/yanlan-workspace.png)
 
-## 功能
-
-- 浏览器录音，分段实时转写，并把录音分片持续写入 IndexedDB；意外刷新后可恢复已经落盘的音频
-- 无需 API Key 也可作为纯本地录音器使用，结束后直接播放或导出音频
-- 上传常见格式的音频并分段转写；默认 MiMo data URL 路径在解码时仅保留当前 PCM 分片，不再复制整段单声道音频
-- 保留原始 ASR 片段；Luna Agent 可按需读取逐字稿窗口、提交术语候选、全录音扫描 alias、验证映射组，并对不确定处调用 MiMo 复核。独立拼写意见冲突时必须经过最终事实裁决；只有 `finalize_correction` 工具能提交结果。程序把通过验证的同一实体统一为一个 canonical，每次替换都保存可回放台账，不改变时间轴与说话人归属
-- Responses tool loop 使用严格 JSON Schema、精确 `call_id`、不可变运行状态、调用预算和追加式 trace；模型的 reasoning/function items 会随工具结果原样回传，避免多轮推理断裂
-- 会议解析 Agent 会先通过 `review_meeting_commitments` 逐条裁决全部决定/行动候选，再由 `finalize_meeting_analysis` 从不可变证据账本原子提交标题、摘要、金句、发言人要点、决策和行动项；漏判、重复、直接提问或明确未形成承诺会被 Harness 退回，条件、模态和传闻由 Luna 按公开 gold canary 分类，不支持工具的兼容网关则降级到同一证据账本
-- Agent 已确认的决策与行动项在公开 JSON 中只保留来源及承诺指纹，不包含 trace、模型 ID 或额外正文；分享稿和多次导出可据此保持幂等，未获指纹的注入项仍走严格净化
-- 会议概览、关键词、可回听金句、发言人总结、带原话证据的关键决策、行动项和逐字稿问答
-- 面试前录入候选人代称、岗位、轮次、能力项和 JD
-- 面试后按能力项整理证据、缺口和下一轮追问；程序只验证时间与原话，不自动判断原话是否证明能力，也不自动推进/淘汰候选人
-- 面试证据可点击时间点回听；只有与对应原子时间片或已验证续句组匹配的完整原话才会展示，证据不足时保留明确标记
-- 本地播放器，点击时间戳跳转到录音位置
-- 导出原始录音、Markdown、WebVTT、JSON 和离线 HTML
-- 生成包含逐字稿、时间和摘要的只读链接
-- 浏览器直连与本地同源网关双模式，兼容不同用户配置的 API Base URL
-- 远程模型端点强制使用 HTTPS；只有 `localhost`、`127.0.0.0/8` 和 `[::1]` 回环地址可使用 HTTP
-- 录音保存在 IndexedDB，会议数据保存在 localStorage；删除先写入 per-ID tombstone，阻止其他旧标签页复活已删除会议
-- 两组 API Key 支持带版本标识的 JSON 导入与导出，导入文件不能修改模型地址或其他配置
-- MiMo 与 GPT 均可在保存前测试当前 Base URL、Key 和模型，并区分鉴权、额度、接口路径、网络/CORS 等常见错误
-- GPT 术语校正和整份智能纪要失败后可分别重试；校正改变逐字稿时自动刷新全部下游洞察，不会混用新旧结果
-- GPT 根据中文上下文识别固定音频分片间的续句关系，阅读区、Markdown 和离线分享按自然段组合；摘要、问答、证据时间与 WebVTT 仍使用原子时间片
-- MiMo 请求具备超时和退避重试；任何实时片段最终失败时停止生成纪要，保留完整录音供重新转写
-- 长逐字稿按有界批次生成纪要和面试证据，问答只检索与问题相关的时间片段，避免把整场会议一次塞入模型上下文
+| 场景 | 已实现能力 |
+| --- | --- |
+| 录音与恢复 | 浏览器录音、分段近实时转写、IndexedDB 持续落盘、刷新后恢复已提交分片；无需 API Key 也能录音、播放和导出 |
+| 文件转写 | 上传常见音频格式后分段处理；保留原始 ASR，使用质量门、超时和退避重试；失败时停止生成不完整纪要并保留录音供重转 |
+| 可信会议知识 | 录音级术语统一、会议概览、关键词、可回听金句、发言人要点、带原话证据的决策/行动项和相关片段问答；逐字稿版本变化会使下游结果失效并重新生成 |
+| 面试模式 | 录入候选人代称、岗位、轮次、能力项和 JD；按能力项整理原话证据、缺口与下一轮追问，点击时间点回听；不自动判断能力，也不自动推进或淘汰候选人 |
+| 分享与导出 | 本地播放器与时间戳跳转；导出原始录音、Markdown、WebVTT、JSON 和离线 HTML；生成包含逐字稿、时间和摘要的只读链接 |
+| BYOK 与边界 | 浏览器直连或本地同源网关；MiMo/GPT 配置保存前可测试；远程端点强制 HTTPS；Key 与会议状态保存在 localStorage，录音保存在 IndexedDB，删除由 per-ID tombstone 防止旧标签页复活 |
 
 MiMo-V2.5-ASR 的模型能力和部署信息见小米官方的 [MiMo-V2.5-ASR 仓库](https://github.com/XiaomiMiMo/MiMo-V2.5-ASR)。网页端固定使用官方 Chat Completions ASR 格式，通过 data URL 发送音频和 `asr_options`，不再要求用户选择协议或填写请求路径；CLI 仍保留标准 OpenAI Transcriptions 协议，便于连接兼容网关。
 
