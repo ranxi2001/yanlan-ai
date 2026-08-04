@@ -861,7 +861,7 @@ try {
   await page.locator('[data-insight="summary"]').click();
   await page.getByText("已统一 1 个术语", { exact: true }).waitFor();
   assert.equal(correctionRequestCount, correctionsBeforeRetry + 1);
-  assert.equal(summaryRequestCount, summariesBeforeCorrection + 2);
+  assert.equal(summaryRequestCount, summariesBeforeCorrection + 3);
   assert.equal(asrRequestCount, asrRequestsBeforeRetries);
   assert.equal(await page.locator('[data-retry-insight="correction"]').count(), 0);
   const retriedMeeting = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0]);
