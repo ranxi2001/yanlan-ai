@@ -33,7 +33,6 @@ export async function runAgent({
   let toolCalls = 0;
   let modelTokens = 0;
   let idleTurns = 0;
-  let lastResponse = null;
   const seenCallIds = new Set();
 
   trace.append("run.started", { profile: String(profile.name || "agent"), tool_count: registry.definitions.length });
@@ -74,9 +73,13 @@ export async function runAgent({
         signal: runSignal,
       });
       modelTurns += 1;
-      lastResponse = response;
-      assertUsableResponse(response);
       const responseTokens = responseTokenUsage(response);
+      try {
+        assertUsableResponse(response);
+      } catch (error) {
+        modelTokens += responseTokens;
+        throw error;
+      }
       assertBudget("total_tokens", policy.maxTotalTokens, modelTokens, responseTokens);
       modelTokens += responseTokens;
       const output = response.output;
@@ -85,9 +88,8 @@ export async function runAgent({
       const calls = output.filter((item) => item?.type === "function_call");
       trace.append("model.responded", {
         turn: modelTurns,
-        response_id: String(response.id || ""),
         status: String(response.status || "completed"),
-        output_types: output.map((item) => String(item?.type || "unknown")),
+        output_types: output.map(traceOutputType),
         tool_calls: calls.length,
       });
 
@@ -108,15 +110,15 @@ export async function runAgent({
         const prepared = calls.map((call) => {
           if (call?.status && call.status !== "completed") {
             throw new AgentProtocolError(
-              `Function call ${String(call?.call_id || "")} is not completed`,
+              "A model function call is not completed",
               "function_call_not_completed",
-              { callId: String(call?.call_id || ""), functionCallStatus: String(call.status) },
+              { functionCallStatus: String(call.status) === "in_progress" ? "in_progress" : "not_completed" },
             );
           }
           const callId = String(call?.call_id || "").trim();
           if (!callId) throw new AgentProtocolError("Function call is missing call_id", "missing_call_id");
           if (batchCallIds.has(callId) || seenCallIds.has(callId)) {
-            throw new AgentProtocolError(`Duplicate function call_id: ${callId}`, "duplicate_call_id", { callId });
+            throw new AgentProtocolError("Model returned a duplicate function call identifier", "duplicate_call_id");
           }
           batchCallIds.add(callId);
           return registry.prepare(call);
@@ -138,7 +140,7 @@ export async function runAgent({
         }
         const outputs = [];
         for (const invocation of prepared) {
-          trace.append("tool.started", { call_id: invocation.callId, tool: invocation.tool.name });
+          trace.append("tool.started", { tool: invocation.tool.name });
           seenCallIds.add(invocation.callId);
           toolCalls += 1;
           let rawResult;
@@ -151,9 +153,8 @@ export async function runAgent({
             }));
           } catch (error) {
             trace.append("tool.failed", {
-              call_id: invocation.callId,
               tool: invocation.tool.name,
-              code: String(error?.code || "tool_execution_failed"),
+              code: traceFailureCode(error, "tool_execution_failed"),
             });
             throw error;
           }
@@ -161,7 +162,6 @@ export async function runAgent({
           const serialized = serializeToolOutput(normalized.output);
           if (serialized.length > policy.maxToolOutputCharacters) {
             trace.append("tool.failed", {
-              call_id: invocation.callId,
               tool: invocation.tool.name,
               code: "tool_output_too_large",
             });
@@ -173,7 +173,7 @@ export async function runAgent({
           }
           state = immutableState(normalized.state);
           outputs.push({ type: "function_call_output", call_id: invocation.callId, output: serialized });
-          trace.append("tool.completed", { call_id: invocation.callId, tool: invocation.tool.name, output_characters: serialized.length });
+          trace.append("tool.completed", { tool: invocation.tool.name, output_characters: serialized.length });
         }
         history = [...history, ...outputs];
         const terminalAfterTools = profile.completeOnTerminalState === true && typeof profile.isTerminalState === "function"
@@ -207,15 +207,13 @@ export async function runAgent({
     }
   } catch (error) {
     trace.append("run.failed", {
-      code: String(error?.code || "agent_run_failed"),
-      message: String(error?.message || error),
+      code: traceFailureCode(error),
       model_turns: modelTurns,
       tool_calls: toolCalls,
     });
     error.agentTrace = trace.snapshot();
     error.agentState = state;
     error.agentUsage = usageSnapshot();
-    error.lastResponse = lastResponse;
     throw error;
   }
 }
@@ -226,13 +224,24 @@ function assertUsableResponse(response) {
   if (status !== "completed") {
     const suffix = /^[a-z][a-z0-9_]*$/u.test(status) ? status : "not_completed";
     throw new AgentProtocolError(
-      String(response.error?.message || `Model response status is ${status}`),
+      `Model response did not complete (${suffix})`,
       `response_${suffix}`,
-      { responseStatus: status, incompleteDetails: response.incomplete_details, responseError: response.error },
+      { responseStatus: status },
     );
   }
-  if (response.error) throw new AgentProtocolError(String(response.error?.message || response.error), "response_error");
+  if (response.error) throw new AgentProtocolError("Model response reported an error", "response_error");
   if (!Array.isArray(response.output)) throw new AgentProtocolError("Responses API output must be an array", "invalid_response_output");
+}
+
+function traceOutputType(item) {
+  const type = String(item?.type || "unknown");
+  return new Set(["message", "reasoning", "function_call", "computer_call"]).has(type) ? type : "unknown";
+}
+
+function traceFailureCode(error, fallback = "agent_run_failed") {
+  const code = String(error?.code || "");
+  if (/^(?:agent_[a-z0-9_]+|response_[a-z0-9_]+|tool_[a-z0-9_]+|function_call_not_completed|missing_call_id|duplicate_call_id|parallel_stateful_tools|mixed_stateful_tool_batch|tools_after_terminal_state|no_final_output|invalid_response_output|http|timeout|aborted|relay-unavailable|network-or-cors|response-interrupted|invalid-response)$/u.test(code)) return code;
+  return fallback;
 }
 
 function normalizeInput(input) {

@@ -1,7 +1,8 @@
 import { reconcileTranscriptSegments, replayTranscriptReconciliations, segmentSourceHash } from "./asr-pipeline.js";
 import { runAgent } from "./agent/harness.js";
 import { createResponsesAdapter } from "./agent/responses-adapter.js";
-import { createTerminologyAgentProfile } from "./agent/profiles/terminology.js";
+import { createMeetingAnalysisAgentProfile } from "./agent/profiles/meeting-analysis.js";
+import { createTerminologyAgentProfile, createTerminologyCanonicalReviewInventory } from "./agent/profiles/terminology.js";
 
 export const DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com";
 
@@ -27,8 +28,10 @@ const DEFAULT_ASR_ATTEMPTS = 3;
 const CONNECTION_TEST_AUDIO_SECONDS = 1;
 const CONNECTION_TEST_AUDIO_SAMPLE_RATE = 16_000;
 const MAX_TEXT_INPUT_CHARACTERS = 18_000;
-const SUMMARY_MERGE_GROUP_SIZE = 4;
-const SUMMARY_MERGE_ITEM_CHARACTERS = 3_500;
+const MAX_SUMMARY_EVIDENCE_PER_BATCH = 3;
+const MAX_MEETING_SUMMARY_CHARACTERS = 4_000;
+const MAX_MEETING_EVIDENCE_RECORDS = 400;
+const MAX_MEETING_AGENT_INPUT_CHARACTERS = 80_000;
 const TEXT_REQUEST_CONCURRENCY = 3;
 const DEFAULT_TEXT_ATTEMPTS = 3;
 const TEXT_RETRY_BASE_DELAY_MS = 500;
@@ -42,6 +45,10 @@ const MAX_SEMANTIC_JOIN_OVERLAP_SECONDS = 0.25;
 const MAX_TERMINOLOGY_ENTRIES = 200;
 const MAX_TERMINOLOGY_ENTRY_CHARACTERS = 120;
 const MAX_TERMINOLOGY_PROMPT_CHARACTERS = 2_000;
+const MAX_CANONICAL_REVIEW_GROUPS = 20;
+const MAX_CANONICAL_REVIEW_CONFIRMATIONS = 8;
+const MAX_CANONICAL_REVIEW_CONTEXT_CHARACTERS = 1_200;
+const MAX_CANONICAL_REVIEW_OUTPUT_TOKENS = 512;
 const ACCEPTED_CORRECTION_REASONS = new Set(["explicit_alias", "recording_consensus"]);
 
 export function joinApiUrl(baseUrl, endpointPath) {
@@ -104,15 +111,20 @@ async function apiFetch(url, options, config = DEFAULT_CONFIG) {
   try { body = raw ? JSON.parse(raw) : {}; }
   catch { body = { message: raw }; }
   if (!response.ok) {
-    const message = body?.error?.message || (typeof body?.error === "string" ? body.error : "") || body?.message || body?.detail || "API 请求失败";
-    const error = new Error(`${message}（HTTP ${response.status}）`);
+    const providerMessage = body?.error?.message || (typeof body?.error === "string" ? body.error : "") || body?.message || body?.detail || "";
+    const error = new Error(`API 请求失败（HTTP ${response.status}）`);
     error.code = "http";
     error.status = response.status;
+    error.toolCompatibilityFailure = toolCompatibilityMessage(providerMessage);
     error.retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
     error.retryAfterMs = retryAfterMilliseconds(response.headers?.get?.("retry-after"));
     throw error;
   }
   return body;
+}
+
+function toolCompatibilityMessage(value) {
+  return /tool|function|parallel_tool_calls|strict|unsupported|unknown (?:field|parameter)|不支持|未知(?:字段|参数)/iu.test(String(value || ""));
 }
 
 function retryAfterMilliseconds(value) {
@@ -359,80 +371,897 @@ export async function summarizeTranscript({ config, meeting, signal }) {
   const segments = meeting.segments || [];
   if (!segments.some((segment) => String(segment?.text || "").trim())) return emptySummary();
   if (meeting.mode === "interview") return summarizeInterviewTranscript({ config, meeting, signal });
+  const candidates = await extractMeetingSummaryCandidates({ config, meeting, signal });
+  if (textProtocol(config) === "responses") {
+    try {
+      return await summarizeMeetingTranscriptWithAgent({ config, meeting, signal, candidates });
+    } catch (error) {
+      error.agentUsage = combinedMeetingAnalysisUsage(error.agentUsage, candidates.extractionUsage);
+      if (!agentToolsUnsupported(error) && !agentToolsIgnored(error)) throw error;
+      return {
+        ...meetingSummaryFromCandidates({ meeting, ...candidates }),
+        analysisRun: {
+          id: error.agentTrace?.[0]?.run_id || "",
+          profile: "meeting-analysis",
+          model: config.chatModel.trim(),
+          status: "unsupported",
+          sourceSignature: meetingAnalysisSourceSignature(meeting.segments || []),
+          usage: error.agentUsage || {},
+          trace: error.agentTrace || [],
+        },
+      };
+    }
+  }
+  return meetingSummaryFromCandidates({ meeting, ...candidates });
+}
+
+function agentToolsUnsupported(error) {
+  if (error?.code !== "http" || ![400, 404, 405, 415, 422].includes(Number(error?.status))) return false;
+  return error?.toolCompatibilityFailure === true || toolCompatibilityMessage(error?.message);
+}
+
+function agentToolsIgnored(error) {
+  const auxiliaryTurns = Math.max(0, Number(error?.agentUsage?.candidateExtractionTurns) || 0)
+    + Math.max(0, Number(error?.agentUsage?.canonicalReviewTurns) || 0);
+  const agentTurns = Math.max(0, Number(error?.agentUsage?.modelTurns) || 0) - auxiliaryTurns;
+  if (Number(error?.agentUsage?.toolCalls) !== 0 || agentTurns < 1) return false;
+  if (error?.code === "invalid_response_output" && agentTurns === 1) return true;
+  if (error?.code !== "agent_budget_exceeded" || error?.kind !== "idle_turns") return false;
+  const responses = (Array.isArray(error?.agentTrace) ? error.agentTrace : [])
+    .filter((event) => event?.type === "model.responded");
+  return responses.length > 0 && responses.every((event) => Number(event?.data?.tool_calls) === 0);
+}
+
+async function extractMeetingSummaryCandidates({ config, meeting, signal }) {
+  const segments = meeting.segments || [];
   const terminologyMappings = validatedTerminologyMappings(meeting);
   const system = `你是严谨的会议纪要助手。请仅依据带时间和发言人的逐字稿输出纯 JSON，不要使用 Markdown 代码块。
 字段必须为：
-1. title（简短标题）、summary（完整摘要）、keywords（字符串数组）；
+1. title（简短标题）、summary（完整摘要）、keywords（字符串数组）、summary_evidence（支撑摘要的原话证据数组，每项含 start_seconds、quote）；
 2. highlights（会议金句数组，每项含 start_seconds、speaker、quote、reason）；
-3. speaker_summaries（发言人总结数组，每项含 speaker、summary、key_points 字符串数组）；
+3. speaker_summaries（发言人总结数组，每项含 speaker、summary、key_points 字符串数组、evidence 原话证据数组；每条 evidence 含 start_seconds、quote）；
 4. decisions（关键决策字符串数组）；
 5. decision_records（关键决策证据数组，每项含 decision、start_seconds、evidence）；
-6. action_items（行动项数组，每项含 task、owner、due，未知填空字符串）。
-金句必须是逐字稿中的简短原话，speaker 和 start_seconds 必须对应原片段。关键决策的 evidence 必须是逐字稿中的简短原话并使用对应 start_seconds。只总结有实际发言的说话人。不得虚构逐字稿里没有的信息、时间或原话。`;
-  const transcriptBatches = splitTranscriptPromptBatches(segments, MAX_TEXT_INPUT_CHARACTERS - 300);
-  const partials = await mapWithConcurrency(transcriptBatches, TEXT_REQUEST_CONCURRENCY, async (batch, index) => {
+6. action_items（行动项数组，每项含 task、owner、due、start_seconds、evidence；未知 owner/due 填空字符串）。
+summary_evidence 必须为本段最重要的 1 至 3 条简短原话。金句、summary_evidence、发言人 evidence、关键决策 evidence 和行动项 evidence 必须是逐字稿中的原话并使用对应 start_seconds。speaker 必须对应原片段；owner 或 due 未在原话中明确出现时必须留空。只总结有实际发言的说话人。不得虚构逐字稿里没有的信息、时间或原话。`;
+  const transcriptBatches = splitTranscriptPromptBatchRecords(segments, MAX_TEXT_INPUT_CHARACTERS - 300);
+  const responses = await mapWithConcurrency(transcriptBatches, TEXT_REQUEST_CONCURRENCY, async (batch, index) => {
     const batchLabel = transcriptBatches.length > 1 ? `（第 ${index + 1}/${transcriptBatches.length} 段，仅总结本段）` : "";
-    const content = await chatCompletion({
+    const response = await chatCompletionResult({
       config,
       system,
-      user: `会议逐字稿${batchLabel}：\n${batch}`,
+      user: `会议逐字稿${batchLabel}：\n${batch.text}`,
       signal,
     });
-    return normalizeGeneratedTerminology(parseJsonObject(content), terminologyMappings);
+    return {
+      partial: normalizeGeneratedTerminology(parseJsonObject(response.content), terminologyMappings),
+      usage: response.usage,
+    };
   });
-  const merged = partials.length === 1
-    ? partials[0]
-    : await mergeMeetingSummaryTree({ config, summaries: partials, terminologyMappings, signal });
-  const decisionRecords = normalizeDecisionRecords(
-    uniqueItems(partials.flatMap((item) => Array.isArray(item?.decision_records) ? item.decision_records : []), decisionRecordKey),
+  const partials = responses.map((response) => response.partial);
+  const extractionTokens = responses.reduce((total, response) => total + Math.max(0, Number(response.usage?.modelTokens) || 0), 0);
+  const merged = partials.length === 1 ? partials[0] : {};
+  return {
+    partials,
+    merged,
+    terminologyMappings,
+    batches: transcriptBatches.map((batch) => ({ segment_ids: [...batch.segment_ids] })),
+    extractionUsage: {
+      modelTurns: responses.length,
+      ...(extractionTokens ? { modelTokens: extractionTokens } : {}),
+    },
+  };
+}
+
+function meetingSummaryFromCandidates({ meeting, ...candidates }) {
+  const evidence = buildMeetingEvidenceLedger({ meeting, ...candidates });
+  const sourceSignature = meetingAnalysisSourceSignature(meeting.segments || []);
+  const result = finalizeMeetingAnalysis({
+    outline: selectAllMeetingEvidence(evidence, { defensiveCommitmentGate: true }),
+    evidence,
+    sourceSignature,
+    meeting,
+    terminologyMappings: candidates.terminologyMappings,
+  });
+  return result.artifact || emptySummary();
+}
+
+async function summarizeMeetingTranscriptWithAgent({ config, meeting, signal, candidates }) {
+  const sourceSignature = meetingAnalysisSourceSignature(meeting.segments || []);
+  const evidence = buildMeetingEvidenceLedger({ meeting, ...candidates });
+  if (evidence.length > MAX_MEETING_EVIDENCE_RECORDS) {
+    return boundedMeetingAnalysisFallback({
+      config,
+      meeting,
+      candidates,
+      sourceSignature,
+      reason: "evidence_record_budget",
+    });
+  }
+  const profile = createMeetingAnalysisAgentProfile({
+    evidence,
+    sourceSignature,
+    reviewCommitments: (reviews, context) => validateMeetingCommitmentReview({
+      reviews,
+      evidence: context.evidence,
+      sourceSignature: context.sourceSignature,
+      meeting,
+    }),
+    finalizeAnalysis: (outline, context) => finalizeMeetingAnalysis({
+      outline,
+      evidence: context.evidence,
+      sourceSignature: context.sourceSignature,
+      meeting,
+      terminologyMappings: candidates.terminologyMappings,
+    }),
+  });
+  if (profile.input.length > MAX_MEETING_AGENT_INPUT_CHARACTERS) {
+    return boundedMeetingAnalysisFallback({
+      config,
+      meeting,
+      candidates,
+      sourceSignature,
+      reason: "agent_input_budget",
+    });
+  }
+  const adapter = createResponsesAdapter({
+    model: config.chatModel,
+    store: false,
+    includeEncryptedReasoning: true,
+    request: (body, options) => requestResponsesBody({ config, body, signal: options.signal || signal }),
+  });
+  const run = await runAgent({
+    adapter,
+    profile,
+    input: profile.input,
+    initialState: profile.initialState,
+    signal,
+    policy: {
+      maxModelTurns: 5,
+      maxToolCalls: 5,
+      maxIdleTurns: 1,
+      maxToolOutputCharacters: 20_000,
+      maxHistoryCharacters: 600_000,
+    },
+  });
+  return {
+    ...run.result,
+    analysisRun: {
+      id: run.trace[0]?.run_id || "",
+      profile: profile.name,
+      model: config.chatModel.trim(),
+      status: "completed",
+      sourceSignature,
+      commitmentProofVersion: 1,
+      commitmentProofs: meetingAnalysisCommitmentProofs(run.result),
+      usage: combinedMeetingAnalysisUsage(run.usage, candidates.extractionUsage),
+      trace: run.trace,
+    },
+  };
+}
+
+function boundedMeetingAnalysisFallback({ config, meeting, candidates, sourceSignature, reason }) {
+  return {
+    ...meetingSummaryFromCandidates({ meeting, ...candidates }),
+    analysisRun: {
+      id: "",
+      profile: "meeting-analysis",
+      model: config.chatModel.trim(),
+      status: "bounded_fallback",
+      reason,
+      sourceSignature,
+      usage: combinedMeetingAnalysisUsage({}, candidates.extractionUsage),
+      trace: [],
+    },
+  };
+}
+
+function combinedMeetingAnalysisUsage(agentUsage, extractionUsage) {
+  const extractionTurns = Math.max(0, Number(extractionUsage?.modelTurns) || 0);
+  const extractionTokens = Math.max(0, Number(extractionUsage?.modelTokens) || 0);
+  const agentTokens = Math.max(0, Number(agentUsage?.modelTokens) || 0);
+  return {
+    ...(agentUsage || {}),
+    modelTurns: Math.max(0, Number(agentUsage?.modelTurns) || 0) + extractionTurns,
+    ...(extractionTokens || agentTokens ? { modelTokens: extractionTokens + agentTokens } : {}),
+    ...(extractionTurns ? { candidateExtractionTurns: extractionTurns } : {}),
+    ...(extractionTokens ? { candidateExtractionTokens: extractionTokens } : {}),
+  };
+}
+
+function buildMeetingEvidenceLedger({ meeting, partials, batches = [] }) {
+  const records = [];
+  const seen = new Set();
+  const add = (kind, value, key) => {
+    const dedupeKey = `${kind}:${key}`;
+    if (!key || seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+    records.push({ id: `${kind}-${records.length + 1}`, kind, ...value });
+  };
+  const transcriptText = (meeting.segments || []).map((segment) => String(segment?.text || "")).join("\n");
+  const evidenceContext = prepareEvidenceContext(
     meeting.segments,
     meeting.rawSegments,
     meeting.terminology,
     meeting.corrections,
     meeting.asrReconciliations,
   );
-  return {
-    title: stringOr(merged.title, partials.map((item) => stringOr(item?.title, "")).find(Boolean) || ""),
-    summary: stringOr(merged.summary, partials.map((item) => stringOr(item?.summary, "")).filter(Boolean).join("\n")),
-    keywords: uniqueStrings([merged, ...partials].flatMap((item) => stringArray(item?.keywords))).slice(0, 60),
-    highlights: normalizeHighlights(
-      uniqueItems(partials.flatMap((item) => Array.isArray(item?.highlights) ? item.highlights : []), highlightKey),
+  partials.forEach((item, batchIndex) => {
+    const batch = batches[batchIndex] || { segment_ids: [] };
+    const quotes = verifiedBatchSummaryEvidence(item, batch, meeting, evidenceContext);
+    const keywords = supportedMeetingKeywords(
+      [item?.title, ...stringArray(item?.keywords)],
+      transcriptText,
+    ).slice(0, 12);
+    records.push({
+      id: `summary-${records.length + 1}`,
+      kind: "summary",
+      scope: "transcript_batch",
+      batch_index: batchIndex,
+      quotes,
+      keywords,
+    });
+  });
+
+  const highlights = normalizeHighlights(
+    partials.flatMap((item) => Array.isArray(item?.highlights) ? item.highlights : []),
+    meeting.segments,
+    meeting.rawSegments,
+    meeting.terminology,
+    meeting.corrections,
+    meeting.asrReconciliations,
+  );
+  highlights.forEach((item) => add("highlight", item, `${item.start_seconds}:${comparableText(item.quote)}`));
+
+  const decisions = normalizeMeetingDecisionCandidates(
+    partials.flatMap((item) => Array.isArray(item?.decision_records) ? item.decision_records : []),
+    meeting.segments,
+    meeting.rawSegments,
+    meeting.terminology,
+    meeting.corrections,
+    meeting.asrReconciliations,
+  );
+  decisions.forEach((item) => add("decision", item, `${item.start_seconds}:${comparableText(item.evidence)}`));
+
+  for (const item of partials.flatMap((value) => Array.isArray(value?.speaker_summaries) ? value.speaker_summaries : [])) {
+    const speaker = stringOr(item?.speaker, "发言人");
+    for (const entry of Array.isArray(item?.evidence) ? item.evidence : []) {
+      const verified = verifiedEvidence(
+        entry?.start_seconds,
+        entry?.quote,
+        meeting.segments,
+        meeting.rawSegments,
+        meeting.terminology,
+        meeting.corrections,
+        meeting.asrReconciliations,
+        speaker,
+        evidenceContext,
+      );
+      if (!verified) continue;
+      add("speaker_point", verified, `${verified.start_seconds}:${comparableText(verified.speaker)}:${comparableText(verified.quote)}`);
+    }
+  }
+
+  for (const item of partials.flatMap((value) => Array.isArray(value?.action_items) ? value.action_items : [])) {
+    const verified = verifiedEvidence(
+      item?.start_seconds,
+      item?.evidence,
       meeting.segments,
       meeting.rawSegments,
       meeting.terminology,
       meeting.corrections,
       meeting.asrReconciliations,
-    ),
-    speaker_summaries: mergeSpeakerSummaries([merged, ...partials].flatMap((item) => Array.isArray(item?.speaker_summaries) ? item.speaker_summaries : [])),
-    decisions: decisionRecords.map((item) => item.decision),
-    decision_records: decisionRecords,
-    action_items: normalizeActionItems([merged, ...partials].flatMap((item) => Array.isArray(item?.action_items) ? item.action_items : [])),
+      "",
+      evidenceContext,
+    );
+    if (!verified) continue;
+    add("action", {
+      task: verified.quote,
+      owner: evidenceSupportsActionOwner(verified.quote, item?.owner) ? stringOr(item?.owner, "") : "",
+      due: evidenceSupportsActionDue(verified.quote, item?.due, item?.task, item?.owner) ? stringOr(item?.due, "") : "",
+      start_seconds: verified.start_seconds,
+      speaker: verified.speaker,
+      evidence: verified.quote,
+    }, `${verified.start_seconds}:${comparableText(verified.quote)}`);
+  }
+  return boundedMeetingEvidenceLedger(records);
+}
+
+function boundedMeetingEvidenceLedger(records) {
+  const summaries = records.filter((record) => record.kind === "summary")
+    .sort((left, right) => left.batch_index - right.batch_index);
+  if (summaries.length >= MAX_MEETING_EVIDENCE_RECORDS) return summaries;
+  const actions = records.filter((record) => record.kind === "action").slice(0, 60);
+  const decisions = records.filter((record) => record.kind === "decision").slice(0, 30);
+  const highlights = records.filter((record) => record.kind === "highlight").slice(0, 30);
+  const prioritized = [...summaries, ...actions, ...decisions, ...highlights]
+    .slice(0, MAX_MEETING_EVIDENCE_RECORDS);
+  const remaining = MAX_MEETING_EVIDENCE_RECORDS - prioritized.length;
+  if (remaining <= 0) return prioritized;
+  return [...prioritized, ...roundRobinSpeakerEvidence(
+    records.filter((record) => record.kind === "speaker_point"),
+    Math.min(120, remaining),
+  )];
+}
+
+function roundRobinSpeakerEvidence(records, limit) {
+  const groups = new Map();
+  for (const record of records) {
+    const key = comparableText(record.speaker);
+    if (!groups.has(key) && groups.size >= 30) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    if (groups.get(key).length < 40) groups.get(key).push(record);
+  }
+  const queues = [...groups.values()];
+  const selected = [];
+  while (selected.length < limit && queues.some((queue) => queue.length)) {
+    for (const queue of queues) {
+      if (selected.length >= limit) break;
+      const record = queue.shift();
+      if (record) selected.push(record);
+    }
+  }
+  return selected;
+}
+
+function verifiedBatchSummaryEvidence(item, batch, meeting, evidenceContext) {
+  const segmentIds = [...new Set((batch?.segment_ids || []).filter((id) => Number.isInteger(id)))];
+  const segmentIdSet = new Set(segmentIds);
+  const verify = (entry) => {
+    const time = evidenceTime(entry?.start_seconds);
+    if (time == null || !segmentIds.some((id) => {
+      const segment = meeting.segments?.[id];
+      if (!segment) return false;
+      const start = Math.max(0, Number(segment.start_seconds) || 0);
+      const end = Math.max(start, Number(segment.end_seconds) || start + 5);
+      return time >= start - 0.5 && time <= end + 0.5;
+    })) return null;
+    return verifiedEvidence(
+      time,
+      entry?.quote,
+      meeting.segments,
+      meeting.rawSegments,
+      meeting.terminology,
+      meeting.corrections,
+      meeting.asrReconciliations,
+      entry?.speaker,
+      evidenceContext,
+    );
+  };
+  let verified = uniqueItems(
+    (Array.isArray(item?.summary_evidence) ? item.summary_evidence : []).map(verify).filter(Boolean),
+    (entry) => `${entry.start_seconds}:${comparableText(entry.quote)}`,
+  ).slice(0, MAX_SUMMARY_EVIDENCE_PER_BATCH);
+  if (verified.length) return verified;
+
+  const fallbackCandidates = representativeBatchSegments(segmentIds
+    .map((id) => ({ id, segment: meeting.segments?.[id] }))
+    .filter(({ segment }) => String(segment?.text || "").trim()));
+  const fallback = [];
+  for (const { id, segment } of fallbackCandidates) {
+    if (!segmentIdSet.has(id) || fallback.length >= MAX_SUMMARY_EVIDENCE_PER_BATCH) continue;
+    if (oversizedEvidenceSegment(segment)) {
+      fallback.push(...verifiedOversizedBatchEvidence(segment, id, evidenceContext)
+        .slice(0, MAX_SUMMARY_EVIDENCE_PER_BATCH - fallback.length));
+      continue;
+    }
+    const direct = verifiedEvidence(
+      segment.start_seconds,
+      segment.text,
+      meeting.segments,
+      meeting.rawSegments,
+      meeting.terminology,
+      meeting.corrections,
+      meeting.asrReconciliations,
+      segment.speaker,
+      evidenceContext,
+    );
+    if (direct) {
+      fallback.push(direct);
+      continue;
+    }
+    fallback.push(...verifiedOversizedBatchEvidence(segment, id, evidenceContext)
+      .slice(0, MAX_SUMMARY_EVIDENCE_PER_BATCH - fallback.length));
+  }
+  fallback.sort((left, right) => left.start_seconds - right.start_seconds);
+  return uniqueItems(fallback, (entry) => `${entry.start_seconds}:${comparableText(entry.quote)}`);
+}
+
+function representativeBatchSegments(values) {
+  const ordered = [...values].sort((left, right) => left.id - right.id);
+  if (ordered.length <= MAX_SUMMARY_EVIDENCE_PER_BATCH) return ordered;
+  const first = ordered[0];
+  const last = ordered[ordered.length - 1];
+  const middle = ordered.slice(1, -1)
+    .sort((left, right) => String(right.segment.text).length - String(left.segment.text).length || left.id - right.id)[0];
+  return [first, middle, last].filter(Boolean).sort((left, right) => left.id - right.id);
+}
+
+function verifiedOversizedBatchEvidence(segment, segmentId, evidenceContext) {
+  const text = String(segment?.text || "").trim();
+  const start = Math.max(0, Number(segment?.start_seconds) || 0);
+  if (!oversizedEvidenceSegment(segment) || evidenceContext.invalid || evidenceContext.segmentValidity?.[segmentId] === false) return [];
+  return exactTranscriptExcerpts(text, MAX_READABLE_SEGMENT_CHARACTERS, MAX_SUMMARY_EVIDENCE_PER_BATCH)
+    .map((quote) => ({
+      start_seconds: start,
+      speaker: stringOr(segment?.speaker, "发言人"),
+      quote,
+    }));
+}
+
+function oversizedEvidenceSegment(segment) {
+  const start = Math.max(0, Number(segment?.start_seconds) || 0);
+  const end = Math.max(start, Number(segment?.end_seconds) || start);
+  return String(segment?.text || "").trim().length > MAX_READABLE_SEGMENT_CHARACTERS
+    || end - start > MAX_READABLE_SEGMENT_SECONDS;
+}
+
+function exactTranscriptExcerpts(value, maxCharacters, limit) {
+  const text = String(value || "").trim();
+  if (!text) return [];
+  if (text.length <= maxCharacters) return [text];
+  const lastStart = Math.max(0, text.length - maxCharacters);
+  const offsets = [0, Math.floor(lastStart / 2), lastStart];
+  return [...new Set(offsets.map((offset) => text.slice(offset, offset + maxCharacters).trim()).filter(Boolean))]
+    .slice(0, limit);
+}
+
+function supportedMeetingKeywords(values, transcript) {
+  const supported = comparableText(transcript);
+  return uniqueStrings(values.map((value) => truncateText(value, 80))).filter((value) => {
+    const key = comparableText(value);
+    return key.length >= 2 && supported.includes(key);
+  });
+}
+
+function selectAllMeetingEvidence(evidence, { defensiveCommitmentGate = false } = {}) {
+  const speakerGroups = new Map();
+  for (const record of evidence) {
+    if (record.kind !== "speaker_point") continue;
+    const key = comparableText(record.speaker);
+    if (!key) continue;
+    if (!speakerGroups.has(key)) speakerGroups.set(key, { speaker: record.speaker, evidence_ids: [] });
+    speakerGroups.get(key).evidence_ids.push(record.id);
+  }
+  return {
+    summary_evidence_ids: evidence.filter((record) => record.kind === "summary").map((record) => record.id),
+    highlight_ids: evidence.filter((record) => record.kind === "highlight").map((record) => record.id),
+    speaker_summaries: [...speakerGroups.values()],
+    decision_ids: evidence.filter((record) => (
+      record.kind === "decision"
+      && (!defensiveCommitmentGate || looksLikeDecisionEvidence(record.evidence))
+    )).map((record) => record.id),
+    action_item_ids: evidence.filter((record) => (
+      record.kind === "action"
+      && (!defensiveCommitmentGate || looksLikeAffirmativeActionEvidence(record.evidence))
+    )).map((record) => record.id),
   };
 }
 
-async function mergeMeetingSummaryTree({ config, summaries, terminologyMappings, signal }) {
-  const system = `你是会议分段摘要合并助手。输入是按时间相邻的分段摘要，不是原始逐字稿。请合并为纯 JSON，只输出 title、summary、keywords、speaker_summaries、action_items。保留各段的重要事实、决策含义、人员和行动项，不得添加输入中没有的信息。`;
-  let level = summaries.map(compactMeetingSummaryForMerge);
-  while (level.length > 1) {
-    const groups = [];
-    for (let index = 0; index < level.length; index += SUMMARY_MERGE_GROUP_SIZE) {
-      groups.push(level.slice(index, index + SUMMARY_MERGE_GROUP_SIZE));
-    }
-    const next = await mapWithConcurrency(groups, TEXT_REQUEST_CONCURRENCY, async (group) => {
-      if (group.length === 1) {
-        return group[0];
-      }
-      const content = await chatCompletion({
-        config,
-        system,
-        user: `请按时间顺序合并以下 ${group.length} 份相邻分段摘要：\n${JSON.stringify(group)}`,
-        signal,
-      });
-      return compactMeetingSummaryForMerge(normalizeGeneratedTerminology(parseJsonObject(content), terminologyMappings));
-    });
-    level = next;
+function normalizeMeetingDecisionCandidates(value, segments = [], rawSegments = [], trustedTerms = [], correctionLedger, reconciliationLedger) {
+  if (!Array.isArray(value) || !value.length) return [];
+  const evidenceContext = prepareEvidenceContext(segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger);
+  return uniqueItems(value.map((item) => {
+    const evidence = verifiedEvidence(
+      item?.start_seconds,
+      item?.evidence,
+      segments,
+      rawSegments,
+      trustedTerms,
+      correctionLedger,
+      reconciliationLedger,
+      "",
+      evidenceContext,
+    );
+    if (!evidence || stringOr(item?.decision, "").length < 2) return null;
+    return { decision: evidence.quote, start_seconds: evidence.start_seconds, evidence: evidence.quote };
+  }).filter(Boolean), (item) => `${item.start_seconds}:${comparableText(item.evidence)}`).slice(0, 30);
+}
+
+function validateMeetingCommitmentReview({ reviews, evidence, sourceSignature, meeting }) {
+  const violations = [];
+  if (sourceSignature !== meetingAnalysisSourceSignature(meeting.segments || [])) {
+    return { violations: [{ code: "meeting_source_changed" }] };
   }
-  return level[0] || {};
+  const byId = new Map(evidence.map((record) => [record.id, record]));
+  for (const review of reviews || []) {
+    if (review.disposition !== "confirmed") continue;
+    const record = byId.get(review.evidence_id);
+    if (!record || !meetingCommitmentPassesDefensiveFloor(record)) {
+      violations.push({
+        code: "meeting_commitment_defensive_floor_rejected",
+        evidence_id: review.evidence_id,
+      });
+    }
+  }
+  return { violations };
+}
+
+function meetingCommitmentPassesDefensiveFloor(record) {
+  const evidence = String(record?.evidence || "").trim();
+  if (!evidence || /[?？]/u.test(evidence) || looksLikeDirectQuestionEvidence(evidence)) return false;
+  return !commitmentActWasNotMade(evidence);
+}
+
+function finalizeMeetingAnalysis({ outline, evidence, sourceSignature, meeting, terminologyMappings }) {
+  const violations = [];
+  const currentSignature = meetingAnalysisSourceSignature(meeting.segments || []);
+  if (sourceSignature !== currentSignature) {
+    violations.push({ code: "meeting_source_changed" });
+    return { violations };
+  }
+  const byId = new Map(evidence.map((record) => [record.id, record]));
+  const select = (ids, kinds, field) => {
+    const selected = [];
+    const seen = new Set();
+    for (const id of ids || []) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const record = byId.get(id);
+      if (!record) {
+        violations.push({ code: "unknown_meeting_evidence", field, evidence_id: id });
+        continue;
+      }
+      if (!kinds.includes(record.kind)) {
+        violations.push({ code: "meeting_evidence_kind_mismatch", field, evidence_id: id, kind: record.kind });
+        continue;
+      }
+      selected.push(record);
+    }
+    return selected;
+  };
+
+  const summaryEvidence = select(
+    outline.summary_evidence_ids,
+    ["summary"],
+    "summary_evidence_ids",
+  );
+  if (!summaryEvidence.some((record) => record.kind === "summary")) {
+    violations.push({ code: "meeting_summary_source_required" });
+  }
+  const selectedSummaryIds = new Set(summaryEvidence.filter((record) => record.kind === "summary").map((record) => record.id));
+  const requiredBatchSummaries = evidence.filter((record) => record.kind === "summary" && record.scope === "transcript_batch");
+  const emptyBatchSummaryIds = requiredBatchSummaries
+    .filter((record) => !Array.isArray(record.quotes) || !record.quotes.length)
+    .map((record) => record.id);
+  if (emptyBatchSummaryIds.length) {
+    violations.push({
+      code: "meeting_summary_batch_has_no_verified_evidence",
+      evidence_ids: emptyBatchSummaryIds.slice(0, 100),
+      missing_count: emptyBatchSummaryIds.length,
+    });
+  }
+  const missingBatchSummaryIds = requiredBatchSummaries
+    .filter((record) => !selectedSummaryIds.has(record.id))
+    .map((record) => record.id);
+  if (missingBatchSummaryIds.length) {
+    violations.push({
+      code: "meeting_summary_coverage_incomplete",
+      missing_count: missingBatchSummaryIds.length,
+      missing_evidence_ids: missingBatchSummaryIds.slice(0, 100),
+    });
+  }
+  const orderedSummaryRecords = summaryEvidence.filter((record) => record.kind === "summary")
+    .sort((left, right) => left.batch_index - right.batch_index);
+  const summaryKeywords = uniqueStrings(orderedSummaryRecords.flatMap((record) => stringArray(record.keywords))).slice(0, 30);
+  const derivedTitle = summaryKeywords.length ? `${summaryKeywords.slice(0, 3).join(" / ")}会议纪要` : "会议纪要";
+  const derivedSummary = groundedMeetingSummary(orderedSummaryRecords);
+  const groundedQuoteText = orderedSummaryRecords
+    .flatMap((record) => record.quotes || [])
+    .map((record) => record.quote || "")
+    .join("\n");
+  const unsupportedCriticalFacts = missingCriticalFacts(
+    groundedQuoteText,
+    (meeting.segments || []).map((segment) => segment.text).join("\n"),
+  );
+  if (unsupportedCriticalFacts.length) {
+    violations.push({ code: "unsupported_summary_critical_facts", facts: unsupportedCriticalFacts.slice(0, 20) });
+  }
+  const highlights = select(outline.highlight_ids, ["highlight"], "highlight_ids");
+  const decisions = select(outline.decision_ids, ["decision"], "decision_ids");
+  const actions = select(outline.action_item_ids, ["action"], "action_item_ids");
+
+  const speakerSummaries = [];
+  const usedSpeakerEvidence = new Set();
+  for (const group of outline.speaker_summaries || []) {
+    const points = select(group.evidence_ids, ["speaker_point"], "speaker_summaries.evidence_ids")
+      .filter((record) => {
+        if (comparableText(record.speaker) !== comparableText(group.speaker)) {
+          violations.push({
+            code: "speaker_evidence_mismatch",
+            evidence_id: record.id,
+            expected_speaker: group.speaker,
+            actual_speaker: record.speaker,
+          });
+          return false;
+        }
+        if (usedSpeakerEvidence.has(record.id)) {
+          violations.push({ code: "speaker_evidence_reused", evidence_id: record.id });
+          return false;
+        }
+        usedSpeakerEvidence.add(record.id);
+        return true;
+      });
+    if (!points.length) continue;
+    const keyPoints = uniqueStrings(points.map((record) => record.quote)).slice(0, 12);
+    speakerSummaries.push({
+      speaker: points[0].speaker,
+      summary: truncateText(keyPoints.join("；"), 1_200),
+      key_points: keyPoints,
+      evidence: points.map(({ start_seconds, speaker, quote }) => ({ start_seconds, speaker, quote })),
+    });
+  }
+
+  if (violations.length) return { violations };
+  const supportedText = (meeting.segments || []).map((segment) => String(segment?.text || "")).join("\n");
+  const selectedSummaryText = orderedSummaryRecords.flatMap((record) => record.quotes || []).map((record) => record.quote || "").join("\n");
+  const keywords = summaryKeywords.filter((keyword) => (
+    comparableText(supportedText).includes(comparableText(keyword))
+    || comparableText(selectedSummaryText).includes(comparableText(keyword))
+  )).slice(0, 30);
+  const artifact = {
+    title: derivedTitle,
+    summary: truncateText(derivedSummary, MAX_MEETING_SUMMARY_CHARACTERS),
+    keywords,
+    highlights: highlights.map(({ start_seconds, speaker, quote }) => ({ start_seconds, speaker, quote, reason: "" })),
+    speaker_summaries: speakerSummaries,
+    decisions: decisions.map((record) => record.decision),
+    decision_records: decisions.map(({ decision, start_seconds, evidence: quote }) => ({ decision, start_seconds, evidence: quote })),
+    action_items: actions.map(({ task, owner, due, start_seconds, speaker, evidence: quote }) => ({ task, owner, due, start_seconds, speaker, evidence: quote })),
+  };
+  return { artifact, violations: [] };
+}
+
+function groundedMeetingSummary(records) {
+  const batches = records.filter((record) => record.scope === "transcript_batch");
+  if (!batches.length) return "";
+  let lines = batches.map((record) => {
+    const quotes = uniqueItems(record.quotes || [], (entry) => `${entry.start_seconds}:${comparableText(entry.quote)}`);
+    if (!quotes.length) return null;
+    const first = quotes[0];
+    return {
+      prefix: `[${formatTimestamp(first.start_seconds)}] ${truncateText(stringOr(first.speaker, "发言人"), 80)}：`,
+      quotes,
+    };
+  }).filter(Boolean);
+  while (minimumSummaryCharacters(lines) > MAX_MEETING_SUMMARY_CHARACTERS && lines.length > 2) {
+    const last = lines.length - 1;
+    const reduced = lines.filter((_, index) => index === 0 || index === last || index % 2 === 0);
+    lines = reduced.length < lines.length ? reduced : [lines[0], lines[last]];
+  }
+  const fixedCharacters = lines.reduce((total, line) => (
+    total + line.prefix.length + Math.max(0, line.quotes.length - 1)
+  ), Math.max(0, lines.length - 1));
+  const quoteCount = lines.reduce((total, line) => total + line.quotes.length, 0);
+  const available = Math.max(0, MAX_MEETING_SUMMARY_CHARACTERS - fixedCharacters);
+  const baseBudget = quoteCount ? Math.floor(available / quoteCount) : 0;
+  let remainder = quoteCount ? available % quoteCount : 0;
+  const rendered = lines.map((line) => {
+    const content = line.quotes.map((entry) => {
+      const budget = baseBudget + (remainder > 0 ? 1 : 0);
+      remainder = Math.max(0, remainder - 1);
+      return middleTruncateText(entry.quote, budget);
+    }).join("；");
+    return `${line.prefix}${content}`;
+  });
+  return rendered.join("\n");
+}
+
+function minimumSummaryCharacters(lines) {
+  return lines.reduce((total, line) => (
+    total + line.prefix.length + Math.max(0, line.quotes.length - 1) + line.quotes.length
+  ), Math.max(0, lines.length - 1));
+}
+
+function middleTruncateText(value, maxCharacters) {
+  const text = String(value || "").trim();
+  if (maxCharacters <= 0) return "";
+  if (text.length <= maxCharacters) return text;
+  if (maxCharacters <= 3) return text.slice(0, maxCharacters);
+  const available = Math.max(2, maxCharacters - 3);
+  const head = Math.ceil(available / 2);
+  const tail = Math.floor(available / 2);
+  return `${text.slice(0, head)}...${text.slice(-tail)}`;
+}
+
+function meetingAnalysisSourceSignature(segments) {
+  const hashes = (segments || []).map((segment, index) => segmentSourceHash(segment, index));
+  return segmentSourceHash({
+    start_seconds: 0,
+    end_seconds: segments.reduce((maximum, segment) => Math.max(maximum, Number(segment?.end_seconds) || 0), 0),
+    speaker: `segments:${segments.length}`,
+    text: hashes.join("|"),
+  }, segments.length);
+}
+
+function meetingAnalysisCommitmentProof(kind, item) {
+  const start = evidenceTime(item?.start_seconds);
+  const evidence = String(item?.evidence || "").trim();
+  if (!new Set(["decision", "action"]).has(kind) || start == null || !evidence) return "";
+  return `${kind}:${segmentSourceHash({
+    start_seconds: start,
+    end_seconds: start,
+    speaker: kind,
+    text: evidence,
+  }, 0)}`;
+}
+
+function meetingAnalysisCommitmentProofs(artifact) {
+  return uniqueStrings([
+    ...(Array.isArray(artifact?.decision_records) ? artifact.decision_records : [])
+      .map((item) => meetingAnalysisCommitmentProof("decision", item)),
+    ...(Array.isArray(artifact?.action_items) ? artifact.action_items : [])
+      .map((item) => meetingAnalysisCommitmentProof("action", item)),
+  ]).sort();
+}
+
+function trustedMeetingCommitmentProofs(meeting) {
+  const currentSignature = meetingAnalysisSourceSignature(meeting.segments || []);
+  const run = meeting?.analysisRun;
+  const publicProof = meeting?.analysis_proof;
+  const proofVersion = run?.profile === "meeting-analysis" && run.status === "completed"
+    ? run.commitmentProofVersion
+    : publicProof?.schema;
+  const sourceSignature = run?.profile === "meeting-analysis" && run.status === "completed"
+    ? run.sourceSignature
+    : publicProof?.source_signature;
+  const proofs = run?.profile === "meeting-analysis" && run.status === "completed"
+    ? run.commitmentProofs
+    : publicProof?.commitment_proofs;
+  if (
+    proofVersion !== 1
+    || sourceSignature !== currentSignature
+    || !Array.isArray(proofs)
+    || proofs.length > 90
+  ) return new Set();
+  return new Set(proofs.filter((proof) => /^(?:decision|action):fnv1a32:[0-9a-f]{8}$/u.test(proof)));
+}
+
+function missingCriticalFacts(value, transcript) {
+  const supported = new Set(meetingCriticalFacts(transcript));
+  return meetingCriticalFacts(value).filter((fact) => !supported.has(fact));
+}
+
+function meetingCriticalFacts(value) {
+  const source = String(value || "").normalize("NFKC").toLocaleLowerCase();
+  const general = criticalFingerprint(source).split("|").filter(Boolean);
+  const meetingSpecific = source.match(/决定|确认|批准|否决|同意|通过|安排|负责|完成|上线|发布|交付|采用|选择|必须|需要|不得|取消|延期|[零一二两三四五六七八九十百千万亿]+(?:元|人|天|周|月|年|%|个|次|份|台|套)/gu) || [];
+  return [...new Set([...general, ...meetingSpecific].map((fact) => comparableText(fact)).filter(Boolean))];
+}
+
+function evidenceContainsField(evidence, value) {
+  const field = comparableText(value);
+  return Boolean(field && comparableText(evidence).includes(field));
+}
+
+function evidenceSupportsActionOwner(evidence, value) {
+  const owner = String(value || "").trim();
+  if (!owner || !evidenceContainsField(evidence, owner)) return false;
+  const clause = evidenceClauseContaining(evidence, owner);
+  if (!clause || actionEvidenceIsUncertainOrNegative(clause)) return false;
+  const escaped = escapeRegExp(owner);
+  return new RegExp(`(?:由|让|请|安排|指定)\\s*${escaped}(?:来|去)?|${escaped}\\s*(?:负责|完成|跟进|处理|交付|执行|推进|承担)|\\b${escaped}\\s+(?:will|must|shall|owns?|is\\s+responsible|to\\s+(?:complete|deliver|ship|publish|launch))\\b`, "iu").test(clause);
+}
+
+function evidenceSupportsActionDue(evidence, value, taskValue, ownerValue) {
+  const due = String(value || "").trim();
+  if (!due || !plausibleDueValue(due) || !evidenceContainsField(evidence, due)) return false;
+  const clauses = evidenceClauses(evidence);
+  const dueKey = comparableText(due);
+  const dueIndex = clauses.findIndex((clause) => comparableText(clause).includes(dueKey));
+  if (dueIndex < 0) return false;
+  const taskKey = comparableText(taskValue);
+  const owner = String(ownerValue || "").trim();
+  const actionIndexes = clauses.map((clause, index) => ({ clause, index })).filter(({ clause }) => (
+    looksLikeConcreteActionEvidence(clause)
+    && !actionEvidenceIsUncertainOrNegative(clause)
+    && ((taskKey.length >= 2 && comparableText(clause).includes(taskKey))
+      || (owner && evidenceSupportsActionOwner(clause, owner)))
+  ));
+  if (actionIndexes.length !== 1) return false;
+  if (actionIndexes[0].index === dueIndex) return true;
+  return Math.abs(actionIndexes[0].index - dueIndex) === 1 && standaloneDueClause(clauses[dueIndex], due);
+}
+
+function evidenceClauseContaining(evidence, value) {
+  const key = comparableText(value);
+  return evidenceClauses(evidence)
+    .find((clause) => key && comparableText(clause).includes(key)) || "";
+}
+
+function evidenceClauses(evidence) {
+  return String(evidence || "").split(/[，。；;,.!?！？\n]+/u)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+}
+
+function standaloneDueClause(clause, due) {
+  const remainder = String(clause || "").replace(new RegExp(escapeRegExp(due), "giu"), "")
+    .replace(/\s+/gu, "")
+    .toLocaleLowerCase();
+  return /^(?:截止(?:到)?|到|前|之前|以前|以内|为止|by|before|due)?$/u.test(remainder);
+}
+
+const ACTION_VERBS_ZH = "负责|完成|跟进|处理|交付|执行|推进|承担|上线|发布|批准|提交|发送|修复|实现|部署|验证|通知|准备|整理|更新|迁移|申请|采购|签署|支付|联系|预约|召开|输出|同步|汇报";
+const ACTION_VERBS_EN = "responsible|complete|deliver|execute|ship|launch|publish|approve|submit|send|fix|implement|deploy|verify|notify|prepare|update|migrate|contact|schedule|report|follow\\s*up";
+const CONCRETE_ACTION_PATTERN = new RegExp(`安排|指定|${ACTION_VERBS_ZH}|\\b(?:assign(?:ed)?|${ACTION_VERBS_EN}|will|must|shall)\\b`, "iu");
+const NEGATED_ACTION_PATTERN = new RegExp(
+  `(?:不|未|没有|并未|尚未|还未|无需|不再|拒绝|取消)\\s*(?:会|将|再|继续|去|来|由[^，。；;,.!?！？\\n]{0,20})?\\s*(?:${ACTION_VERBS_ZH}|安排|指定)|(?:${ACTION_VERBS_ZH}|安排|指定)\\s*(?:不了|不成|失败)|\\b(?:not|never|won't|will\\s+not|would\\s+not|isn't|is\\s+not|aren't|are\\s+not|didn't|did\\s+not|doesn't|does\\s+not|don't|do\\s+not|hasn't|has\\s+not|haven't|have\\s+not|cannot|can't|cancel(?:led)?)\\b.{0,40}\\b(?:${ACTION_VERBS_EN})\\b`,
+  "iu",
+);
+const REJECTED_ACTION_PATTERN = new RegExp(
+  `(?:否决|驳回)(?:了)?[^，。；;,.!?！？\n]{0,40}(?:${ACTION_VERBS_ZH})|\b(?:reject(?:s|ed)?|declin(?:e|es|ed))\b.{0,40}\b(?:${ACTION_VERBS_EN})\b`,
+  "iu",
+);
+
+function looksLikeConcreteActionEvidence(value) {
+  return CONCRETE_ACTION_PATTERN.test(String(value || ""));
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function actionEvidenceIsUncertainOrNegative(value) {
+  const text = String(value || "");
+  if (/[?？]/u.test(text)
+    || looksLikeDirectQuestionEvidence(text)
+    || commitmentActWasNotMade(text)
+    || /如果|假如|若(?:是|果)?|是否|能否|可否|可能|也许|或许|不一定|待定|尚未确定|预计|预期|计划|打算|考虑|未承诺|尚未承诺/u.test(text)
+    || /\b(?:if|whether|maybe|perhaps|might|could|possibly|probably|plan(?:s|ned)?\s+to|expect(?:s|ed)?\s+to|intend(?:s|ed)?\s+to|not\s+committed|uncommitted)\b/iu.test(text)) return true;
+  return NEGATED_ACTION_PATTERN.test(text) || REJECTED_ACTION_PATTERN.test(text);
+}
+
+function looksLikeDirectQuestionEvidence(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  if (/[?？]\s*$/u.test(text) || /(?:吗|嘛|呢|对吗|对不对)[。.!！]*$/u.test(text)) return true;
+  if (/\b(?:the\s+)?(?:open\s+)?question\s+(?:is|was|remains?)\s+(?:who|when|which|what|where|whether|why|how)\b/iu.test(text)) return true;
+  const hasPredicate = CONCRETE_ACTION_PATTERN.test(text) || looksLikeExplicitDecisionEvidence(text);
+  if (!hasPredicate) return false;
+  const answeredInClause = /(?:答案|结论)\s*(?:是|为)|(?:已|已经|最终|现已)\s*(?:确认|确定|明确|敲定)(?:\s*(?:由|为)|[^，。；;,.!?！？\n]{0,80}(?:谁|哪位|哪个人|何人|何时|什么时候|哪天|几号)[^，。；;,.!?！？\n]{0,80}(?:[:：]|(?:是|为|由)))/u.test(text)
+    || /\b(?:decid(?:e|ed)|confirm(?:ed)?|determin(?:e|ed)|clarif(?:y|ied))\b.{0,80}\b(?:who|when|which|what|where|whether|why|how)\b.{0,80}(?::|\b(?:is|was|will\s+be)\b)/iu.test(text);
+  const genericPolicy = /(?:无论|不论|不管)\s*(?:谁|哪位|哪个人|何人).{0,80}都/u.test(text);
+  if (!answeredInClause && !genericPolicy) {
+    const chineseWh = /谁|哪位|哪个人|何人|何时|什么时候|哪天|几号|什么|哪个|哪种/u;
+    if (evidenceClauses(text).some((clause) => (
+      chineseWh.test(clause)
+      && (CONCRETE_ACTION_PATTERN.test(clause) || looksLikeExplicitDecisionEvidence(clause))
+    ))) return true;
+    if (/是否|能否|可否|要不要|该不该|是不是/u.test(text)) return true;
+    if (/\b(?:discuss(?:ed|es|ing)?|debate(?:d|s|ing)?|wonder(?:ed|s|ing)?|ask(?:ed|s|ing)?|remain(?:s|ed)?\s+(?:unclear|unknown|unresolved)|(?:is|are|was|were)\s+(?:unclear|unknown|unresolved))\b.{0,80}\b(?:who|when|which|what|where|whether|why|how)\b/iu.test(text)) return true;
+  }
+  return /^\s*(?:(?:so|then|okay|well)\s+)?(?:who|when|which|what|where|why|how)\b\s+(?:will|would|can|could|should|is|are|do|does|did|has|have)\b/iu.test(text)
+    || /^\s*(?:(?:so|then|okay|well)\s+)?(?:will|would|can|could|should|is|are|do|does|did|has|have)\b\s+[^\s,.!?]+\s+/iu.test(text);
+}
+
+function commitmentActWasNotMade(value) {
+  const text = String(value || "");
+  const chinesePendingDecision = /(?:还|仍|尚)?\s*(?:需要|需)\s*(?:(?:就|对|针对)[^，。；;,.!?！？\n]{0,40}(?:作出|做出|形成|达成)\s*|(?:作出|做出|形成|达成)\s*)?(?:决定|决策|确认|承诺|敲定|同意|批准|通过|安排|指定)/u.test(text);
+  const chinesePostposedAbsence = /(?:最终\s*)?(?:决定|决策|确认|承诺|同意|批准|通过|安排|指定)\s*(?:仍|还|尚|暂)?\s*(?:未|没有|并未)\s*(?:最终\s*)?(?:作出|做出|形成|达成|完成|明确|敲定)/u.test(text);
+  return /(?:没有|并没有|还没有|还没|尚未|暂未|并未|未能|尚无|暂无)\s*(?:最终\s*)?(?:(?:作出|做出|形成|达成)\s*)?(?:决定|决策|确认|承诺|敲定|同意|批准|通过|安排|指定)|未\s*(?:最终\s*)?(?:作出|做出|形成|达成)\s*(?:决定|决策|确认|承诺|敲定|同意|批准|通过|安排|指定)|(?:没有人|没人|无人)\s*(?:决定|确认|承诺|同意|批准|安排|指定)|(?:不|未)\s*(?:决定|确认|承诺|敲定)/u.test(text)
+    || chinesePendingDecision
+    || chinesePostposedAbsence
+    || /\b(?:(?:(?:did|do|does|has|have|had|is|are|was|were)\s+not|(?:didn't|doesn't|don't|hasn't|haven't|hadn't|isn't|aren't|wasn't|weren't))\s+(?:yet\s+)?(?:been\s+)?(?:decid(?:e|ed)|confirm(?:ed)?|commit(?:ted)?|agree(?:d)?|approv(?:e|ed)|assign(?:ed)?)|not\s+(?:yet\s+)?(?:decided|confirmed|committed|agreed|approved|assigned)|no\s+(?:final\s+)?(?:decision|confirmation|commitment|agreement|approval|assignment)|(?:nobody|no\s+one).{0,40}\b(?:decid(?:e|ed)|confirm(?:ed)?|commit(?:ted)?|agree(?:d)?|approv(?:e|ed)|assign(?:ed)?|will)|never\s+(?:decid(?:e|ed)|confirm(?:ed)?|commit(?:ted)?|agree(?:d)?|approv(?:e|ed)|assign(?:ed)?)|(?:have|has|had)\s+yet\s+to\s+(?:decide|confirm|commit|agree|approve|assign)|(?:fail(?:s|ed)?\s+to|(?:still\s+)?need(?:s|ed)?\s+to)\s+(?:decide|confirm|commit|agree|approve|assign)|(?:must|should)\s+decide|(?:decision|confirmation|commitment|agreement|approval|assignment)\s+(?:is|remains?)\s+(?:pending|unresolved)|remains?\s+(?:undecided|unconfirmed|uncommitted))\b/iu.test(text);
+}
+
+function looksLikeAffirmativeActionEvidence(value) {
+  const text = String(value || "");
+  return looksLikeConcreteActionEvidence(text)
+    && looksLikeCommittedActionEvidence(text)
+    && !decisionEvidenceIsUncertainOrUnresolved(text)
+    && !actionEvidenceIsUncertainOrNegative(text);
+}
+
+function looksLikeCommittedActionEvidence(value) {
+  const text = String(value || "");
+  return looksLikeExplicitDecisionEvidence(text)
+    || /(?:由|让|请|安排|指定)\s*[^，。；;,.!?！？\n]{1,40}?(?:负责|完成|跟进|处理|交付|执行|推进|承担|上线|发布|批准|提交|发送|修复|实现|部署|验证|通知|准备|整理|更新|迁移)|[^，。；;,.!?！？\n]{1,24}\s*(?:负责|将|会|承诺|必须)\s*(?:完成|跟进|处理|交付|执行|推进|承担|上线|发布|批准|提交|发送|修复|实现|部署|验证|通知|准备|整理|更新|迁移)/u.test(text)
+    || /\b(?:assign(?:ed)?|will|must|shall|commit(?:s|ted)?\s+to)\b.{0,80}\b(?:complete|deliver|execute|ship|launch|publish|approve|submit|send|fix|implement|deploy|verify|notify|prepare|update|migrate|contact|schedule|report|follow\s*up)\b/iu.test(text);
+}
+
+function plausibleDueValue(value) {
+  return /今天|明天|后天|本周|下周|周[一二三四五六日天]|星期[一二三四五六日天]|月底|月末|年底|年末|\d{1,4}\s*(?:年|[-/.])\s*\d{1,2}|\d{1,2}\s*(?:月|[-/.])\s*\d{1,2}|\d{1,2}\s*(?:点|时|:)\s*\d{0,2}|\b(?:today|tomorrow|tonight|eod|eow|cob|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+(?:week|month|quarter|year))\b/iu.test(String(value || ""));
 }
 
 async function summarizeInterviewTranscript({ config, meeting, signal }) {
@@ -474,7 +1303,24 @@ async function summarizeInterviewTranscript({ config, meeting, signal }) {
 
 export async function correctTranscript({ config, meeting, signal, transcribeAudioRange }) {
   if (textProtocol(config) === "responses") {
-    return correctTranscriptWithAgent({ config, meeting, signal, transcribeAudioRange });
+    try {
+      return await correctTranscriptWithAgent({ config, meeting, signal, transcribeAudioRange });
+    } catch (error) {
+      if (!agentToolsUnsupported(error) && !agentToolsIgnored(error)) throw error;
+      const result = await correctTranscriptWithWorkflow({ config, meeting, signal });
+      return {
+        ...result,
+        agentRun: {
+          id: error.agentTrace?.[0]?.run_id || "",
+          profile: "terminology-supervisor",
+          model: config.chatModel.trim(),
+          status: "unsupported",
+          usage: error.agentUsage || {},
+          ...(error.canonicalReview ? { canonicalReview: error.canonicalReview } : {}),
+          trace: error.agentTrace || [],
+        },
+      };
+    }
   }
   return correctTranscriptWithWorkflow({ config, meeting, signal });
 }
@@ -621,12 +1467,33 @@ async function correctTranscriptWithAgent({ config, meeting, signal, transcribeA
   const profileContext = meeting.mode === "interview"
     ? `${truncateText(interviewContextForPrompt(meeting), 3_000)}\n\n通用背景 / 专有名词：\n${truncateText(fullContext, MAX_CORRECTION_CONTEXT_CHARACTERS) || "未提供"}`
     : truncateText(fullContext, MAX_CORRECTION_CONTEXT_CHARACTERS);
+  const canonicalReviews = await reviewTerminologyCanonicals({
+    config,
+    segments: original,
+    contextHint: profileContext,
+    canonicalTerms: terminologyContext.canonicalTerms,
+    explicitMappings: explicitProfileMappings,
+    signal,
+  });
+  const finalizationTerminologyContext = cloneTerminologyContext(terminologyContext);
+  finalizationTerminologyContext.reviewedCanonicalKeys = new Set();
+  for (const review of canonicalReviews.reviews) {
+    if (review.confidence !== "high") continue;
+    const canonical = String(review.canonical || "").trim();
+    const canonicalKey = correctionText(canonical);
+    if (!canonical || !canonicalKey) continue;
+    finalizationTerminologyContext.canonicalTerms.push(canonical);
+    finalizationTerminologyContext.canonicalKeys.add(canonicalKey);
+    finalizationTerminologyContext.reviewedCanonicalKeys.add(canonicalKey);
+  }
+  finalizationTerminologyContext.canonicalTerms = uniqueStrings(finalizationTerminologyContext.canonicalTerms);
   const profile = createTerminologyAgentProfile({
     segments: original,
     contextHint: profileContext,
     canonicalTerms: uniqueStrings(terminologyContext.canonicalTerms),
     explicitMappings: explicitProfileMappings,
     priorMappings: priorProfileMappings,
+    canonicalReviews: canonicalReviews.reviews,
     scanOccurrences,
     transcribeAudioRange,
     finalizeMappings: ({ mappings, joinAfter, candidates, audioReviews }) => finalizeAgentCorrection({
@@ -635,7 +1502,7 @@ async function correctTranscriptWithAgent({ config, meeting, signal, transcribeA
       joinAfter,
       candidates,
       audioReviews,
-      terminologyContext,
+      terminologyContext: finalizationTerminologyContext,
       correctionLedger: (Array.isArray(meeting.corrections) ? meeting.corrections : [])
         .filter((entry) => entry?.reason === "explicit_alias"),
     }),
@@ -646,19 +1513,26 @@ async function correctTranscriptWithAgent({ config, meeting, signal, transcribeA
     includeEncryptedReasoning: true,
     request: (body, options) => requestResponsesBody({ config, body, signal: options.signal || signal }),
   });
-  const run = await runAgent({
-    adapter,
-    profile,
-    input: profile.input,
-    initialState: profile.initialState,
-    signal,
-    policy: {
-      maxModelTurns: 24,
-      maxToolCalls: 64,
-      maxIdleTurns: 2,
-      maxToolOutputCharacters: 60_000,
-    },
-  });
+  const policy = terminologyAgentPolicy(profile);
+  let run;
+  try {
+    run = await runAgent({
+      adapter,
+      profile,
+      input: profile.input,
+      initialState: profile.initialState,
+      signal,
+      policy: {
+        ...policy,
+        maxIdleTurns: 2,
+        maxToolOutputCharacters: 60_000,
+      },
+    });
+  } catch (error) {
+    error.agentUsage = combinedTerminologyAgentUsage(error.agentUsage, canonicalReviews.usage);
+    error.canonicalReview = terminologyCanonicalReviewMetadata(canonicalReviews);
+    throw error;
+  }
   const { agentViolations: _agentViolations, ...artifact } = run.result;
   return {
     ...artifact,
@@ -666,15 +1540,300 @@ async function correctTranscriptWithAgent({ config, meeting, signal, transcribeA
       id: run.trace[0]?.run_id || "",
       profile: profile.name,
       model: config.chatModel.trim(),
-      status: "completed",
-      usage: run.usage,
+      status: canonicalReviews.status === "degraded" ? "degraded" : "completed",
+      usage: combinedTerminologyAgentUsage(run.usage, canonicalReviews.usage),
+      canonicalReview: terminologyCanonicalReviewMetadata(canonicalReviews),
       trace: run.trace,
     },
   };
 }
 
+function terminologyCanonicalReviewMetadata(review) {
+  return {
+    status: review.status,
+    requestedGroups: review.requestedGroups,
+    reviewedGroups: review.reviewedGroups,
+    highConfidenceGroups: review.highConfidenceGroups,
+    requestAttempted: review.requestAttempted,
+    ...(review.budgetLimitedGroups ? { budgetLimitedGroups: review.budgetLimitedGroups } : {}),
+    ...(review.incompleteReviewGroups ? { incompleteReviewGroups: review.incompleteReviewGroups } : {}),
+    ...(review.unreviewedGroups ? { unreviewedGroups: review.unreviewedGroups } : {}),
+    ...(review.reason ? { reason: review.reason } : {}),
+  };
+}
+
+function terminologyAgentPolicy(profile) {
+  const hints = profile?.budgetHints || {};
+  const modelTurns = boundedPolicyValue(hints.recommendedModelTurns, 24, 64, 24);
+  const readTurns = boundedPolicyValue(hints.readTurns, 0, 64, 0);
+  const sourceCharacters = Math.max(0, Number(hints.sourceCharacters) || 0);
+  const inputCharacters = String(profile?.input || "").length;
+  return {
+    maxModelTurns: modelTurns,
+    maxToolCalls: boundedPolicyValue(readTurns + 24, 64, 128, 64),
+    maxHistoryCharacters: boundedPolicyValue(
+      inputCharacters + sourceCharacters + (modelTurns * 20_000) + 100_000,
+      500_000,
+      2_000_000,
+      500_000,
+    ),
+    maxTotalTokens: boundedPolicyValue(modelTurns * 50_000, 100_000, 2_000_000, 100_000),
+    maxRunMilliseconds: boundedPolicyValue(modelTurns * 15_000, 300_000, 900_000, 300_000),
+  };
+}
+
+function boundedPolicyValue(value, minimum, maximum, fallback) {
+  const number = Math.ceil(Number(value));
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(minimum, Math.min(maximum, number));
+}
+
+async function reviewTerminologyCanonicals({
+  config,
+  segments,
+  contextHint,
+  canonicalTerms,
+  explicitMappings,
+  signal,
+}) {
+  const skipped = {
+    reviews: [],
+    status: "skipped",
+    requestedGroups: 0,
+    reviewedGroups: 0,
+    highConfidenceGroups: 0,
+    requestAttempted: false,
+    usage: {},
+  };
+  if (config.canonicalArbitration === false) return skipped;
+  const inventory = createTerminologyCanonicalReviewInventory({
+    segments,
+    canonicalTerms,
+    explicitMappings,
+  });
+  const groups = inventory
+    .slice(0, MAX_CANONICAL_REVIEW_GROUPS)
+    .map((item) => ({
+      signal_id: item.id,
+      required_disposition: item.required_disposition,
+      variants: item.terms.map((term) => ({
+        text: term.text,
+        occurrence_count: term.occurrence_count,
+      })),
+    }));
+  if (!groups.length) return skipped;
+
+  const perspectives = ["official_registry", "false_friend_critic", "naming_morphology"];
+  let confirmationBudget = MAX_CANONICAL_REVIEW_CONFIRMATIONS;
+  const plans = groups.map((group) => {
+    const requiredVotes = canonicalReviewNeedsConsensus(group) ? 3 : 1;
+    const scheduledVotes = requiredVotes === 3 && confirmationBudget >= 2 ? 3 : 1;
+    if (scheduledVotes === 3) confirmationBudget -= 2;
+    return { group, requiredVotes, scheduledVotes };
+  });
+  const jobs = plans.flatMap(({ group, scheduledVotes }) => (
+    Array.from({ length: scheduledVotes }, (_, voteIndex) => ({ group, voteIndex, perspective: perspectives[voteIndex] }))
+  ));
+  const reviewOutcome = async ({ group, voteIndex, perspective }) => {
+    try {
+      const response = await chatCompletionResult({
+        config,
+        system: `You are an independent canonical-spelling arbiter for one established public technical identifier. Infer its exact official identifier from the domain and noisy ASR surface variants. Evaluate this signal in isolation; other groups are intentionally absent. Do not vote by frequency and do not trust a spelling merely because it looks like CamelCase. Distinguish an official product, project, API, protocol, or component name from ordinary phrases. Use high confidence only when the exact public spelling and capitalization are well established; use medium or low for proprietary, ambiguous, or uncertain names. Return pure JSON only: {"reviews":[{"signal_id":"surface-1","canonical":"ExactIdentifier","confidence":"high|medium|low","rationale":"brief spelling basis"}]}. Return exactly one review for the supplied signal_id and never add transcript facts.`,
+        user: JSON.stringify({
+          domain_context: truncateText(contextHint, MAX_CANONICAL_REVIEW_CONTEXT_CHARACTERS),
+          surface_variant_group: group,
+          independent_review_perspective: perspective,
+        }),
+        signal,
+        maxOutputTokens: MAX_CANONICAL_REVIEW_OUTPUT_TOKENS,
+      });
+      const parsed = parseJsonObject(response.content);
+      const candidate = (Array.isArray(parsed?.reviews) ? parsed.reviews : [])
+        .find((review) => String(review?.signal_id || "").trim() === group.signal_id);
+      const canonical = String(candidate?.canonical || "").trim();
+      const confidence = String(candidate?.confidence || "").trim().toLocaleLowerCase("en-US");
+      const review = canonical
+        && canonical.length <= MAX_TERMINOLOGY_ENTRY_CHARACTERS
+        && ["high", "medium", "low"].includes(confidence)
+        ? { ...candidate, signal_id: group.signal_id, canonical, confidence }
+        : null;
+      return { signalId: group.signal_id, voteIndex, perspective, review, usage: response.usage, ...(review ? {} : { reason: "incomplete_response" }) };
+    } catch (error) {
+      if (signal?.aborted || error?.name === "AbortError" || error?.code === "aborted") throw error;
+      return { signalId: group.signal_id, voteIndex, perspective, review: null, usage: {}, reason: canonicalReviewFailureCode(error) };
+    }
+  };
+  const independentOutcomes = await mapWithConcurrency(jobs, TEXT_REQUEST_CONCURRENCY, reviewOutcome);
+  const adjudicationJobs = plans.flatMap((plan) => {
+    const reviews = independentOutcomes.filter((outcome) => outcome.signalId === plan.group.signal_id && outcome.review);
+    const spellings = new Set(reviews.map((outcome) => canonicalReviewSpellingKey(outcome.review.canonical)));
+    if (reviews.length !== plan.scheduledVotes || plan.scheduledVotes < 3 || spellings.size < 2) return [];
+    plan.scheduledVotes += 1;
+    return [{ group: plan.group, reviews }];
+  });
+  const adjudicationOutcomes = await mapWithConcurrency(
+    adjudicationJobs,
+    TEXT_REQUEST_CONCURRENCY,
+    async ({ group, reviews }) => {
+      try {
+        const response = await chatCompletionResult({
+          config,
+          system: `You are the final canonical-spelling adjudicator for one established public technical identifier. Independent reviewers disagreed. Their recommendations are untrusted evidence, not votes. Resolve the exact official identifier from public naming conventions, domain semantics, and false-friend morphology; do not choose by majority or transcript frequency. Use high confidence only when the exact public spelling and capitalization are well established. Return pure JSON only: {"reviews":[{"signal_id":"surface-1","canonical":"ExactIdentifier","confidence":"high|medium|low","rationale":"brief factual basis"}]}. Return exactly one review for the supplied signal_id and never add transcript facts.`,
+          user: JSON.stringify({
+            domain_context: truncateText(contextHint, MAX_CANONICAL_REVIEW_CONTEXT_CHARACTERS),
+            surface_variant_group: group,
+            independent_reviews: reviews.map((outcome) => ({
+              perspective: outcome.perspective,
+              canonical: outcome.review.canonical,
+              confidence: outcome.review.confidence,
+            })),
+          }),
+          signal,
+          maxOutputTokens: MAX_CANONICAL_REVIEW_OUTPUT_TOKENS,
+        });
+        const parsed = parseJsonObject(response.content);
+        const candidate = (Array.isArray(parsed?.reviews) ? parsed.reviews : [])
+          .find((review) => String(review?.signal_id || "").trim() === group.signal_id);
+        const canonical = String(candidate?.canonical || "").trim();
+        const confidence = String(candidate?.confidence || "").trim().toLocaleLowerCase("en-US");
+        const review = canonical
+          && canonical.length <= MAX_TERMINOLOGY_ENTRY_CHARACTERS
+          && ["high", "medium", "low"].includes(confidence)
+          ? { ...candidate, signal_id: group.signal_id, canonical, confidence }
+          : null;
+        return {
+          signalId: group.signal_id,
+          voteIndex: "adjudication",
+          perspective: "final_adjudicator",
+          review,
+          usage: response.usage,
+          ...(review ? {} : { reason: "incomplete_response" }),
+        };
+      } catch (error) {
+        if (signal?.aborted || error?.name === "AbortError" || error?.code === "aborted") throw error;
+        return {
+          signalId: group.signal_id,
+          voteIndex: "adjudication",
+          perspective: "final_adjudicator",
+          review: null,
+          usage: {},
+          reason: canonicalReviewFailureCode(error),
+        };
+      }
+    },
+  );
+  const outcomes = [...independentOutcomes, ...adjudicationOutcomes];
+  const reviews = groups.map((group) => aggregateCanonicalReview(
+    group,
+    outcomes.filter((outcome) => outcome.signalId === group.signal_id),
+  )).filter(Boolean);
+  const reviewTokens = outcomes.reduce((total, outcome) => total + Math.max(0, Number(outcome.usage?.modelTokens) || 0), 0);
+  const budgetLimitedGroups = plans.filter((plan) => plan.scheduledVotes < plan.requiredVotes).length;
+  const incompleteReviewGroups = plans.filter((plan) => (
+    outcomes.filter((outcome) => outcome.signalId === plan.group.signal_id && outcome.review).length < plan.scheduledVotes
+  )).length;
+  const unreviewedGroups = Math.max(0, inventory.length - groups.length);
+  const complete = reviews.length === groups.length
+    && budgetLimitedGroups === 0
+    && incompleteReviewGroups === 0
+    && unreviewedGroups === 0;
+  const reason = unreviewedGroups
+    ? "group_budget_exhausted"
+    : (outcomes.find((outcome) => outcome.reason)?.reason
+      || (budgetLimitedGroups ? "confirmation_budget_exhausted" : "incomplete_response"));
+  return {
+    reviews,
+    status: complete ? "completed" : "degraded",
+    requestedGroups: inventory.length,
+    reviewedGroups: reviews.length,
+    highConfidenceGroups: reviews.filter((review) => review.confidence === "high").length,
+    requestAttempted: true,
+    ...(budgetLimitedGroups ? { budgetLimitedGroups } : {}),
+    ...(incompleteReviewGroups ? { incompleteReviewGroups } : {}),
+    ...(unreviewedGroups ? { unreviewedGroups } : {}),
+    usage: { modelTurns: outcomes.length, ...(reviewTokens ? { modelTokens: reviewTokens } : {}) },
+    ...(complete ? {} : { reason }),
+  };
+}
+
+function canonicalReviewNeedsConsensus(group) {
+  return group?.required_disposition === "mapped"
+    || (Array.isArray(group?.variants) && group.variants.some((variant) => canonicalReviewIdentifierLike(variant?.text)));
+}
+
+function canonicalReviewIdentifierLike(value) {
+  const text = String(value || "").normalize("NFKC");
+  return /[_-]/u.test(text)
+    || /[a-z][A-Z]/u.test(text)
+    || /[A-Z]{2,}|[0-9+#]/u.test(text);
+}
+
+function canonicalReviewSpellingKey(value) {
+  return String(value || "").normalize("NFKC").trim();
+}
+
+function aggregateCanonicalReview(group, outcomes) {
+  const adjudication = outcomes.find((outcome) => outcome.voteIndex === "adjudication")?.review;
+  if (adjudication) return adjudication;
+  const independentOutcomes = outcomes.filter((outcome) => outcome.voteIndex !== "adjudication");
+  const votes = independentOutcomes.map((outcome) => outcome.review).filter(Boolean);
+  if (!votes.length) return null;
+  if (independentOutcomes.length < 3) {
+    const vote = votes[0];
+    return vote.confidence === "high" ? {
+      ...vote,
+      confidence: "medium",
+      rationale: `A single spelling review cannot establish canonical authority. ${String(vote.rationale || "").trim()}`.trim(),
+    } : vote;
+  }
+  const byCanonical = new Map();
+  for (const vote of votes) {
+    const key = String(vote.canonical || "").normalize("NFKC").trim();
+    if (!byCanonical.has(key)) byCanonical.set(key, []);
+    byCanonical.get(key).push(vote);
+  }
+  if (
+    votes.length === independentOutcomes.length
+    && byCanonical.size === 1
+    && votes.every((vote) => vote.confidence === "high")
+  ) return votes[0];
+  const winner = [...byCanonical.values()].sort((left, right) => right.length - left.length)[0] || [];
+  const fallback = winner[0] || votes[0];
+  return {
+    ...fallback,
+    signal_id: group.signal_id,
+    confidence: fallback.confidence === "low" ? "low" : "medium",
+    rationale: `Independent canonical reviews did not reach a high-confidence majority. ${String(fallback.rationale || "").trim()}`.trim(),
+  };
+}
+
+function canonicalReviewFailureCode(error) {
+  const status = Number(error?.status);
+  if (Number.isInteger(status) && status >= 400 && status <= 599) return `http_${status}`;
+  const code = String(error?.code || "").trim();
+  return ["timeout", "network-or-cors", "response-interrupted"].includes(code) ? code : "request_failed";
+}
+
+function combinedTerminologyAgentUsage(agentUsage, reviewUsage) {
+  const reviewTurns = Math.max(0, Number(reviewUsage?.modelTurns) || 0);
+  if (!reviewTurns) return agentUsage;
+  const reviewTokens = Math.max(0, Number(reviewUsage?.modelTokens) || 0);
+  const agentTokens = Math.max(0, Number(agentUsage?.modelTokens) || 0);
+  return {
+    ...agentUsage,
+    modelTurns: Math.max(0, Number(agentUsage?.modelTurns) || 0) + reviewTurns,
+    ...(reviewTokens || agentTokens ? { modelTokens: reviewTokens + agentTokens } : {}),
+    canonicalReviewTurns: reviewTurns,
+    ...(reviewTokens ? { canonicalReviewTokens: reviewTokens } : {}),
+  };
+}
+
 function mappingKeyForAgent(mapping) {
-  return `${correctionText(mapping?.alias)}=>${correctionText(mapping?.canonical)}`;
+  return `${agentMappingAliasKey(mapping?.alias)}=>${String(mapping?.canonical || "").normalize("NFKC").trim()}`;
+}
+
+function agentMappingAliasKey(value) {
+  return String(value || "").normalize("NFKC").trim().toLocaleLowerCase("en-US").replace(/[\s\p{Pd}_]+/gu, "");
 }
 
 function recordingAliasOccurrences(segments, alias, canonical) {
@@ -759,6 +1918,7 @@ function cloneTerminologyContext(value) {
     canonicalKeys: new Set(value.canonicalKeys),
     aliasMappings: new Map([...value.aliasMappings].map(([key, mapping]) => [key, { ...mapping }])),
     conflictingAliases: new Set(value.conflictingAliases),
+    reviewedCanonicalKeys: new Set(value.reviewedCanonicalKeys || []),
     overflow: Boolean(value.overflow),
   };
 }
@@ -773,6 +1933,28 @@ function authorizeAgentSemanticAliases({ original, mappings, candidates, audioRe
   }
   let changed = false;
   for (const [canonicalKey, group] of groups) {
+    const independentlyReviewed = terminologyContext.reviewedCanonicalKeys.has(canonicalKey);
+    if (independentlyReviewed) {
+      for (const mapping of group.mappings) {
+        if (sameCorrectionSpelling(mapping.alias, group.canonical)) continue;
+        const candidate = (Array.isArray(candidates) ? candidates : []).find((item) => (
+          item.confidence === "high" && mappingKeyForAgent(item) === mappingKeyForAgent(mapping)
+        ));
+        if (!candidate) continue;
+        const occurrenceIds = new Set(recordingAliasOccurrences(original, mapping.alias, mapping.canonical)
+          .map((occurrence) => occurrence.segment_id));
+        if (!candidate.evidence_segment_ids.some((id) => occurrenceIds.has(id))) continue;
+        const aliasKey = correctionText(mapping.alias);
+        if (!aliasKey || terminologyContext.conflictingAliases.has(aliasKey) || terminologyContext.aliasMappings.has(aliasKey)) continue;
+        terminologyContext.aliasMappings.set(aliasKey, {
+          alias: mapping.alias,
+          canonical: group.canonical,
+          reason: "recording_consensus",
+        });
+        changed = true;
+      }
+      continue;
+    }
     if (terminologyContext.canonicalKeys.has(canonicalKey)) continue;
     const anchors = group.mappings.filter((mapping) => plausibleTerminologyPair(mapping.alias, group.canonical));
     if (new Set(anchors.map((mapping) => correctionText(mapping.alias))).size < 2) continue;
@@ -790,8 +1972,11 @@ function authorizeAgentSemanticAliases({ original, mappings, candidates, audioRe
         const segment = original[id];
         return segment && (Array.isArray(audioReviews) ? audioReviews : []).some((review) => (
           review?.status === "completed"
-          && Number(review.start_seconds) < Number(segment.end_seconds)
-          && Number(review.end_seconds) > Number(segment.start_seconds)
+          && Array.isArray(review.segment_ids)
+          && review.segment_ids.includes(id)
+          && Array.isArray(review.signal_terms)
+          && review.signal_terms.some((term) => correctionText(term) === correctionText(mapping.alias))
+          && audioReviewSupportsMapping(review.evidence_text, mapping)
         ));
       });
       if (!contextAnchored || (candidate.confidence !== "high" && !audioBacked)) continue;
@@ -807,6 +1992,20 @@ function authorizeAgentSemanticAliases({ original, mappings, candidates, audioRe
   }
   if (!changed) return;
   resolveTerminologyMappingGraph(terminologyContext.aliasMappings, terminologyContext.conflictingAliases);
+}
+
+function sameCorrectionSpelling(left, right) {
+  return String(left || "").normalize("NFKC") === String(right || "").normalize("NFKC");
+}
+
+function audioReviewSupportsMapping(evidenceText, mapping) {
+  const evidence = correctionText(evidenceText);
+  const alias = correctionText(mapping?.alias);
+  const canonical = correctionText(mapping?.canonical);
+  return Boolean(evidence && (
+    (alias && evidence.includes(alias))
+    || (canonical && evidence.includes(canonical))
+  ));
 }
 
 function correctionSourceSegments(meeting) {
@@ -884,6 +2083,11 @@ export async function askTranscript({ config, meeting, question, signal }) {
 }
 
 async function chatCompletion({ config, system, user, signal, attempts = DEFAULT_TEXT_ATTEMPTS }) {
+  const result = await chatCompletionResult({ config, system, user, signal, attempts });
+  return result.content;
+}
+
+async function chatCompletionResult({ config, system, user, signal, attempts = DEFAULT_TEXT_ATTEMPTS, maxOutputTokens }) {
   if (!config.chatModel?.trim()) throw new Error("请先填写文本模型名称");
   const protocol = textProtocol(config);
   const requestBody = protocol === "responses" ? {
@@ -896,6 +2100,11 @@ async function chatCompletion({ config, system, user, signal, attempts = DEFAULT
     messages: [{ role: "system", content: system }, { role: "user", content: user }],
     temperature: 0.2,
   };
+  const outputTokenLimit = Number(maxOutputTokens);
+  if (Number.isInteger(outputTokenLimit) && outputTokenLimit > 0) {
+    if (protocol === "responses") requestBody.max_output_tokens = outputTokenLimit;
+    else requestBody.max_tokens = outputTokenLimit;
+  }
   const requestUrl = joinApiUrl(config.chatBaseUrl, config.chatPath);
   const requestHeaders = authHeaders(config.chatApiKey);
   const requestBodyJson = JSON.stringify(requestBody);
@@ -912,7 +2121,7 @@ async function chatCompletion({ config, system, user, signal, attempts = DEFAULT
       }, config);
       const content = responseText(body);
       if (!content) throw retryableError("文本模型没有返回内容");
-      return content;
+      return { content, usage: textModelUsage(body?.usage) };
     } catch (error) {
       lastError = error;
       if (requestAbortSignal.aborted || !error?.retryable || attempt === attemptCount) throw error;
@@ -921,6 +2130,16 @@ async function chatCompletion({ config, system, user, signal, attempts = DEFAULT
     }
   }
   throw lastError;
+}
+
+function textModelUsage(usage) {
+  const total = Number(usage?.total_tokens);
+  const input = Number(usage?.input_tokens ?? usage?.prompt_tokens);
+  const output = Number(usage?.output_tokens ?? usage?.completion_tokens);
+  const modelTokens = Number.isFinite(total) && total >= 0
+    ? Math.floor(total)
+    : Math.max(0, Math.floor((Number.isFinite(input) ? input : 0) + (Number.isFinite(output) ? output : 0)));
+  return modelTokens > 0 ? { modelTokens } : {};
 }
 
 async function requestResponsesBody({ config, body, signal, attempts = DEFAULT_TEXT_ATTEMPTS }) {
@@ -966,21 +2185,28 @@ function responseText(body) {
 }
 
 function splitTranscriptPromptBatches(segments, maxCharacters) {
+  return splitTranscriptPromptBatchRecords(segments, maxCharacters).map((batch) => batch.text);
+}
+
+function splitTranscriptPromptBatchRecords(segments, maxCharacters) {
   const fragments = transcriptPromptFragments(segments, Math.min(2_000, maxCharacters));
   const batches = [];
   let lines = [];
+  let segmentIds = new Set();
   let size = 0;
   for (const fragment of fragments) {
     const separatorSize = lines.length ? 1 : 0;
     if (lines.length && size + separatorSize + fragment.line.length > maxCharacters) {
-      batches.push(lines.join("\n"));
+      batches.push({ text: lines.join("\n"), segment_ids: [...segmentIds] });
       lines = [];
+      segmentIds = new Set();
       size = 0;
     }
     lines.push(fragment.line);
+    segmentIds.add(fragment.segmentIndex);
     size += (lines.length > 1 ? 1 : 0) + fragment.line.length;
   }
-  if (lines.length) batches.push(lines.join("\n"));
+  if (lines.length) batches.push({ text: lines.join("\n"), segment_ids: [...segmentIds] });
   return batches;
 }
 
@@ -1243,6 +2469,44 @@ function normalizeActionItems(value) {
   return uniqueItems(items, (item) => `${comparableText(item.task)}:${comparableText(item.owner)}:${comparableText(item.due)}`).slice(0, 60);
 }
 
+function normalizeVerifiedActionItems(value, segments = [], rawSegments = [], trustedTerms = [], correctionLedger, reconciliationLedger, agentCommitmentProofs = new Set()) {
+  if (!Array.isArray(value) || !value.length) return [];
+  const evidenceContext = prepareEvidenceContext(segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger);
+  return uniqueItems(value.map((item) => {
+    const agentReviewed = agentCommitmentProofs.has(meetingAnalysisCommitmentProof("action", item));
+    if (agentReviewed
+      ? !meetingCommitmentPassesDefensiveFloor({ kind: "action", evidence: item?.evidence })
+      : !looksLikeAffirmativeActionEvidence(item?.evidence)) return null;
+    const evidence = verifiedEvidence(
+      item?.start_seconds,
+      item?.evidence,
+      segments,
+      rawSegments,
+      trustedTerms,
+      correctionLedger,
+      reconciliationLedger,
+      item?.speaker,
+      evidenceContext,
+    );
+    if (!evidence) return null;
+    const verifiedAgentReview = agentCommitmentProofs.has(meetingAnalysisCommitmentProof("action", {
+      start_seconds: evidence.start_seconds,
+      evidence: evidence.quote,
+    }));
+    if (verifiedAgentReview
+      ? !meetingCommitmentPassesDefensiveFloor({ kind: "action", evidence: evidence.quote })
+      : !looksLikeAffirmativeActionEvidence(evidence.quote)) return null;
+    return {
+      task: evidence.quote,
+      owner: evidenceSupportsActionOwner(evidence.quote, item?.owner) ? stringOr(item?.owner, "") : "",
+      due: evidenceSupportsActionDue(evidence.quote, item?.due, item?.task, item?.owner) ? stringOr(item?.due, "") : "",
+      start_seconds: evidence.start_seconds,
+      speaker: evidence.speaker,
+      evidence: evidence.quote,
+    };
+  }).filter(Boolean), (item) => `${item.start_seconds}:${comparableText(item.evidence)}`).slice(0, 60);
+}
+
 function mergeSpeakerSummaries(value) {
   const merged = new Map();
   for (const item of normalizeSpeakerSummaries(value)) {
@@ -1256,38 +2520,6 @@ function mergeSpeakerSummaries(value) {
     existing.key_points = uniqueStrings([...existing.key_points, ...item.key_points]).slice(0, 12);
   }
   return [...merged.values()].slice(0, 30);
-}
-
-function compactMeetingSummaryForMerge(value) {
-  const compact = {
-    title: truncateText(value?.title, 120),
-    summary: truncateText(value?.summary, 1_200),
-    keywords: uniqueStrings(stringArray(value?.keywords)).slice(0, 8).map((item) => truncateText(item, 50)),
-    decisions: uniqueStrings([
-      ...stringArray(value?.decisions),
-      ...(Array.isArray(value?.decision_records) ? value.decision_records.map((item) => item?.decision) : []),
-    ]).slice(0, 8).map((item) => truncateText(item, 140)),
-    speaker_summaries: normalizeSpeakerSummaries(value?.speaker_summaries).slice(0, 4).map((item) => ({
-      speaker: truncateText(item.speaker, 50),
-      summary: truncateText(item.summary, 240),
-      key_points: item.key_points.slice(0, 3).map((point) => truncateText(point, 90)),
-    })),
-    action_items: normalizeActionItems(value?.action_items).slice(0, 5).map((item) => ({
-      task: truncateText(item.task, 160), owner: truncateText(item.owner, 50), due: truncateText(item.due, 50),
-    })),
-  };
-  while (JSON.stringify(compact).length > SUMMARY_MERGE_ITEM_CHARACTERS) {
-    if (compact.speaker_summaries.length > 2) compact.speaker_summaries.pop();
-    else if (compact.action_items.length > 2) compact.action_items.pop();
-    else if (compact.decisions.length > 4) compact.decisions.pop();
-    else if (compact.keywords.length > 4) compact.keywords.pop();
-    else if (compact.summary.length > 400) compact.summary = truncateText(compact.summary, Math.max(400, compact.summary.length - 200));
-    else if (compact.speaker_summaries.length) compact.speaker_summaries.pop();
-    else if (compact.action_items.length) compact.action_items.pop();
-    else if (compact.decisions.length) compact.decisions.pop();
-    else break;
-  }
-  return compact;
 }
 
 function mergeInterviewReportParts(values) {
@@ -1941,13 +3173,60 @@ function normalizeSpeakerSummaries(value) {
   })).filter((item) => item.summary || item.key_points.length).slice(0, 30) : [];
 }
 
-function normalizeDecisionRecords(value, segments = [], rawSegments = [], trustedTerms = [], correctionLedger, reconciliationLedger) {
+function normalizeVerifiedSpeakerSummaries(value, segments = [], rawSegments = [], trustedTerms = [], correctionLedger, reconciliationLedger) {
+  if (!Array.isArray(value) || !value.length) return [];
+  const evidenceContext = prepareEvidenceContext(segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger);
+  const grouped = new Map();
+  for (const item of value) {
+    const requestedSpeaker = stringOr(item?.speaker, "发言人");
+    const verified = uniqueItems((Array.isArray(item?.evidence) ? item.evidence : []).map((entry) => (
+      verifiedEvidence(
+        entry?.start_seconds,
+        entry?.quote,
+        segments,
+        rawSegments,
+        trustedTerms,
+        correctionLedger,
+        reconciliationLedger,
+        requestedSpeaker,
+        evidenceContext,
+      )
+    )).filter(Boolean), (entry) => `${entry.start_seconds}:${comparableText(entry.quote)}`);
+    for (const entry of verified) {
+      const key = comparableText(entry.speaker);
+      if (!grouped.has(key)) grouped.set(key, { speaker: entry.speaker, evidence: [] });
+      grouped.get(key).evidence.push(entry);
+    }
+  }
+  return [...grouped.values()].map((group) => {
+    const evidence = uniqueItems(group.evidence, (entry) => `${entry.start_seconds}:${comparableText(entry.quote)}`).slice(0, 12);
+    const keyPoints = evidence.map((entry) => entry.quote);
+    return {
+      speaker: group.speaker,
+      summary: truncateText(keyPoints.join("；"), 1_200),
+      key_points: keyPoints,
+      evidence,
+    };
+  }).filter((item) => item.evidence.length).slice(0, 30);
+}
+
+function normalizeDecisionRecords(value, segments = [], rawSegments = [], trustedTerms = [], correctionLedger, reconciliationLedger, agentCommitmentProofs = new Set()) {
   if (!Array.isArray(value) || !value.length) return [];
   const evidenceContext = prepareEvidenceContext(segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger);
   return uniqueItems(value.map((item) => {
-    if (!looksLikeDecisionEvidence(item?.evidence)) return null;
+    const agentReviewed = agentCommitmentProofs.has(meetingAnalysisCommitmentProof("decision", item));
+    if (agentReviewed
+      ? !meetingCommitmentPassesDefensiveFloor({ kind: "decision", evidence: item?.evidence })
+      : !looksLikeDecisionEvidence(item?.evidence)) return null;
     const evidence = verifiedEvidence(item?.start_seconds, item?.evidence, segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger, "", evidenceContext);
-    if (!evidence || !looksLikeDecisionEvidence(evidence.quote)) return null;
+    if (!evidence) return null;
+    const verifiedAgentReview = agentCommitmentProofs.has(meetingAnalysisCommitmentProof("decision", {
+      start_seconds: evidence.start_seconds,
+      evidence: evidence.quote,
+    }));
+    if (verifiedAgentReview
+      ? !meetingCommitmentPassesDefensiveFloor({ kind: "decision", evidence: evidence.quote })
+      : !looksLikeDecisionEvidence(evidence.quote)) return null;
     const decision = stringOr(item?.decision, "");
     const normalizedDecision = comparableText(decision);
     if (normalizedDecision.length < 2) return null;
@@ -1956,7 +3235,26 @@ function normalizeDecisionRecords(value, segments = [], rawSegments = [], truste
 }
 
 function looksLikeDecisionEvidence(value) {
-  return /决定|确认|同意|通过|批准|否决|安排|定于|负责|完成|上线|发布|交付|采用|选择|必须|需要|不得|取消|延期|\b(?:decid(?:e|ed)|agree(?:d)?|approv(?:e|ed)|reject(?:ed)?|will|must|shall|assign(?:ed)?|ship|launch|publish|deliver|complete|cancel(?:led)?|postpone(?:d)?)\b/iu.test(String(value || ""));
+  const text = String(value || "");
+  return looksLikeExplicitDecisionEvidence(text)
+    && !decisionEvidenceIsUncertainOrUnresolved(text);
+}
+
+function looksLikeExplicitDecisionEvidence(value) {
+  const text = String(value || "");
+  return /决定|确认|同意|通过|批准|否决|安排|定于|采用|选择|必须|不得|取消|延期/u.test(text)
+    || /(?:由|让|请|安排|指定)\s*[^，。；;,.!?！？\n]{1,40}?(?:负责|完成|跟进|处理|交付|执行|推进|承担|上线|发布)/u.test(text)
+    || /[^，。；;,.!?！？\n]{1,24}\s*(?:负责|将|承诺)\s*(?:完成|跟进|处理|交付|执行|推进|承担|上线|发布)/u.test(text)
+    || /\b(?:decid(?:e|ed)|agree(?:d)?|approv(?:e|ed)|reject(?:ed)?|will|must|shall|assign(?:ed)?|cancel(?:led)?|postpone(?:d)?)\b/iu.test(text);
+}
+
+function decisionEvidenceIsUncertainOrUnresolved(value) {
+  const text = String(value || "");
+  return /[?？]/u.test(text)
+    || looksLikeDirectQuestionEvidence(text)
+    || commitmentActWasNotMade(text)
+    || /是否|能否|可否|要不要|该不该|还(?:需要|需)讨论|仍(?:需要|需)讨论|(?:没有|并没有|并未|还没|还未|尚未|暂未|未能|未曾|从未|尚无|暂无)\s*(?:(?:作出|做出)?\s*(?:决定|确认|敲定|批准|同意|通过|采用|选择)|承诺)|尚(?:未|待)|未(?:决定|确认|敲定|承诺)|待(?:讨论|确认|决定|评估)|有待|可能|也许|或许|不确定|如果|假如|若(?:是|果)?|听说|据说|传闻|(?:预计|预期|计划|打算|考虑|倾向于)\s*(?:将|会|要|采用|选择|上线|发布|提交|部署|执行|完成)/u.test(text)
+    || /\b(?:if|unless|whether|maybe|might|may|could|should we|reportedly|heard|rumou?r|(?:did|does|do|has|have|had|was|were|is|are)\s+not\s+(?:yet\s+)?(?:decide(?:d)?|confirm(?:ed)?|commit(?:ted)?)|(?:didn't|doesn't|don't|hasn't|haven't|hadn't|wasn't|weren't|isn't|aren't)\s+(?:yet\s+)?(?:decide(?:d)?|confirm(?:ed)?|commit(?:ted)?)|not\s+(?:yet\s+)?(?:decided|confirmed|committed)|to be (?:discussed|decided|confirmed)|pending (?:discussion|decision|confirmation)|plan(?:s|ned)?\s+to|expect(?:s|ed)?\s+to|intend(?:s|ed)?\s+to)\b/iu.test(text);
 }
 
 function evidenceTime(value) {
@@ -2095,6 +3393,16 @@ function verifiedEvidence(value, quoteValue, segments, rawSegments = [], trusted
 function prepareEvidenceContext(segments, rawSegments, trustedTerms, correctionLedger, reconciliationLedger) {
   const displayed = segments || [];
   if (!rawSegments?.length) return { invalid: false, segmentValidity: null };
+  if (
+    Array.isArray(correctionLedger)
+    && correctionLedger.length === 0
+    && (!Array.isArray(reconciliationLedger) || reconciliationLedger.length === 0)
+    && rawSegments.length === displayed.length
+    && rawSegments.every((segment, index) => (
+      sameTranscriptGeometry(segment, displayed[index])
+      && String(segment?.text || "") === String(displayed[index]?.text || "")
+    ))
+  ) return { invalid: false, segmentValidity: displayed.map(() => true) };
   const derivedFromRaw = replayTranscriptReconciliations(rawSegments, Array.isArray(reconciliationLedger) ? reconciliationLedger : []);
   if (!derivedFromRaw) return { invalid: true, segmentValidity: [] };
   if (Array.isArray(correctionLedger)) {
@@ -2365,6 +3673,9 @@ export function formatTimestamp(seconds, vtt = false) {
 export function toMarkdown(meeting) {
   meeting = publicMeeting(meeting);
   if (meeting.mode === "interview") return toInterviewMarkdown(meeting);
+  const legacyNote = meeting.legacy_unverified_insights
+    ? ["> 注意：旧版智能纪要缺少逐字稿证据，仅供人工复核。", ""]
+    : [];
   const transcriptSegments = readableTranscriptSegments(meeting.segments);
   const actions = meeting.action_items?.length ? meeting.action_items.map((item) => `- [ ] ${item.task}${item.owner ? ` · ${item.owner}` : ""}${item.due ? ` · ${item.due}` : ""}`).join("\n") : "无";
   const highlights = meeting.highlights?.length ? meeting.highlights.flatMap((item) => [
@@ -2390,7 +3701,7 @@ export function toMarkdown(meeting) {
   return [
     `# ${meeting.title}`, "",
     `- 创建时间：${new Date(meeting.createdAt).toLocaleString("zh-CN")}`,
-    `- 时长：${formatTimestamp(meeting.duration)}`, "",
+    `- 时长：${formatTimestamp(meeting.duration)}`, "", ...legacyNote,
     "## AI 摘要", "", meeting.summary || "无", "",
     "## 关键词", "", ...(meeting.keywords?.length ? meeting.keywords.map((item) => `- ${item}`) : ["无"]), "",
     "## 会议金句", "", ...highlights,
@@ -2458,14 +3769,54 @@ export function publicMeeting(meeting) {
     action_items: meeting.action_items,
     interviewReport: meeting.interviewReport,
   }, terminologyMappings);
-  const decisionRecords = normalizeDecisionRecords(insights.decision_records, meeting.segments, meeting.rawSegments, meeting.terminology, meeting.corrections, meeting.asrReconciliations);
+  const agentCommitmentProofs = trustedMeetingCommitmentProofs(meeting);
+  const decisionRecords = normalizeDecisionRecords(
+    insights.decision_records,
+    meeting.segments,
+    meeting.rawSegments,
+    meeting.terminology,
+    meeting.corrections,
+    meeting.asrReconciliations,
+    agentCommitmentProofs,
+  );
+  const verifiedSpeakerSummaries = normalizeVerifiedSpeakerSummaries(insights.speaker_summaries, meeting.segments, meeting.rawSegments, meeting.terminology, meeting.corrections, meeting.asrReconciliations);
+  const verifiedActions = normalizeVerifiedActionItems(
+    insights.action_items,
+    meeting.segments,
+    meeting.rawSegments,
+    meeting.terminology,
+    meeting.corrections,
+    meeting.asrReconciliations,
+    agentCommitmentProofs,
+  );
+  const legacySpeakerSummaries = legacyUnverifiedSpeakerSummaries(insights.speaker_summaries, verifiedSpeakerSummaries);
+  const legacyActions = legacyUnverifiedActionItems(insights.action_items, verifiedActions);
   const result = {
-    schema: 3, title: insights.title, createdAt: meeting.createdAt, duration: meeting.duration,
+    schema: 4, title: insights.title, createdAt: meeting.createdAt, duration: meeting.duration,
     language: meeting.language || "", summary: insights.summary || "", keywords: insights.keywords || [],
-    highlights: normalizeHighlights(insights.highlights, meeting.segments, meeting.rawSegments, meeting.terminology, meeting.corrections, meeting.asrReconciliations), speaker_summaries: normalizeSpeakerSummaries(insights.speaker_summaries),
+    highlights: normalizeHighlights(insights.highlights, meeting.segments, meeting.rawSegments, meeting.terminology, meeting.corrections, meeting.asrReconciliations),
+    speaker_summaries: [...verifiedSpeakerSummaries, ...legacySpeakerSummaries],
     decisions: decisionRecords.map((item) => item.decision), decision_records: decisionRecords,
-    action_items: insights.action_items || [], segments: publicTranscriptSegments(meeting.segments || []),
+    action_items: [...verifiedActions, ...legacyActions],
+    segments: publicTranscriptSegments(meeting.segments || []),
   };
+  const publishedCommitmentProofs = meetingAnalysisCommitmentProofs({
+    decision_records: decisionRecords,
+    action_items: verifiedActions,
+  }).filter((proof) => agentCommitmentProofs.has(proof));
+  if (publishedCommitmentProofs.length) {
+    result.analysis_proof = {
+      schema: 1,
+      source_signature: meetingAnalysisSourceSignature(result.segments),
+      commitment_proofs: publishedCommitmentProofs,
+    };
+  }
+  if (legacySpeakerSummaries.length || legacyActions.length) {
+    result.legacy_unverified_insights = {
+      speaker_summaries: legacySpeakerSummaries.length,
+      action_items: legacyActions.length,
+    };
+  }
   if (meeting.mode === "interview") {
     result.mode = "interview";
     result.interviewContext = {
@@ -2480,6 +3831,22 @@ export function publicMeeting(meeting) {
   return result;
 }
 
+function legacyUnverifiedSpeakerSummaries(value, verified) {
+  const verifiedSpeakers = new Set((verified || []).map((item) => comparableText(item.speaker)));
+  return normalizeSpeakerSummaries((Array.isArray(value) ? value : []).filter((item) => (
+    !Array.isArray(item?.evidence) || item?.verification_status === "legacy_unverified"
+  )))
+    .filter((item) => !verifiedSpeakers.has(comparableText(item.speaker)))
+    .map((item) => ({ ...item, evidence: [], verification_status: "legacy_unverified" }));
+}
+
+function legacyUnverifiedActionItems(value, verified) {
+  const verifiedTasks = new Set((verified || []).map((item) => comparableText(item.task)));
+  return normalizeActionItems((Array.isArray(value) ? value : []).filter((item) => !Object.hasOwn(item || {}, "evidence")))
+    .filter((item) => !verifiedTasks.has(comparableText(item.task)))
+    .map((item) => ({ ...item, verification_status: "legacy_unverified" }));
+}
+
 function publicTranscriptSegment(segment) {
   return {
     start_seconds: Math.max(0, Number(segment?.start_seconds) || 0),
@@ -2490,7 +3857,13 @@ function publicTranscriptSegment(segment) {
 }
 
 export function buildShareHtml(meeting) {
-  const html = buildShareHtmlDocument(meeting);
+  let html = buildShareHtmlDocument(meeting);
+  html = html
+    .replace(
+      "const generic=m.mode!==\"interview\"?",
+      "const legacy=m.legacy_unverified_insights?'<p class=\"notice\">旧版智能纪要缺少逐字稿证据，仅供人工复核。</p>':'';const generic=m.mode!==\"interview\"?",
+    )
+    .replace("</header>'+interview+generic+", "</header>'+legacy+interview+generic+");
   if (meeting.mode !== "interview") return html;
   return html
     .replace("AI 辅助评估仅供面试官复核，不用于自动录用决定；请忽略敏感个人属性并核对原始证据。", "程序只校验时间和原话，不判断是否证明能力；请回听复核，不用于自动录用决定，并忽略敏感个人属性。")

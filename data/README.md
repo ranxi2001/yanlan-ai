@@ -35,4 +35,14 @@ YANLAN_LUNA_API_KEY="your-key" \
 npm run eval:terminology:agent
 ```
 
-可选设置 `MIMO_API_KEY`；Agent 判断文字证据不足时，可通过本机 `ffmpeg` 截取不超过 30 秒的范围交给 MiMo-V2.5-ASR 复核。gold spec 只在 Agent 完成后用于评分。
+可选设置 `MIMO_API_KEY`；Agent 判断文字证据不足时，可通过本机 `ffmpeg` 截取不超过 90 秒的范围交给 MiMo-V2.5-ASR 复核。gold spec 只在 Agent 完成后用于评分。
+
+## 智能会议解析评测
+
+同一份公开样本也用于真实会议 Agent 回放。评测还会运行 spec 中不含真实会议内容的语义 canary，并将每个候选的 disposition 与 gold 对比，避免所有洞察为空时空洞通过。终端只输出耗时、数量、哈希与工具调用等脱敏指标；标题、摘要和真实逐字稿正文不会写入报告：
+
+```bash
+YANLAN_LUNA_BASE_URL="https://example.com/v1" \
+YANLAN_LUNA_API_KEY="your-key" \
+npm run eval:meeting:agent
+```

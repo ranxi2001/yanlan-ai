@@ -63,7 +63,7 @@ export function createToolRegistry(tools = []) {
       const name = String(call?.name || "").trim();
       const callId = String(call?.call_id || "").trim();
       const tool = registered.get(name);
-      if (!tool) throw new ToolArgumentError(`Unknown tool: ${name || "(empty)"}`, { tool: name, callId });
+      if (!tool) throw new ToolArgumentError("Model requested an unknown tool", { tool: name, callId });
       let args;
       try {
         args = typeof call.arguments === "string" ? JSON.parse(call.arguments) : cloneJson(call.arguments);

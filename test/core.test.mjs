@@ -215,12 +215,13 @@ test("connection tests keep HTTP and transport details without retrying", async 
   try {
     globalThis.fetch = async () => {
       requests += 1;
-      return new Response(JSON.stringify({ error: "Upstream API is unreachable" }), { status: 502 });
+      return new Response(JSON.stringify({ error: "Upstream API is unreachable; echoed gpt-secret PRIVATE_TRANSCRIPT_SENTINEL" }), { status: 502 });
     };
     await assert.rejects(() => testChatConnection({ config: testConfig }), (error) => {
       assert.equal(error.code, "http");
       assert.equal(error.status, 502);
-      assert.equal(error.message, "Upstream API is unreachable（HTTP 502）");
+      assert.equal(error.message, "API 请求失败（HTTP 502）");
+      assert.doesNotMatch(JSON.stringify(error), /gpt-secret|PRIVATE_TRANSCRIPT_SENTINEL/u);
       return true;
     });
     assert.equal(requests, 1);
@@ -276,12 +277,17 @@ test("ASR retries transient upstream failures and preserves permanent failures",
     attempts = 0;
     globalThis.fetch = async () => {
       attempts += 1;
-      return new Response(JSON.stringify({ error: { message: "bad key" } }), { status: 401 });
+      return new Response(JSON.stringify({ error: { message: "bad key sk-provider-secret PRIVATE_TRANSCRIPT_SENTINEL" } }), { status: 401 });
     };
     await assert.rejects(() => transcribeAudioWithRetry({
       config,
       blob: new Blob(["wav"], { type: "audio/wav" }),
-    }, { attempts: 3, baseDelayMs: 0 }), /bad key/);
+    }, { attempts: 3, baseDelayMs: 0 }), (error) => (
+      error.code === "http"
+      && error.status === 401
+      && error.message === "API 请求失败（HTTP 401）"
+      && !/sk-provider-secret|PRIVATE_TRANSCRIPT_SENTINEL/u.test(error.message)
+    ));
     assert.equal(attempts, 1);
   } finally {
     globalThis.fetch = originalFetch;
@@ -348,6 +354,32 @@ test("public insights omit incomplete timestamp evidence", () => {
   });
   assert.deepEqual(data.highlights, []);
   assert.deepEqual(data.decision_records, []);
+});
+
+test("legacy evidence-less insights survive idempotent exports with an explicit warning", () => {
+  const legacy = {
+    ...meeting,
+    speaker_summaries: [{ speaker: "发言人 1", summary: "旧版发言总结", key_points: ["旧版要点"] }],
+    action_items: [{ task: "旧版行动项", owner: "小明", due: "明天" }],
+  };
+  const once = publicMeeting(legacy);
+  const twice = publicMeeting(once);
+  assert.equal(once.schema, 4);
+  assert.deepEqual(twice, once);
+  assert.deepEqual(once.legacy_unverified_insights, { speaker_summaries: 1, action_items: 1 });
+  assert.equal(once.speaker_summaries[0].verification_status, "legacy_unverified");
+  assert.equal(once.action_items[0].verification_status, "legacy_unverified");
+  assert.match(toMarkdown(legacy), /旧版智能纪要缺少逐字稿证据/);
+  assert.match(buildShareHtml(legacy), /旧版智能纪要缺少逐字稿证据/);
+
+  const invalidCurrent = publicMeeting({
+    ...meeting,
+    speaker_summaries: [{ speaker: "发言人 1", summary: "伪造", key_points: ["伪造"], evidence: [] }],
+    action_items: [{ task: "伪造行动", owner: "小明", due: "明天", start_seconds: 0, evidence: "从未说过" }],
+  });
+  assert.deepEqual(invalidCurrent.speaker_summaries, []);
+  assert.deepEqual(invalidCurrent.action_items, []);
+  assert.equal(invalidCurrent.legacy_unverified_insights, undefined);
 });
 
 test("GPT correction requests compact patches and preserves segment metadata", async () => {
@@ -1111,13 +1143,14 @@ test("bounded concurrency stops scheduling after failure and drains in-flight wo
 
 test("GPT summary parses structured JSON", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: "```json\n{\"title\":\"OneFly 周会\",\"summary\":\"确定了交付计划\",\"keywords\":[\"OneFly\"],\"highlights\":[{\"start_seconds\":3,\"speaker\":\"发言人 2\",\"quote\":\"由小明明天完成\",\"reason\":\"明确承诺\"}],\"speaker_summaries\":[{\"speaker\":\"发言人 2\",\"summary\":\"确认交付\",\"key_points\":[\"明天完成\"]}],\"decisions\":[\"明天交付\"],\"decision_records\":[{\"decision\":\"明天交付\",\"start_seconds\":3,\"evidence\":\"由小明明天完成\"}],\"action_items\":[{\"task\":\"完成交付\",\"owner\":\"小明\",\"due\":\"明天\"}]}\n```" } }] }), { headers: { "content-type": "application/json" } });
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: "```json\n{\"title\":\"万福来周会\",\"summary\":\"确定了交付计划\",\"keywords\":[\"万福来\"],\"summary_evidence\":[{\"start_seconds\":3,\"quote\":\"由小明明天完成\"}],\"highlights\":[{\"start_seconds\":3,\"speaker\":\"发言人 2\",\"quote\":\"由小明明天完成\",\"reason\":\"明确承诺\"}],\"speaker_summaries\":[{\"speaker\":\"发言人 2\",\"summary\":\"确认交付\",\"key_points\":[\"明天完成\"],\"evidence\":[{\"start_seconds\":3,\"quote\":\"由小明明天完成\"}]}],\"decisions\":[\"明天交付\"],\"decision_records\":[{\"decision\":\"明天交付\",\"start_seconds\":3,\"evidence\":\"由小明明天完成\"}],\"action_items\":[{\"task\":\"完成交付\",\"owner\":\"小明\",\"due\":\"明天\",\"start_seconds\":3,\"evidence\":\"由小明明天完成\"}]}\n```" } }] }), { headers: { "content-type": "application/json" } });
   try {
     const result = await summarizeTranscript({ config, meeting });
-    assert.equal(result.title, "OneFly 周会");
+    assert.equal(result.title, "万福来会议纪要");
+    assert.equal(result.summary, "[00:03] 发言人 2：由小明明天完成。");
     assert.equal(result.action_items[0].owner, "小明");
     assert.equal(result.highlights[0].start_seconds, 3);
-    assert.equal(result.speaker_summaries[0].key_points[0], "明天完成");
+    assert.equal(result.speaker_summaries[0].key_points[0], "由小明明天完成。");
     assert.equal(result.decision_records[0].evidence, "由小明明天完成。");
   } finally {
     globalThis.fetch = originalFetch;
@@ -1185,12 +1218,17 @@ test("text requests retry a transient 429 before returning the summary", async (
         headers: { "retry-after": "0" },
       });
     }
-    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ title: "已恢复", summary: "完成" }) } }] }));
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      title: "已恢复",
+      summary: "完成",
+      keywords: ["万福来"],
+      summary_evidence: [{ start_seconds: 0, quote: "今天讨论万福来" }],
+    }) } }] }));
   };
   try {
     const result = await summarizeTranscript({ config, meeting });
     assert.equal(attempts, 2);
-    assert.equal(result.title, "已恢复");
+    assert.equal(result.title, "万福来会议纪要");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1299,40 +1337,75 @@ test("evidence is rejected when the displayed segment cannot be traced to raw AS
   }
 });
 
-test("Responses API uses instructions/input and parses typed output", async () => {
+test("Responses API finalizes meeting analysis through evidence IDs and a strict terminal tool", async () => {
   const originalFetch = globalThis.fetch;
+  let requests = 0;
   globalThis.fetch = async (url, options) => {
+    requests += 1;
     assert.equal(url, "https://gpt.example/v1/responses");
     const body = JSON.parse(options.body);
     assert.equal(body.model, "gpt-5.6-luna");
-    assert.match(body.instructions, /会议纪要助手/);
-    assert.match(body.input, /今天讨论万福来/);
     assert.equal(body.store, false);
     assert.equal(body.messages, undefined);
     assert.equal(body.temperature, undefined);
-    return new Response(JSON.stringify({ output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({
-      title: "Responses 周会", summary: "已完成协议迁移", keywords: ["Responses"], decisions: [], action_items: [],
-    }) }] }] }), { headers: { "content-type": "application/json" } });
+    if (requests === 1) {
+      assert.match(body.instructions, /会议纪要助手/);
+      assert.match(body.input, /今天讨论万福来/);
+      assert.equal(body.tools, undefined);
+      return new Response(JSON.stringify({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({
+        title: "Responses 周会", summary: "讨论万福来并明确由小明完成。", keywords: ["万福来"], summary_evidence: [{ start_seconds: 0, quote: "今天讨论万福来" }], decisions: [], action_items: [],
+      }) }] }] }), { headers: { "content-type": "application/json" } });
+    }
+    assert.match(body.instructions, /meeting analysis supervisor/i);
+    assert.equal(body.parallel_tool_calls, false);
+    assert.deepEqual(body.include, ["reasoning.encrypted_content"]);
+    assert.deepEqual(body.tools.map((tool) => tool.name), ["review_meeting_commitments", "finalize_meeting_analysis"]);
+    const profileInput = JSON.parse(body.input[0].content);
+    assert.equal(profileInput.source_signature.startsWith("fnv1a32:"), true);
+    assert.deepEqual(profileInput.evidence.map((record) => record.kind), ["summary"]);
+    return new Response(JSON.stringify({
+      id: "response_analysis",
+      status: "completed",
+      output: [{
+        type: "function_call",
+        status: "completed",
+        call_id: "call_finalize_analysis",
+        name: "finalize_meeting_analysis",
+        arguments: JSON.stringify({
+          summary_evidence_ids: [profileInput.evidence[0].id],
+          highlight_ids: [],
+          speaker_summaries: [],
+        }),
+      }],
+    }), { headers: { "content-type": "application/json" } });
   };
   try {
     const result = await summarizeTranscript({ config: { ...config, chatModel: "gpt-5.6-luna", chatProtocol: "responses", chatPath: "responses" }, meeting });
-    assert.equal(result.title, "Responses 周会");
-    assert.equal(result.summary, "已完成协议迁移");
+    assert.equal(requests, 2);
+    assert.equal(result.title, "万福来会议纪要");
+    assert.equal(result.summary, "[00:00] 发言人 1：今天讨论万福来。");
+    assert.equal(result.analysisRun.profile, "meeting-analysis");
+    assert.deepEqual(result.analysisRun.usage, {
+      modelTurns: 2,
+      toolCalls: 1,
+      candidateExtractionTurns: 1,
+    });
+    assert.ok(result.analysisRun.trace.some((event) => event.type === "meeting.analysis_finalized"));
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("long meeting summaries use bounded transcript batches and retain verified evidence", async () => {
-  const segments = [...Array.from({ length: 9 }, (_, index) => ({
+test("long meeting summaries use bounded concurrent transcript batches without a serial merge tree", async () => {
+  const segments = [...Array.from({ length: 120 }, (_, index) => ({
     start_seconds: index * 10,
     end_seconds: index * 10 + 9,
     speaker: `发言人 ${index + 1}`,
-    text: `${index === 0 ? "LONG_START 会议开场。" : ""}${"常规讨论内容。".repeat(1_300)}`,
+    text: `${index === 0 ? "LONG_START 会议开场。" : ""}${"常规讨论内容。".repeat(90)}`,
   })),
-  { start_seconds: 90, end_seconds: 99, speaker: "发言人 10", text: "最终确认发布天穹计划。" },
-  { start_seconds: 100, end_seconds: 109, speaker: "发言人 11", text: "LONG_END" }];
-  const longMeeting = { ...meeting, duration: 110, segments };
+  { start_seconds: 1200, end_seconds: 1209, speaker: "发言人 121", text: "最终确认发布天穹计划。" },
+  { start_seconds: 1210, end_seconds: 1219, speaker: "发言人 122", text: "LONG_END" }];
+  const longMeeting = { ...meeting, duration: 1220, segments };
   const requests = [];
   let activeRequests = 0;
   let maxActiveRequests = 0;
@@ -1350,8 +1423,10 @@ test("long meeting summaries use bounded transcript batches and retain verified 
       } else if (user.includes("最终确认发布天穹计划")) {
         result = {
           summary: "最终确认天穹计划发布。",
-          highlights: [{ start_seconds: 90, speaker: "发言人 10", quote: "最终确认发布天穹计划", reason: "明确发布决定" }],
-          decision_records: [{ decision: "发布天穹计划", start_seconds: 90, evidence: "最终确认发布天穹计划" }],
+          keywords: ["天穹计划"],
+          summary_evidence: [{ start_seconds: 1200, quote: "最终确认发布天穹计划" }],
+          highlights: [{ start_seconds: 1200, speaker: "发言人 121", quote: "最终确认发布天穹计划", reason: "明确发布决定" }],
+          decision_records: [{ decision: "发布天穹计划", start_seconds: 1200, evidence: "最终确认发布天穹计划" }],
         };
       } else {
         result = { summary: user.includes("LONG_START") ? "会议开始常规讨论。" : "会议继续常规讨论。" };
@@ -1366,7 +1441,7 @@ test("long meeting summaries use bounded transcript batches and retain verified 
     const transcriptRequests = requests.filter((user) => user.includes("会议逐字稿"));
     const mergeRequests = requests.filter((user) => user.includes("相邻分段摘要"));
     assert.ok(transcriptRequests.length > 4);
-    assert.ok(mergeRequests.length > 1);
+    assert.equal(mergeRequests.length, 0);
     assert.equal(maxActiveRequests, 3);
     assert.ok(requests.every((user) => user.length <= 18_000));
     assert.ok(requests.every((user) => !(user.includes("LONG_START") && user.includes("LONG_END"))));
@@ -1430,7 +1505,7 @@ test("interview mode generates evidence-based report and privacy-safe exports", 
 
     const completed = { ...interview, ...result, qa: [{ role: "user", content: "内部问题" }], rawSegments: interview.segments };
     const publicData = publicMeeting(completed);
-    assert.equal(publicData.schema, 3);
+    assert.equal(publicData.schema, 4);
     assert.equal(publicData.interviewContext.role, "平台工程师");
     assert.equal(publicData.interviewReport.recommendation, "follow_up");
     assert.doesNotMatch(JSON.stringify(publicData), /机密平台|Alice|内部问题|rawSegments/);
@@ -1934,16 +2009,16 @@ test("validated semantic joins restore preceding negation and its timestamp", ()
 test("decision titles cannot reverse the polarity of contextual evidence", () => {
   const shared = publicMeeting({
     ...meeting,
-    segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: "我们不确认发布。" }],
-    decision_records: [{ decision: "确认发布", start_seconds: 0, evidence: "确认发布" }],
+    segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: "我们决定不发布。" }],
+    decision_records: [{ decision: "确认发布", start_seconds: 0, evidence: "我们决定不发布。" }],
   });
 
   assert.deepEqual(shared.decision_records, [{
-    decision: "我们不确认发布。",
+    decision: "我们决定不发布。",
     start_seconds: 0,
-    evidence: "我们不确认发布。",
+    evidence: "我们决定不发布。",
   }]);
-  assert.deepEqual(shared.decisions, ["我们不确认发布。"]);
+  assert.deepEqual(shared.decisions, ["我们决定不发布。"]);
 });
 
 test("interview competency matching preserves the requested display name across casing", async () => {
@@ -1987,12 +2062,12 @@ test("evidence always preserves conditional, modal, and hearsay context", () => 
   }
 });
 
-test("decision records publish only the complete verified evidence clause", () => {
+test("conditional, uncertain, and hearsay clauses are not published as decisions", () => {
   const cases = [
-    { text: "如果条件满足，就确认发布。", claim: "确认发布", expected: "如果条件满足，就确认发布。" },
-    { text: "我们可能确认发布。", claim: "确认发布", expected: "我们可能确认发布。" },
-    { text: "听说负责人确认发布。", claim: "确认发布", expected: "听说负责人确认发布。" },
-    { text: "We might approve the release.", claim: "approve the release", expected: "We might approve the release." },
+    { text: "如果条件满足，就确认发布。", claim: "确认发布" },
+    { text: "我们可能确认发布。", claim: "确认发布" },
+    { text: "听说负责人确认发布。", claim: "确认发布" },
+    { text: "We might approve the release.", claim: "approve the release" },
   ];
 
   for (const item of cases) {
@@ -2001,11 +2076,116 @@ test("decision records publish only the complete verified evidence clause", () =
       segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: item.text }],
       decision_records: [{ decision: item.claim, start_seconds: 0, evidence: item.claim }],
     });
-    assert.deepEqual(shared.decision_records, [{ decision: item.expected, start_seconds: 0, evidence: item.expected }]);
+    assert.deepEqual(shared.decision_records, []);
   }
 });
 
-test("punctuation never strips conditions or hearsay from evidence", () => {
+test("discussion topics and unresolved release status are not promoted to decisions or actions", () => {
+  for (const text of ["我们需要讨论上线方案。", "上线还有问题。"]) {
+    const shared = publicMeeting({
+      ...meeting,
+      segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text }],
+      decision_records: [{ decision: text, start_seconds: 0, evidence: text }],
+      action_items: [{ task: text, owner: "", due: "", start_seconds: 0, evidence: text }],
+    });
+    assert.deepEqual(shared.decision_records, []);
+    assert.deepEqual(shared.decisions, []);
+    assert.deepEqual(shared.action_items, []);
+  }
+});
+
+test("denied decisions and uncommitted actions are removed from public meeting data", () => {
+  const cases = [
+    { text: "目前没有决定采用新方案。", kind: "decision" },
+    { text: "We did not decide to launch Friday.", kind: "decision" },
+    { text: "李雷不一定会完成部署。", kind: "action" },
+    { text: "李雷预计完成提交，但尚未承诺。", kind: "action" },
+    { text: "Alex plans to deploy Friday but is not committed.", kind: "action" },
+  ];
+
+  for (const item of cases) {
+    const shared = publicMeeting({
+      ...meeting,
+      segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text: item.text }],
+      decision_records: item.kind === "decision"
+        ? [{ decision: item.text, start_seconds: 0, evidence: item.text }]
+        : [],
+      action_items: item.kind === "action"
+        ? [{ task: item.text, owner: "", due: "", start_seconds: 0, evidence: item.text }]
+        : [],
+    });
+    assert.deepEqual(shared.decision_records, [], item.text);
+    assert.deepEqual(shared.action_items, [], item.text);
+  }
+});
+
+test("direct questions and absent commitments cannot become verified decisions or actions", () => {
+  const cases = [
+    ["我们没有决定发布。", 0, 0],
+    ["关于发布，未作出决定。", 0, 0],
+    ["关于发布，尚无最终决定。", 0, 0],
+    ["我们需要就发布方案作出决定。", 0, 0],
+    ["我们并没有承诺完成部署。", 0, 0],
+    ["我们不决定发布。", 0, 0],
+    ["我们不确认发布。", 0, 0],
+    ["没人承诺完成部署。", 0, 0],
+    ["谁负责发布。", 0, 0],
+    ["这个版本谁负责发布。", 0, 0],
+    ["发布由谁负责。", 0, 0],
+    ["小明什么时候完成部署。", 0, 0],
+    ["小明负责发布吗。", 0, 0],
+    ["关于发布，最终决定仍未作出。", 0, 0],
+    ["我们决定不发布。", 1, 0],
+    ["我们确认本周不发布。", 1, 0],
+    ["我们否决了发布方案。", 1, 0],
+    ["我们没有决定不发布。", 0, 0],
+    ["由小明明天负责发布。", 1, 1],
+    ["小明必须批准发布。", 1, 1],
+    ["无论谁负责发布都必须跑回归。", 1, 1],
+    ["关于谁负责发布，最终明确为由小明负责。", 1, 1],
+    ["我们已经明确谁负责发布：小明。", 1, 1],
+    ["We did not decide to ship.", 0, 0],
+    ["We never decided to ship.", 0, 0],
+    ["We have yet to decide to ship.", 0, 0],
+    ["We failed to decide to ship.", 0, 0],
+    ["We need to decide who will ship.", 0, 0],
+    ["We still need to decide when Alex will deploy.", 0, 0],
+    ["The question is who will ship.", 0, 0],
+    ["We discussed who will ship Friday.", 0, 0],
+    ["It remains unclear who will ship Friday.", 0, 0],
+    ["We have not committed to deploy.", 0, 0],
+    ["We made no decision on shipping.", 0, 0],
+    ["No one committed to deploy.", 0, 0],
+    ["Who will ship tomorrow.", 0, 0],
+    ["When will Alex deploy.", 0, 0],
+    ["Will Alex ship tomorrow.", 0, 0],
+    ["Is Alex responsible for publishing.", 0, 0],
+    ["We decided not to ship.", 1, 0],
+    ["We agreed not to deploy Friday.", 1, 0],
+    ["We decided Alex will not ship tomorrow.", 1, 0],
+    ["We never decided not to ship.", 0, 0],
+    ["Alex will ship tomorrow.", 1, 1],
+    ["Alex must approve the release.", 1, 1],
+    ["Alex committed to deploy Friday.", 0, 1],
+    ["We decided who will ship: Alex.", 1, 1],
+    ["We already clarified who will ship: Alex.", 1, 1],
+    ["The person who will ship is Alex.", 1, 1],
+    ["Whoever ships must run tests.", 1, 1],
+  ];
+
+  for (const [text, expectedDecisions, expectedActions] of cases) {
+    const shared = publicMeeting({
+      ...meeting,
+      segments: [{ start_seconds: 0, end_seconds: 5, speaker: "A", text }],
+      decision_records: [{ decision: text, start_seconds: 0, evidence: text }],
+      action_items: [{ task: text, owner: "", due: "", start_seconds: 0, evidence: text }],
+    });
+    assert.equal(shared.decision_records.length, expectedDecisions, `decision: ${text}`);
+    assert.equal(shared.action_items.length, expectedActions, `action: ${text}`);
+  }
+});
+
+test("punctuation preserves qualified highlight evidence without promoting it to a decision", () => {
   const cases = [
     { text: "如果条件满足；就确认发布。", claim: "就确认发布", expected: "如果条件满足；就确认发布。" },
     { text: "If all tests pass; approve the release.", claim: "approve the release", expected: "If all tests pass; approve the release." },
@@ -2020,7 +2200,7 @@ test("punctuation never strips conditions or hearsay from evidence", () => {
       decision_records: [{ decision: item.claim, start_seconds: 0, evidence: item.claim }],
     });
     assert.equal(shared.highlights[0].quote, item.expected);
-    assert.equal(shared.decision_records[0].decision, item.expected);
+    assert.deepEqual(shared.decision_records, []);
   }
 });
 

@@ -31,23 +31,28 @@ import { createKeyBackup, parseKeyBackup } from "./key-backup.js";
 import { deleteRecording, getRecording, getRecordingChunks, saveRecording, saveRecordingChunk } from "./storage.js";
 
 const MEETINGS_KEY = "yanlan.meetings.v1";
+const MEETING_TOMBSTONE_PREFIX = "yanlan.meeting.deleted.v1.";
 const CONFIG_KEY = "yanlan.config.v1";
 const LEGACY_ASR_SESSION_KEY = "yanlan.asr-key.v1";
 const LEGACY_CHAT_SESSION_KEY = "yanlan.chat-key.v1";
 const ACTIVE_RECORDING_SESSION_KEY = "yanlan.active-recording.v1";
+const SHARED_MEETING_LOCATION = new URLSearchParams(location.hash.slice(1)).has("share");
 const MAX_MEETINGS = 40;
 const MAX_RECORDING_SECONDS = 4 * 60 * 60;
 const ASR_REQUEST_CONCURRENCY = 2;
 const RECORDING_HEARTBEAT_MS = 1_000;
 const RECORDING_STALE_MS = 4_000;
 const ACTIVE_TASK_STATUSES = new Set(["recording", "recovering", "transcribing", "correcting", "summarizing"]);
-const recoveringMeetingIds = new Set();
+const recordingRecoveryRuns = new Map();
 const connectionTestRuns = {
   asr: { token: 0, controller: null },
   chat: { token: 0, controller: null },
 };
 const insightRetryRuns = new Map();
 const meetingProcessingRuns = new Map();
+const questionRuns = new Map();
+const deletingMeetingIds = new Set();
+const shareGenerationRuns = { token: 0, meetingId: null, ready: null };
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
@@ -117,6 +122,8 @@ async function initialize() {
     state.activeId = shared.id;
     state.sharedMode = true;
   } else {
+    purgeTombstonedMeetingsFromStorage();
+    await cleanupTombstonedMeetingAudio();
     await recoverInterruptedRecordings();
   }
   render();
@@ -185,6 +192,7 @@ function bindEvents() {
     if (!event.target.closest(".menu-wrap")) closeExportMenu();
   });
   window.addEventListener("beforeunload", handleBeforeUnload);
+  window.addEventListener("storage", handleMeetingStorageChange);
 }
 
 function render() {
@@ -211,21 +219,25 @@ function renderHistory() {
     <div class="history-item ${meeting.id === state.activeId ? "active" : ""}" data-meeting-id="${escapeHtml(meeting.id)}">
       <span class="history-icon ${meeting.mode === "interview" ? "interview" : ""} is-${task.state}"><i data-lucide="${statusIcon(meeting.status, meeting.mode, task.state)}"></i></span>
       <span class="history-text"><span class="history-title">${escapeHtml(meeting.title)}</span><span class="history-date">${escapeHtml(formatHistoryDate(meeting.createdAt))}</span></span>
-      ${meeting.readOnly ? "" : `<button class="history-delete" data-delete-id="${escapeHtml(meeting.id)}" title="删除记录" aria-label="删除记录"${state.recorder?.meeting.id === meeting.id ? " disabled" : ""}><i data-lucide="trash-2"></i></button>`}
+      ${meeting.readOnly ? "" : `<button class="history-delete" data-delete-id="${escapeHtml(meeting.id)}" title="删除记录" aria-label="删除记录"${state.recorder?.meeting.id === meeting.id || isRunningTask(meeting) ? " disabled" : ""}><i data-lucide="trash-2"></i></button>`}
     </div>`;
   }).join("");
 }
 
 function renderHeader(meeting) {
   elements.meetingTitle.value = meeting?.title || state.draftTitle;
-  elements.meetingTitle.readOnly = Boolean(meeting?.readOnly);
+  elements.meetingTitle.readOnly = Boolean(meeting?.readOnly || insightRetryInProgress(meeting) || isMeetingDeleting(meeting));
   const hasTranscript = Boolean(meeting?.segments?.length && (meeting.readOnly || meeting.status === "done"));
   const hasAudio = Boolean(meeting?.hasRecording && !meeting?.readOnly);
-  elements.copyButton.disabled = !hasTranscript;
-  elements.shareButton.disabled = !hasTranscript;
-  elements.exportButton.disabled = !hasTranscript && !hasAudio;
+  const derivedContentLocked = insightRetryInProgress(meeting) || isMeetingDeleting(meeting);
+  elements.copyButton.disabled = !hasTranscript || derivedContentLocked;
+  elements.shareButton.disabled = !hasTranscript || derivedContentLocked;
+  elements.exportButton.disabled = ((!hasTranscript || derivedContentLocked) && !hasAudio) || isMeetingDeleting(meeting);
+  elements.copyShareButton.disabled = !hasTranscript || derivedContentLocked;
+  elements.copySharePrimaryButton.disabled = !hasTranscript || derivedContentLocked;
+  elements.downloadShareButton.disabled = !hasTranscript || derivedContentLocked;
   elements.exportMenu.querySelectorAll("[data-export]").forEach((button) => {
-    button.disabled = button.dataset.export === "audio" ? !hasAudio : !hasTranscript;
+    button.disabled = isMeetingDeleting(meeting) || (button.dataset.export === "audio" ? !hasAudio : (!hasTranscript || derivedContentLocked));
   });
   if (!meeting) {
     elements.meetingMeta.textContent = "尚未开始";
@@ -267,7 +279,7 @@ function renderMain(meeting) {
   }
   if (meeting?.status === "error") {
     elements.errorMessage.textContent = meeting.error || "处理失败，请稍后重试。";
-    elements.retryButton.disabled = !meeting.hasRecording && !meeting.recoveryPending && state.recorder?.meeting.id !== meeting.id;
+    elements.retryButton.disabled = isMeetingDeleting(meeting) || (!meeting.hasRecording && !meeting.recoveryPending && state.recorder?.meeting.id !== meeting.id);
   }
   if (liveOrTranscript) renderTranscript(meeting);
   renderPlayer(meeting);
@@ -321,11 +333,12 @@ function renderInterviewAssessment(meeting) {
     return;
   }
   const correction = correctionNotice(meeting);
+  const retry = meeting.summaryError ? summaryRetryNotice(meeting) : "";
   const coverage = (report.competencies || []).filter((item) => item.evidence?.length).map((item) => (
     `<li>${escapeHtml(item.name)}：${item.evidence.length} 条逐字稿原话，需核对说话人并人工判断</li>`
   )).join("") || "<li>没有通过校验的逐字稿原话</li>";
   const risks = report.risks?.length ? report.risks.map((item) => `<li>${escapeHtml(item)}</li>`).join("") : "<li>没有识别到明确待核实项</li>";
-  elements.insightContent.innerHTML = `${correction}<p class="interview-disclaimer"><i data-lucide="shield-check"></i><span>AI 只整理补充追问材料，不自动推进或淘汰候选人。程序只校验时间与原话，是否支持能力判断仍需面试官回听复核。</span></p><section class="insight-section"><h2 class="insight-label"><i data-lucide="scan-search"></i><span>证据复核</span></h2><p class="summary-text">${escapeHtml(report.overview || meeting.summary || "证据不足")}</p></section><div class="strength-risk-grid"><section><h2 class="insight-label"><i data-lucide="list-checks"></i><span>证据覆盖</span></h2><ul>${coverage}</ul></section><section><h2 class="insight-label"><i data-lucide="search-alert"></i><span>风险与待核实</span></h2><ul>${risks}</ul></section></div>`;
+  elements.insightContent.innerHTML = `${correction}${retry}<p class="interview-disclaimer"><i data-lucide="shield-check"></i><span>AI 只整理补充追问材料，不自动推进或淘汰候选人。程序只校验时间与原话，是否支持能力判断仍需面试官回听复核。</span></p><section class="insight-section"><h2 class="insight-label"><i data-lucide="scan-search"></i><span>证据复核</span></h2><p class="summary-text">${escapeHtml(report.overview || meeting.summary || "证据不足")}</p></section><div class="strength-risk-grid"><section><h2 class="insight-label"><i data-lucide="list-checks"></i><span>证据覆盖</span></h2><ul>${coverage}</ul></section><section><h2 class="insight-label"><i data-lucide="search-alert"></i><span>风险与待核实</span></h2><ul>${risks}</ul></section></div>`;
 }
 
 function renderInterviewEvidence(meeting) {
@@ -360,7 +373,7 @@ function renderSummary(meeting) {
   const summary = meeting.summaryError
     ? summaryRetryNotice(meeting)
     : `<p class="summary-text">${escapeHtml(meeting.summary || "暂无摘要")}</p>`;
-  elements.insightContent.innerHTML = `${correction}<section class="insight-section"><h2 class="insight-label"><i data-lucide="align-left"></i><span>内容摘要</span></h2>${summary}</section><section class="insight-section"><h2 class="insight-label"><i data-lucide="tags"></i><span>关键词</span></h2>${keywords}</section>`;
+  elements.insightContent.innerHTML = `${correction}${analysisRunNotice(meeting)}<section class="insight-section"><h2 class="insight-label"><i data-lucide="align-left"></i><span>内容摘要</span></h2>${summary}</section><section class="insight-section"><h2 class="insight-label"><i data-lucide="tags"></i><span>关键词</span></h2>${keywords}</section>`;
 }
 
 function renderHighlights(meeting) {
@@ -384,7 +397,7 @@ function renderSpeakerSummaries(meeting) {
     elements.insightContent.innerHTML = '<div class="insight-empty"><i data-lucide="users"></i><span>没有足够发言内容生成发言人总结</span></div>';
     return;
   }
-  elements.insightContent.innerHTML = `<div class="speaker-summary-list">${meeting.speaker_summaries.map((item, index) => `<section class="speaker-summary-item"><div class="speaker-summary-head"><span class="speaker-avatar">${escapeHtml(speakerInitial(item.speaker, index))}</span><h2>${escapeHtml(item.speaker || "发言人")}</h2></div><p>${escapeHtml(item.summary || "无")}</p>${item.key_points?.length ? `<ul>${item.key_points.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>` : ""}</section>`).join("")}</div>`;
+  elements.insightContent.innerHTML = `${legacyUnverifiedInsightsNotice(meeting)}<div class="speaker-summary-list">${meeting.speaker_summaries.map((item, index) => `<section class="speaker-summary-item"><div class="speaker-summary-head"><span class="speaker-avatar">${escapeHtml(speakerInitial(item.speaker, index))}</span><h2>${escapeHtml(item.speaker || "发言人")}</h2></div><p>${escapeHtml(item.summary || "无")}</p>${item.key_points?.length ? `<ul>${item.key_points.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>` : ""}</section>`).join("")}</div>`;
 }
 
 function renderActions(meeting) {
@@ -399,13 +412,14 @@ function renderActions(meeting) {
   }
   const decisions = records.length ? `<section class="decision-section"><h2 class="insight-label"><i data-lucide="gavel"></i><span>关键决策</span></h2><div class="decision-record-list">${records.map((item) => `<button class="decision-record" type="button"${item.start_seconds == null ? "" : ` data-seek="${Number(item.start_seconds) || 0}"`}><div>${item.start_seconds == null ? "" : `<time>${formatTimestamp(item.start_seconds)}</time>`}<strong>${escapeHtml(item.decision)}</strong>${item.start_seconds == null ? "" : '<i data-lucide="play"></i>'}</div>${item.evidence ? `<p>“${escapeHtml(item.evidence)}”</p>` : ""}</button>`).join("")}</div></section>` : "";
   const actions = meeting.action_items?.length ? `<section class="action-section"><h2 class="insight-label"><i data-lucide="list-checks"></i><span>行动项</span></h2><ul class="action-list">${meeting.action_items.map((item) => `<li class="action-item"><i data-lucide="square-check-big"></i><div><p class="action-task">${escapeHtml(item.task)}</p><div class="action-meta">${item.owner ? `<span><i data-lucide="user"></i>${escapeHtml(item.owner)}</span>` : ""}${item.due ? `<span><i data-lucide="calendar-clock"></i>${escapeHtml(item.due)}</span>` : ""}${!item.owner && !item.due ? "待确认负责人和时间" : ""}</div></div></li>`).join("")}</ul></section>` : "";
-  elements.insightContent.innerHTML = `${decisions}${actions}`;
+  elements.insightContent.innerHTML = `${legacyUnverifiedInsightsNotice(meeting)}${decisions}${actions}`;
 }
 
 function renderQa(meeting) {
   const messages = meeting.qa || [];
   const interview = meeting.mode === "interview";
-  elements.insightContent.innerHTML = `<div class="qa-view"><div class="qa-messages">${messages.length ? messages.map((message) => `<div class="qa-message ${message.role}"><span>${message.role === "user" ? "你" : "AI"}</span><p>${escapeHtml(message.content)}</p></div>`).join("") : `<div class="qa-starter"><i data-lucide="message-circle-question"></i><span>${interview ? "只基于岗位信息和逐字稿证据追问" : "基于校正后的逐字稿提问"}</span></div>`}</div>${meeting.readOnly ? '<p class="share-hint">分享稿为只读模式，不能调用你的 API。</p>' : `<form class="qa-composer" id="qaForm"><textarea id="questionInput" rows="2" maxlength="1000" placeholder="${interview ? "例如：候选人对故障恢复给出了哪些具体证据？" : "例如：会议最终决定了什么？"}" required></textarea><button class="icon-button" aria-label="发送问题" title="发送问题" ${meeting.asking ? "disabled" : ""}><i data-lucide="${meeting.asking ? "loader-circle" : "send"}"></i></button></form>`}</div>`;
+  const blocked = meeting.asking || isRunningTask(meeting);
+  elements.insightContent.innerHTML = `<div class="qa-view"><div class="qa-messages">${messages.length ? messages.map((message) => `<div class="qa-message ${message.role}"><span>${message.role === "user" ? "你" : "AI"}</span><p>${escapeHtml(message.content)}</p></div>`).join("") : `<div class="qa-starter"><i data-lucide="message-circle-question"></i><span>${interview ? "只基于岗位信息和逐字稿证据追问" : "基于校正后的逐字稿提问"}</span></div>`}</div>${meeting.readOnly ? '<p class="share-hint">分享稿为只读模式，不能调用你的 API。</p>' : `<form class="qa-composer" id="qaForm"><textarea id="questionInput" rows="2" maxlength="1000" placeholder="${interview ? "例如：候选人对故障恢复给出了哪些具体证据？" : "例如：会议最终决定了什么？"}" ${blocked ? "disabled" : ""} required></textarea><button class="icon-button" aria-label="发送问题" title="发送问题" ${blocked ? "disabled" : ""}><i data-lucide="${meeting.asking ? "loader-circle" : "send"}"></i></button></form>`}</div>`;
   requestAnimationFrame(() => { const list = elements.insightContent.querySelector(".qa-messages"); if (list) list.scrollTop = list.scrollHeight; });
 }
 
@@ -536,6 +550,7 @@ function saveInterviewContext(event) {
 
 function prepareReplacement() {
   const meeting = activeMeeting();
+  if (isMeetingDeleting(meeting)) return;
   state.draftMode = meeting?.mode === "interview" ? "interview" : "meeting";
   state.draftInterview = null;
   if (meeting?.mode === "interview") {
@@ -551,6 +566,7 @@ function renderPlayer(meeting) {
   if (!visible) {
     cleanupPlayerUrl();
     elements.audioPlayer.removeAttribute("src");
+    delete elements.audioPlayer.dataset.meetingId;
     return;
   }
   if (elements.audioPlayer.dataset.meetingId === meeting.id && elements.audioPlayer.src) return;
@@ -594,8 +610,12 @@ async function recoverInterruptedRecordings() {
 }
 
 async function recoverInterruptedMeeting(meetingId) {
+  if (meetingDeletionWasRecorded(meetingId)) {
+    await cleanupDeletedMeetingAudio(meetingId);
+    return;
+  }
   const meeting = state.meetings.find((item) => item.id === meetingId);
-  if (!meeting || recoveringMeetingIds.has(meetingId)) return;
+  if (!meeting || recordingRecoveryRuns.has(meetingId)) return;
   const latest = storedMeeting(meetingId) || meeting;
   if (latest.status !== "recording" && !latest.recoveryPending) {
     Object.assign(meeting, latest);
@@ -611,14 +631,17 @@ async function recoverInterruptedMeeting(meetingId) {
     return;
   }
 
-  recoveringMeetingIds.add(meetingId);
+  const controller = new AbortController();
+  recordingRecoveryRuns.set(meetingId, controller);
   meeting.status = "recovering";
   render();
   try {
     const existing = await getRecording(meetingId);
+    assertMeetingRunCurrent(meeting, controller, recordingRecoveryRuns, "Recording recovery was superseded");
     let blob = existing?.blob;
     if (!blob) {
       const chunks = await getRecordingChunks(meetingId);
+      assertMeetingRunCurrent(meeting, controller, recordingRecoveryRuns, "Recording recovery was superseded");
       const committedChunks = Number(latest.recordingChunkCount);
       const observedChunks = Number(latest.recordingObservedChunkCount);
       const stoppedExpectedChunks = Number.isInteger(observedChunks) ? observedChunks : committedChunks;
@@ -637,10 +660,13 @@ async function recoverInterruptedMeeting(meetingId) {
         throw error;
       }
       blob = new Blob(chunks.map((chunk) => chunk.blob), { type: latest.sourceType || chunks[0]?.mimeType || "audio/webm" });
+      assertMeetingRunCurrent(meeting, controller, recordingRecoveryRuns, "Recording recovery was superseded");
       await saveRecording(meetingId, blob, {
         fileName: latest.sourceName || chunks[0]?.fileName || `恢复录音.${extensionForMime(blob.type)}`,
         mimeType: blob.type,
       });
+      if (meetingDeletionWasRecorded(meetingId)) await cleanupDeletedMeetingAudio(meetingId);
+      assertMeetingRunCurrent(meeting, controller, recordingRecoveryRuns, "Recording recovery was superseded");
     }
     if (!blob?.size) throw new Error("恢复后的录音为空");
     let probedDuration;
@@ -649,6 +675,7 @@ async function recoverInterruptedMeeting(meetingId) {
     } catch (error) {
       throw new Error(`恢复后的录音无法被浏览器解码：${error.message}`);
     }
+    assertMeetingRunCurrent(meeting, controller, recordingRecoveryRuns, "Recording recovery was superseded");
     const recoveredDuration = audioDurationOrNull(probedDuration) ?? storedAudioDuration(latest.duration);
     const recoveryNote = latest.recordingStopped
       ? "录音已从停止时完整落盘的分片恢复。请重新生成逐字稿。"
@@ -674,7 +701,15 @@ async function recoverInterruptedMeeting(meetingId) {
     saveAndRender();
     showToast("已恢复崩溃前增量保存的录音，请重新生成逐字稿");
   } catch (error) {
+    if (controller.signal.aborted || meetingDeletionWasRecorded(meetingId) || !state.meetings.includes(meeting)) {
+      await cleanupDeletedMeetingAudio(meetingId);
+      return;
+    }
     const saved = await getRecording(meetingId).catch(() => null);
+    if (controller.signal.aborted || meetingDeletionWasRecorded(meetingId) || !state.meetings.includes(meeting)) {
+      await cleanupDeletedMeetingAudio(meetingId);
+      return;
+    }
     meeting.status = "error";
     meeting.hasRecording = Boolean(saved?.blob?.size);
     meeting.recoveryPending = !meeting.hasRecording && !error.recoveryTerminal;
@@ -684,11 +719,12 @@ async function recoverInterruptedMeeting(meetingId) {
     if (sessionMatches) sessionStorage.removeItem(ACTIVE_RECORDING_SESSION_KEY);
     saveAndRender();
   } finally {
-    recoveringMeetingIds.delete(meetingId);
+    if (recordingRecoveryRuns.get(meetingId) === controller) recordingRecoveryRuns.delete(meetingId);
   }
 }
 
 function storedMeeting(meetingId) {
+  if (meetingDeletionWasRecorded(meetingId)) return null;
   try {
     const meetings = JSON.parse(localStorage.getItem(MEETINGS_KEY) || "[]");
     return Array.isArray(meetings) ? meetings.find((meeting) => meeting.id === meetingId) || null : null;
@@ -730,6 +766,10 @@ async function handleFileSelection(event) {
     render();
     await processStoredAudio(meeting, file, file.name, duration);
   } catch (error) {
+    if (meetingDeletionWasRecorded(meeting.id) || !state.meetings.includes(meeting)) {
+      await cleanupDeletedMeetingAudio(meeting.id);
+      return;
+    }
     failMeeting(meeting, error);
   }
 }
@@ -740,35 +780,58 @@ async function processStoredAudio(
   fileName,
   probedDuration = audioDurationOrNull(meeting.duration),
   processingConfig = { ...state.config },
+  existingController = null,
 ) {
-  const uploadError = mimoUploadLimitError(blob, probedDuration, processingConfig);
-  if (uploadError) throw uploadError;
-  meeting.status = "transcribing";
-  meeting.processingDetail = "正在准备音频";
-  meeting.error = "";
-  meeting.transcriptIncomplete = false;
-  resetCorrectionResult(meeting);
-  resetSummaryResult(meeting);
-  meeting.qa = [];
-  meeting.rawSegments = [];
-  meeting.segments = [];
-  meeting.asrQualityEvents = [];
-  meeting.asrReconciliations = [];
-  meeting.terminology = [];
-  meeting.corrections = [];
-  meeting.rejectedCorrections = 0;
-  saveAndRender();
-  const transcription = await transcribeStoredBlob(meeting, blob, fileName, probedDuration, processingConfig);
-  meeting.rawSegments = transcription.rawSegments;
-  meeting.segments = transcription.segments;
-  if (!meeting.segments.length) throw new Error("MiMo 没有返回可用的逐字稿");
-  await enrichMeeting(meeting, processingConfig);
+  const controller = existingController || new AbortController();
+  if (!existingController) {
+    meetingProcessingRuns.get(meeting.id)?.abort(new DOMException("Meeting processing superseded", "AbortError"));
+    meetingProcessingRuns.set(meeting.id, controller);
+  }
+  try {
+    assertMeetingRunCurrent(meeting, controller, meetingProcessingRuns, "Meeting processing was superseded");
+    const uploadError = mimoUploadLimitError(blob, probedDuration, processingConfig);
+    if (uploadError) throw uploadError;
+    questionRuns.get(meeting.id)?.abort(new DOMException("Transcript processing started", "AbortError"));
+    meeting.status = "transcribing";
+    meeting.processingDetail = "正在准备音频";
+    meeting.error = "";
+    meeting.transcriptIncomplete = false;
+    resetCorrectionResult(meeting);
+    resetSummaryResult(meeting);
+    meeting.qa = [];
+    meeting.rawSegments = [];
+    meeting.segments = [];
+    meeting.asrQualityEvents = [];
+    meeting.asrReconciliations = [];
+    meeting.terminology = [];
+    meeting.corrections = [];
+    meeting.rejectedCorrections = 0;
+    saveAndRender();
+    assertMeetingRunCurrent(meeting, controller, meetingProcessingRuns, "Meeting processing was superseded");
+    const transcription = await transcribeStoredBlob(
+      meeting,
+      blob,
+      fileName,
+      probedDuration,
+      processingConfig,
+      controller.signal,
+    );
+    assertMeetingRunCurrent(meeting, controller, meetingProcessingRuns, "Meeting processing was superseded");
+    meeting.rawSegments = transcription.rawSegments;
+    meeting.segments = transcription.segments;
+    if (!meeting.segments.length) throw new Error("MiMo 没有返回可用的逐字稿");
+    await enrichMeeting(meeting, processingConfig);
+  } finally {
+    if (meetingProcessingRuns.get(meeting.id) === controller) meetingProcessingRuns.delete(meeting.id);
+  }
 }
 
-async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = audioDurationOrNull(meeting.duration), processingConfig = { ...state.config }) {
+async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = audioDurationOrNull(meeting.duration), processingConfig = { ...state.config }, signal) {
+  throwIfSignalAborted(signal);
   if (processingConfig.asrProtocol === "openai-transcriptions") {
     updateMeetingTaskProgress(meeting, "正在上传并转写音频");
-    const result = await transcribeAudioWithRetry({ config: processingConfig, blob, fileName, language: meeting.language });
+    const result = await transcribeAudioWithRetry({ config: processingConfig, blob, fileName, language: meeting.language, signal });
+    throwIfSignalAborted(signal);
     const rawSegments = normalizeSegments(result.segments, meeting.duration);
     const reconciled = reconcileTranscriptSegments(rawSegments);
     meeting.asrReconciliations = reconciled.reconciliations;
@@ -777,7 +840,9 @@ async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = au
   const uploadError = mimoUploadLimitError(blob, probedDuration, processingConfig);
   if (uploadError) throw uploadError;
   try {
+    throwIfSignalAborted(signal);
     const decoded = await decodeAudio(blob);
+    throwIfSignalAborted(signal);
     meeting.duration = storedAudioDuration(decoded.length / decoded.sampleRate);
     const chunkSamples = Math.max(15, Number(processingConfig.chunkSeconds) * 3) * decoded.sampleRate;
     const jobs = [];
@@ -787,6 +852,7 @@ async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = au
     }
     let completed = 0;
     const results = await mapWithConcurrency(jobs, ASR_REQUEST_CONCURRENCY, async ({ offset, end, index }) => {
+      throwIfSignalAborted(signal);
       const pcm = mixAudioRange(decoded.buffer, offset, end);
       const start = offset / decoded.sampleRate;
       let recovered;
@@ -796,6 +862,7 @@ async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = au
           sampleRate: decoded.sampleRate,
           startSeconds: start,
           transcribe: async ({ pcm: part, startSeconds, depth }) => {
+            throwIfSignalAborted(signal);
             if (depth > 0) {
               updateMeetingTaskProgress(meeting, `异常片段细分复核 · ${formatTimestamp(startSeconds)}`);
             }
@@ -804,6 +871,7 @@ async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = au
               blob: encodeWav(part, decoded.sampleRate),
               fileName: `part-${String(index).padStart(4, "0")}-${Math.round(startSeconds * 1_000)}.wav`,
               language: meeting.language,
+              signal,
             });
           },
         });
@@ -811,10 +879,12 @@ async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = au
         meeting.asrQualityEvents.push(...(error.qualityEvents || []));
         throw error;
       }
+      throwIfSignalAborted(signal);
       completed += 1;
       updateMeetingTaskProgress(meeting, `正在转写音频 · ${Math.round((completed / jobs.length) * 100)}%`);
       return recovered;
     });
+    throwIfSignalAborted(signal);
     const rawSegments = results.flatMap((result) => result?.rawSegments || []);
     meeting.asrQualityEvents.push(...results.flatMap((result) => result?.qualityEvents || []));
     const reconciled = reconcileTranscriptSegments(rawSegments);
@@ -826,7 +896,8 @@ async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = au
       throw new Error("浏览器无法分段解码该音频，且原文件超过 40 MiB，已停止整文件 data URL 上传；请切分文件或改用标准 Transcriptions 协议");
     }
     updateMeetingTaskProgress(meeting, "正在使用兼容方式转写音频");
-    const result = await transcribeAudioWithRetry({ config: processingConfig, blob, fileName, language: meeting.language });
+    const result = await transcribeAudioWithRetry({ config: processingConfig, blob, fileName, language: meeting.language, signal });
+    throwIfSignalAborted(signal);
     requireTranscriptionQuality(result, meeting.duration, meeting);
     const rawSegments = normalizeSegments(result.segments, meeting.duration);
     const reconciled = reconcileTranscriptSegments(rawSegments);
@@ -876,7 +947,7 @@ function createMeetingAudioRangeTranscriber(meeting, processingConfig = state.co
     const requestedEndSeconds = Math.max(0, Number(requestedEnd) || 0);
     const knownDuration = Number(meeting.duration) || 0;
     const end = knownDuration > 0 ? Math.min(knownDuration, requestedEndSeconds) : requestedEndSeconds;
-    if (!(end > start) || end - start > 30) throw new Error("MiMo 复核音频范围必须大于 0 秒且不超过 30 秒");
+    if (!(end > start) || end - start > 90) throw new Error("MiMo 复核音频范围必须大于 0 秒且不超过 90 秒");
     decodedPromise ||= getRecording(meeting.id).then((record) => {
       if (!record?.blob) throw new Error("本机没有找到可供 MiMo 复核的录音");
       return decodeAudio(record.blob);
@@ -980,6 +1051,7 @@ async function enrichMeetingRun(meeting, processingConfig, signal) {
   } catch (error) {
     if (signal.aborted) return;
     meeting.summaryError = error.message;
+    recordFailedAnalysisRun(meeting, error, processingConfig);
   }
   if (signal.aborted || !state.meetings.some((item) => item.id === meeting.id)) return;
   meeting.status = "done";
@@ -996,9 +1068,10 @@ function handleInsightAction(event) {
 
 async function retryInsightProcessing(step) {
   const meeting = activeMeeting();
-  if (!meeting || meeting.readOnly || !["correction", "summary"].includes(step) || insightRetryRuns.has(meeting.id)) return;
+  if (!meeting || meeting.readOnly || !["correction", "summary"].includes(step) || isRunningTask(meeting)) return;
   if (!requireChatConfig()) return;
   const retryConfig = { ...state.config };
+  questionRuns.get(meeting.id)?.abort(new DOMException("Meeting retry superseded question", "AbortError"));
   meetingProcessingRuns.get(meeting.id)?.abort(new DOMException("Meeting retry superseded", "AbortError"));
   const controller = new AbortController();
   meetingProcessingRuns.set(meeting.id, controller);
@@ -1017,27 +1090,40 @@ async function retryInsightProcessing(step) {
         signal: controller.signal,
         transcribeAudioRange: createMeetingAudioRangeTranscriber(meeting, retryConfig),
       });
-      meeting.segments = corrected.segments;
-      meeting.terminology = corrected.terminology;
-      meeting.rejectedCorrections = corrected.rejectedCorrections;
-      meeting.semanticJoins = corrected.semanticJoins;
-      meeting.corrections = corrected.corrections;
-      if (corrected.agentRun) meeting.agentRun = corrected.agentRun;
-      meeting.correctionError = "";
+      const stagedMeeting = {
+        ...meetingRetrySnapshot(meeting),
+        segments: corrected.segments,
+        terminology: corrected.terminology,
+        rejectedCorrections: corrected.rejectedCorrections,
+        semanticJoins: corrected.semanticJoins,
+        corrections: corrected.corrections,
+        correctionError: "",
+      };
+      if (corrected.agentRun) stagedMeeting.agentRun = corrected.agentRun;
+      else delete stagedMeeting.agentRun;
       if (transcriptContentSignature(corrected.segments) !== previousTranscript) {
-        resetSummaryResult(meeting);
+        stagedMeeting.qa = [];
+        resetSummaryResult(stagedMeeting);
         try {
-          const summary = await summarizeTranscript({ config: retryConfig, meeting, signal: controller.signal });
-          applySummaryResult(meeting, summary);
+          const summary = await summarizeTranscript({ config: retryConfig, meeting: stagedMeeting, signal: controller.signal });
+          applySummaryResult(stagedMeeting, summary);
         } catch (error) {
-          meeting.summaryError = error.message;
+          if (controller.signal.aborted) throw error;
+          stagedMeeting.summaryError = error.message;
+          recordFailedAnalysisRun(stagedMeeting, error, retryConfig);
           downstreamError = error;
         }
       }
+      commitMeetingSnapshot(meeting, stagedMeeting);
     } else {
-      resetSummaryResult(meeting);
-      const summary = await summarizeTranscript({ config: retryConfig, meeting, signal: controller.signal });
-      applySummaryResult(meeting, summary);
+      const stagedMeeting = meetingRetrySnapshot(meeting);
+      resetSummaryResult(stagedMeeting);
+      const summary = await summarizeTranscript({ config: retryConfig, meeting: stagedMeeting, signal: controller.signal });
+      if (controller.signal.aborted || meetingProcessingRuns.get(meeting.id) !== controller) {
+        throw controller.signal.reason || new DOMException("Meeting retry superseded", "AbortError");
+      }
+      applySummaryResult(stagedMeeting, summary);
+      commitMeetingSnapshot(meeting, stagedMeeting);
     }
     succeeded = true;
   } catch (error) {
@@ -1056,6 +1142,7 @@ async function retryInsightProcessing(step) {
       }
     }
     else meeting.summaryError = error.message;
+    if (step === "summary") recordFailedAnalysisRun(meeting, error, retryConfig);
     requestError = error;
   } finally {
     if (meetingProcessingRuns.get(meeting.id) === controller) meetingProcessingRuns.delete(meeting.id);
@@ -1075,9 +1162,27 @@ async function retryInsightProcessing(step) {
 }
 
 function applySummaryResult(meeting, summary) {
-  Object.assign(meeting, summary);
+  for (const field of ["summary", "keywords", "highlights", "speaker_summaries", "decisions", "decision_records", "action_items"]) {
+    if (Object.hasOwn(summary, field)) meeting[field] = summary[field];
+  }
   if (meeting.autoTitle && summary.title) meeting.title = summary.title.slice(0, 120);
+  if (summary.interviewReport) meeting.interviewReport = summary.interviewReport;
+  else delete meeting.interviewReport;
+  if (summary.analysisRun) meeting.analysisRun = summary.analysisRun;
+  else delete meeting.analysisRun;
   meeting.summaryError = "";
+}
+
+function recordFailedAnalysisRun(meeting, error, config) {
+  if (!Array.isArray(error?.agentTrace)) return;
+  meeting.analysisRun = {
+    id: error.agentTrace[0]?.run_id || "",
+    profile: "meeting-analysis",
+    model: config.chatModel,
+    status: "failed",
+    usage: error.agentUsage || {},
+    trace: error.agentTrace,
+  };
 }
 
 function resetCorrectionResult(meeting) {
@@ -1099,10 +1204,27 @@ function resetSummaryResult(meeting) {
   meeting.action_items = [];
   meeting.summaryError = "";
   delete meeting.interviewReport;
+  delete meeting.analysisRun;
 }
 
 function transcriptContentSignature(segments) {
   return JSON.stringify((segments || []).map((segment) => [segment.start_seconds, segment.end_seconds, segment.speaker, segment.text, segment.join_next === true]));
+}
+
+function meetingRetrySnapshot({ asking: _asking, ...meeting }) {
+  return {
+    ...meeting,
+    qa: Array.isArray(meeting.qa)
+      ? meeting.qa.filter((entry) => entry?.pending !== true).map((entry) => ({ ...entry }))
+      : [],
+  };
+}
+
+function commitMeetingSnapshot(meeting, snapshot) {
+  for (const key of Object.keys(meeting)) {
+    if (!Object.hasOwn(snapshot, key)) delete meeting[key];
+  }
+  Object.assign(meeting, snapshot);
 }
 
 function focusInsightRetryButton(meetingId, step) {
@@ -1112,6 +1234,7 @@ function focusInsightRetryButton(meetingId, step) {
 
 async function retryActiveMeeting() {
   const meeting = activeMeeting();
+  if (isMeetingDeleting(meeting)) return;
   if (state.recorder?.meeting.id === meeting?.id && state.recorder.stopped) {
     await finishStoppedRecording(state.recorder);
     return;
@@ -1125,16 +1248,39 @@ async function retryActiveMeeting() {
     return;
   }
   if (!meeting?.hasRecording || !requireConfig()) return;
+  const processingConfig = { ...state.config };
+  meetingProcessingRuns.get(meeting.id)?.abort(new DOMException("Meeting retry superseded", "AbortError"));
+  const controller = new AbortController();
+  meetingProcessingRuns.set(meeting.id, controller);
+  meeting.status = "transcribing";
+  meeting.processingDetail = "正在读取本机录音";
+  meeting.error = "";
+  saveAndRender();
   try {
     const record = await getRecording(meeting.id);
+    assertMeetingRunCurrent(meeting, controller, meetingProcessingRuns, "Meeting retry was superseded");
     if (!record?.blob) throw new Error("本机没有找到这段录音，请重新上传");
     const probedDuration = await probeDuration(record.blob).catch(() => null);
+    assertMeetingRunCurrent(meeting, controller, meetingProcessingRuns, "Meeting retry was superseded");
     const previousDuration = audioDurationOrNull(meeting.duration);
     const knownDuration = audioDurationOrNull(probedDuration) ?? (previousDuration > 0 ? previousDuration : null);
     meeting.duration = storedAudioDuration(knownDuration);
-    await processStoredAudio(meeting, record.blob, record.fileName || meeting.sourceName || "audio.webm", knownDuration);
+    await processStoredAudio(
+      meeting,
+      record.blob,
+      record.fileName || meeting.sourceName || "audio.webm",
+      knownDuration,
+      processingConfig,
+      controller,
+    );
   } catch (error) {
+    if (controller.signal.aborted || meetingDeletionWasRecorded(meeting.id) || !state.meetings.includes(meeting)) {
+      await cleanupDeletedMeetingAudio(meeting.id);
+      return;
+    }
     failMeeting(meeting, error);
+  } finally {
+    if (meetingProcessingRuns.get(meeting.id) === controller) meetingProcessingRuns.delete(meeting.id);
   }
 }
 
@@ -1442,7 +1588,15 @@ function createMeeting(values) {
   state.meetings.unshift(meeting);
   const removed = state.meetings.slice(MAX_MEETINGS);
   state.meetings = state.meetings.slice(0, MAX_MEETINGS);
-  for (const item of removed) deleteRecording(item.id).catch(() => {});
+  for (const item of removed) {
+    try {
+      rememberMeetingDeletion(item.id);
+      purgeTombstonedMeetingsFromStorage();
+      deleteRecording(item.id).then(() => markMeetingDeletionComplete(item.id)).catch(() => {});
+    } catch {
+      showToast("旧记录的安全清理状态未能保存，请先导出并删除不再需要的记录", true);
+    }
+  }
   state.activeId = meeting.id;
   state.query = "";
   elements.searchInput.value = "";
@@ -1507,16 +1661,42 @@ async function removeMeeting(id) {
     showToast("请先结束当前录音，再删除这条记录", true);
     return;
   }
-  if (!meeting || !window.confirm(`删除“${meeting.title}”及保存在本机的录音？此操作无法撤销。`)) return;
+  if (!meeting || deletingMeetingIds.has(id)) return;
+  if (isRunningTask(meeting)) {
+    showToast("当前任务仍在处理，完成后再删除", true);
+    return;
+  }
+  const latestStoredMeeting = storedMeeting(id);
+  if (latestStoredMeeting && ACTIVE_TASK_STATUSES.has(latestStoredMeeting.status)) {
+    showToast("另一个标签页仍在处理这条记录，完成后再删除", true);
+    synchronizeMeetingsFromStorage();
+    return;
+  }
+  if (!window.confirm(`删除“${meeting.title}”及保存在本机的录音？此操作无法撤销。`)) return;
+  deletingMeetingIds.add(id);
+  invalidateShareGenerationForMeeting(id);
+  meetingProcessingRuns.get(id)?.abort(new DOMException("Meeting deleted", "AbortError"));
+  recordingRecoveryRuns.get(id)?.abort(new DOMException("Meeting deleted", "AbortError"));
+  questionRuns.get(id)?.abort(new DOMException("Meeting deleted", "AbortError"));
+  render();
+  let tombstoneAdded = false;
   try {
-    meetingProcessingRuns.get(id)?.abort(new DOMException("Meeting deleted", "AbortError"));
+    tombstoneAdded = rememberMeetingDeletion(id);
+    if (!purgeTombstonedMeetingsFromStorage()) throw new Error("无法从浏览器本地存储删除逐字稿，请释放空间后重试");
     await deleteRecording(id);
+    markMeetingDeletionComplete(id);
     state.meetings = state.meetings.filter((item) => item.id !== id);
     if (state.activeId === id) state.activeId = state.meetings[0]?.id || null;
-    saveAndRender();
+    saveMeetings();
     showToast("记录和本地录音已删除");
   } catch (error) {
+    if (tombstoneAdded) forgetMeetingDeletion(id);
+    saveMeetings();
     showToast(`删除失败：${error.message}`, true);
+  } finally {
+    deletingMeetingIds.delete(id);
+    applyMeetingTombstonesToState();
+    render();
   }
 }
 
@@ -1526,19 +1706,55 @@ async function handleQuestion(event) {
   const meeting = activeMeeting();
   const input = event.target.querySelector("#questionInput");
   const question = input.value.trim();
-  if (!meeting || !question || meeting.asking || !requireConfig()) return;
+  if (!meeting || !question || meeting.asking || isRunningTask(meeting) || !requireConfig()) return;
+  const meetingId = meeting.id;
+  const sourceSignature = transcriptContentSignature(meeting.segments);
+  const controller = new AbortController();
+  questionRuns.get(meetingId)?.abort(new DOMException("Question superseded", "AbortError"));
+  questionRuns.set(meetingId, controller);
+  const meetingSnapshot = {
+    ...meeting,
+    segments: (meeting.segments || []).map((segment) => ({ ...segment })),
+  };
+  const questionConfig = { ...state.config };
+  const pendingQuestion = { role: "user", content: question, pending: true };
+  let settled = false;
   meeting.qa ||= [];
-  meeting.qa.push({ role: "user", content: question });
+  meeting.qa.push(pendingQuestion);
   meeting.asking = true;
   saveAndRender();
   try {
-    const answer = await askTranscript({ config: state.config, meeting, question });
-    meeting.qa.push({ role: "assistant", content: answer });
+    const answer = await askTranscript({ config: questionConfig, meeting: meetingSnapshot, question, signal: controller.signal });
+    const current = state.meetings.find((item) => item.id === meetingId);
+    if (
+      questionRuns.get(meetingId) !== controller
+      || !current
+      || transcriptContentSignature(current.segments) !== sourceSignature
+      || isRunningTask(current)
+    ) return;
+    current.qa ||= [];
+    delete pendingQuestion.pending;
+    current.qa.push({ role: "assistant", content: answer });
+    settled = true;
   } catch (error) {
-    meeting.qa.push({ role: "assistant", content: `回答失败：${error.message}` });
+    if (controller.signal.aborted) return;
+    const current = state.meetings.find((item) => item.id === meetingId);
+    if (!current || transcriptContentSignature(current.segments) !== sourceSignature || isRunningTask(current)) return;
+    current.qa ||= [];
+    delete pendingQuestion.pending;
+    current.qa.push({ role: "assistant", content: `回答失败：${error.message}` });
+    settled = true;
   } finally {
-    meeting.asking = false;
+    const ownsRun = questionRuns.get(meetingId) === controller;
+    if (ownsRun) questionRuns.delete(meetingId);
+    const current = state.meetings.find((item) => item.id === meetingId);
+    const retryStep = insightRetryRuns.get(meetingId);
+    if (current && ownsRun) {
+      current.asking = false;
+      if (!settled && Array.isArray(current.qa)) current.qa = current.qa.filter((entry) => entry !== pendingQuestion);
+    }
     saveAndRender();
+    if (retryStep) focusInsightRetryButton(meetingId, retryStep);
   }
 }
 
@@ -1563,7 +1779,7 @@ function handleTranscriptAction(event) {
 function updateMeetingTitle(event) {
   const title = event.target.value.slice(0, 120);
   const meeting = activeMeeting();
-  if (meeting && !meeting.readOnly) {
+  if (meeting && !meeting.readOnly && !insightRetryInProgress(meeting) && !isMeetingDeleting(meeting)) {
     meeting.title = title || "未命名记录";
     meeting.autoTitle = false;
     saveMeetings();
@@ -1576,7 +1792,7 @@ function normalizeMeetingTitle() {
   if (elements.meetingTitle.value.trim()) return;
   elements.meetingTitle.value = "未命名记录";
   const meeting = activeMeeting();
-  if (meeting && !meeting.readOnly) { meeting.title = "未命名记录"; saveMeetings(); renderHistory(); }
+  if (meeting && !meeting.readOnly && !insightRetryInProgress(meeting) && !isMeetingDeleting(meeting)) { meeting.title = "未命名记录"; saveMeetings(); renderHistory(); }
   else if (!meeting) state.draftTitle = "未命名记录";
 }
 
@@ -1791,30 +2007,96 @@ function toggleSecret(event) {
 async function openShareDialog() {
   const meeting = activeMeeting();
   if (!meeting?.segments?.length) return;
+  if (blockDerivedContentAction(meeting, "生成分享链接")) return;
+  const snapshot = createShareGenerationSnapshot(meeting);
+  shareGenerationRuns.ready = null;
   elements.shareUrlInput.value = "正在生成…";
   elements.shareHint.textContent = "";
-  elements.shareDialog.showModal();
+  if (!elements.shareDialog.open) elements.shareDialog.showModal();
   try {
-    const url = await buildShareUrl(meeting);
+    const url = await buildShareUrl(meeting, snapshot);
+    if (!shareGenerationMatchesActiveMeeting(snapshot)) return;
+    shareGenerationRuns.ready = shareGenerationIdentity(snapshot);
     elements.shareUrlInput.value = url;
     elements.shareHint.textContent = url.length > 60000 ? "逐字稿较长，部分聊天软件或浏览器可能截断链接；建议改用离线网页。" : "任何拿到链接的人都能查看这份逐字稿。";
   } catch (error) {
+    if (error?.code === "stale_share_generation") {
+      if (shareGenerationRuns.token === snapshot.token && activeMeeting()?.id === snapshot.meetingId) {
+        elements.shareUrlInput.value = "";
+        elements.shareHint.textContent = "逐字稿或纪要已更新，请重新生成分享链接。";
+      }
+      return;
+    }
+    if (!shareGenerationMatchesActiveMeeting(snapshot)) return;
     elements.shareUrlInput.value = "";
     elements.shareHint.textContent = error.message;
   }
   refreshIcons();
 }
 
-async function buildShareUrl(meeting) {
-  const bytes = new TextEncoder().encode(JSON.stringify(publicMeeting(meeting)));
+async function buildShareUrl(meeting, snapshot) {
+  if (!shareGenerationMatchesMeeting(snapshot, meeting)) throw staleShareGenerationError();
+  const bytes = new TextEncoder().encode(snapshot.sourceSignature);
   let prefix = "j.";
   let output = bytes;
   if (typeof CompressionStream !== "undefined") {
     output = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
     prefix = "g.";
   }
+  if (!shareGenerationMatchesActiveMeeting(snapshot)) throw staleShareGenerationError();
   const base = `${location.origin}${location.pathname}${location.search}`;
   return `${base}#share=${prefix}${bytesToBase64Url(output)}`;
+}
+
+function createShareGenerationSnapshot(meeting) {
+  shareGenerationRuns.meetingId = meeting.id;
+  return {
+    token: ++shareGenerationRuns.token,
+    meetingId: meeting.id,
+    transcriptSignature: transcriptContentSignature(meeting.segments),
+    sourceSignature: JSON.stringify(publicMeeting(meeting)),
+  };
+}
+
+function invalidateShareGenerationForMeeting(meetingId) {
+  if (shareGenerationRuns.meetingId !== meetingId) return;
+  shareGenerationRuns.token += 1;
+  shareGenerationRuns.meetingId = null;
+  shareGenerationRuns.ready = null;
+  elements.shareUrlInput.value = "";
+  elements.shareHint.textContent = "";
+  if (elements.shareDialog.open) elements.shareDialog.close();
+}
+
+function shareGenerationIdentity(snapshot) {
+  return {
+    token: snapshot.token,
+    meetingId: snapshot.meetingId,
+    transcriptSignature: snapshot.transcriptSignature,
+    sourceSignature: snapshot.sourceSignature,
+  };
+}
+
+function shareGenerationMatchesMeeting(snapshot, meeting) {
+  return Boolean(
+    snapshot
+    && meeting?.id === snapshot.meetingId
+    && transcriptContentSignature(meeting.segments) === snapshot.transcriptSignature
+    && JSON.stringify(publicMeeting(meeting)) === snapshot.sourceSignature
+    && !insightRetryInProgress(meeting)
+    && !isMeetingDeleting(meeting)
+  );
+}
+
+function shareGenerationMatchesActiveMeeting(snapshot) {
+  return shareGenerationRuns.token === snapshot?.token
+    && shareGenerationMatchesMeeting(snapshot, activeMeeting());
+}
+
+function staleShareGenerationError() {
+  const error = new Error("分享内容已变化");
+  error.code = "stale_share_generation";
+  return error;
 }
 
 async function readSharedMeeting() {
@@ -1832,21 +2114,31 @@ async function readSharedMeeting() {
 }
 
 async function copyShareUrl() {
+  const meeting = activeMeeting();
+  if (blockDerivedContentAction(meeting, "复制分享链接")) return;
   if (!elements.shareUrlInput.value || elements.shareUrlInput.value === "正在生成…") return;
+  if (!shareGenerationMatchesActiveMeeting(shareGenerationRuns.ready)) {
+    elements.shareUrlInput.value = "";
+    elements.shareHint.textContent = "逐字稿或纪要已更新，请重新生成分享链接。";
+    showToast("分享内容已更新，请重新生成链接", true);
+    return;
+  }
   try { await navigator.clipboard.writeText(elements.shareUrlInput.value); showToast("分享链接已复制"); }
   catch { showToast("浏览器未允许复制，请手动选择链接", true); }
 }
 
 function downloadShareHtml() {
   const meeting = activeMeeting();
-  if (!meeting) return;
+  if (!meeting || blockDerivedContentAction(meeting, "导出分享网页")) return false;
   downloadBlob(new Blob([buildShareHtml(meeting)], { type: "text/html;charset=utf-8" }), `${safeFilename(meeting.title)}-分享稿.html`);
   showToast("离线分享网页已下载");
+  return true;
 }
 
 async function copyTranscript() {
   const meeting = activeMeeting();
   if (!meeting?.segments?.length) return;
+  if (blockDerivedContentAction(meeting, "复制逐字稿")) return;
   try { await navigator.clipboard.writeText(toMarkdown(meeting)); showToast("逐字稿已复制"); }
   catch { showToast("浏览器未允许复制", true); }
 }
@@ -1868,6 +2160,7 @@ async function handleExport(event) {
   const meeting = activeMeeting();
   if (!meeting) return;
   const name = safeFilename(meeting.title);
+  if (button.dataset.export !== "audio" && blockDerivedContentAction(meeting, "导出逐字稿或纪要")) return;
   if (button.dataset.export === "audio") {
     const record = await getRecording(meeting.id).catch(() => null);
     if (!record?.blob) { showToast("分享稿不包含原始录音", true); return; }
@@ -1875,7 +2168,7 @@ async function handleExport(event) {
   } else if (button.dataset.export === "markdown") downloadBlob(new Blob([toMarkdown(meeting)], { type: "text/markdown;charset=utf-8" }), `${name}.md`);
   else if (button.dataset.export === "vtt") downloadBlob(new Blob([toVtt(meeting)], { type: "text/vtt;charset=utf-8" }), `${name}.vtt`);
   else if (button.dataset.export === "json") downloadBlob(new Blob([JSON.stringify(publicMeeting(meeting), null, 2)], { type: "application/json;charset=utf-8" }), `${name}.json`);
-  else if (button.dataset.export === "html") downloadShareHtml();
+  else if (button.dataset.export === "html") { downloadShareHtml(); return; }
   showToast("导出已开始");
 }
 
@@ -1992,7 +2285,40 @@ function processingDisplayText(meeting) {
 }
 
 function isRunningTask(meeting) {
-  return Boolean(meeting && (ACTIVE_TASK_STATUSES.has(meeting.status) || insightRetryRuns.has(meeting.id)));
+  return Boolean(meeting && (ACTIVE_TASK_STATUSES.has(meeting.status) || insightRetryRuns.has(meeting.id) || deletingMeetingIds.has(meeting.id)));
+}
+
+function assertMeetingRunCurrent(meeting, controller, registry, message) {
+  if (
+    controller.signal.aborted
+    || meetingDeletionWasRecorded(meeting.id)
+    || !state.meetings.includes(meeting)
+    || registry.get(meeting.id) !== controller
+  ) {
+    throw controller.signal.reason || new DOMException(message, "AbortError");
+  }
+}
+
+function throwIfSignalAborted(signal) {
+  if (signal?.aborted) throw signal.reason || new DOMException("Operation aborted", "AbortError");
+}
+
+function isMeetingDeleting(meeting) {
+  return Boolean(meeting?.id && deletingMeetingIds.has(meeting.id));
+}
+
+function insightRetryInProgress(meeting) {
+  return Boolean(meeting?.id && insightRetryRuns.has(meeting.id));
+}
+
+function blockDerivedContentAction(meeting, action) {
+  if (isMeetingDeleting(meeting)) {
+    showToast(`正在删除记录，无法${action}`, true);
+    return true;
+  }
+  if (!insightRetryInProgress(meeting)) return false;
+  showToast(`Agent 正在更新内容，完成后再${action}`, true);
+  return true;
 }
 
 function hasRunningTask() {
@@ -2003,8 +2329,12 @@ function loadMeetings() {
   try {
     const parsed = JSON.parse(localStorage.getItem(MEETINGS_KEY) || "[]");
     if (!Array.isArray(parsed)) return [];
-    return parsed.slice(0, MAX_MEETINGS).map((meeting) => {
-      const normalized = { ...meeting, duration: storedAudioDuration(meeting.duration) };
+    return parsed.filter((meeting) => !meetingDeletionWasRecorded(meeting?.id)).slice(0, MAX_MEETINGS).map((meeting) => {
+      const normalized = {
+        ...meeting,
+        qa: Array.isArray(meeting.qa) ? meeting.qa.filter((entry) => entry?.pending !== true) : [],
+        duration: storedAudioDuration(meeting.duration),
+      };
       return ["transcribing", "correcting", "summarizing"].includes(meeting.status)
         ? { ...normalized, status: "error", error: "上次处理被页面关闭中断，可从本地录音重新转写。" }
         : normalized;
@@ -2014,12 +2344,173 @@ function loadMeetings() {
 
 function saveMeetings() {
   if (state.sharedMode) return;
+  const removedTombstonedMeeting = applyMeetingTombstonesToState();
   try {
-    localStorage.setItem(MEETINGS_KEY, JSON.stringify(state.meetings.slice(0, MAX_MEETINGS).map(({ asking, ...meeting }) => ({
-      ...meeting,
-      duration: storedAudioDuration(meeting.duration),
-    }))));
+    const meetings = state.meetings
+      .filter((meeting) => !meetingDeletionWasRecorded(meeting.id))
+      .slice(0, MAX_MEETINGS)
+      .map(persistableMeeting);
+    localStorage.setItem(MEETINGS_KEY, JSON.stringify(meetings));
+    purgeTombstonedMeetingsFromStorage();
   } catch { showToast("本地逐字稿存储空间已满，请先导出并删除旧记录", true); }
+  if (removedTombstonedMeeting) render();
+}
+
+function meetingTombstoneKey(id) {
+  return `${MEETING_TOMBSTONE_PREFIX}${String(id || "")}`;
+}
+
+function meetingDeletionWasRecorded(id) {
+  try { return Boolean(id && localStorage.getItem(meetingTombstoneKey(id)) !== null); }
+  catch { return false; }
+}
+
+function rememberMeetingDeletion(id) {
+  const key = meetingTombstoneKey(id);
+  if (localStorage.getItem(key) !== null) return false;
+  try {
+    localStorage.setItem(key, "pending");
+    return true;
+  } catch {
+    throw new Error("无法记录跨标签页删除状态，请释放浏览器本地存储空间后重试");
+  }
+}
+
+function markMeetingDeletionComplete(id) {
+  try {
+    const key = meetingTombstoneKey(id);
+    if (localStorage.getItem(key) !== null) localStorage.setItem(key, "deleted");
+  } catch { /* pending tombstones are retried on startup */ }
+}
+
+function forgetMeetingDeletion(id) {
+  try {
+    const key = meetingTombstoneKey(id);
+    if (localStorage.getItem(key) === "pending") localStorage.removeItem(key);
+  } catch { /* localStorage removal is best effort */ }
+}
+
+function tombstonedMeetingIds({ pendingOnly = false } = {}) {
+  const ids = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (!key?.startsWith(MEETING_TOMBSTONE_PREFIX)) continue;
+    if (pendingOnly && localStorage.getItem(key) !== "pending") continue;
+    const id = key.slice(MEETING_TOMBSTONE_PREFIX.length);
+    if (id) ids.push(id);
+  }
+  return ids;
+}
+
+function applyMeetingTombstonesToState() {
+  const removedIds = state.meetings
+    .filter((meeting) => meetingDeletionWasRecorded(meeting.id) && !deletingMeetingIds.has(meeting.id))
+    .map((meeting) => meeting.id);
+  if (!removedIds.length) return false;
+  const removed = new Set(removedIds);
+  for (const id of removed) discardDeletedMeetingRuntime(id);
+  state.meetings = state.meetings.filter((meeting) => !removed.has(meeting.id));
+  if (removed.has(state.activeId)) state.activeId = state.meetings[0]?.id || null;
+  return true;
+}
+
+function purgeTombstonedMeetingsFromStorage() {
+  let parsed;
+  try { parsed = JSON.parse(localStorage.getItem(MEETINGS_KEY) || "[]"); }
+  catch { return false; }
+  if (!Array.isArray(parsed)) return false;
+  const filtered = parsed.filter((meeting) => !meetingDeletionWasRecorded(meeting?.id));
+  if (filtered.length === parsed.length) return true;
+  try {
+    localStorage.setItem(MEETINGS_KEY, JSON.stringify(filtered.slice(0, MAX_MEETINGS).map(persistableMeeting)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function cleanupTombstonedMeetingAudio() {
+  for (const id of tombstonedMeetingIds()) {
+    try {
+      await deleteRecording(id);
+      markMeetingDeletionComplete(id);
+    } catch { /* every tombstone remains authoritative and is retried on next startup */ }
+  }
+}
+
+function handleMeetingStorageChange(event) {
+  if (SHARED_MEETING_LOCATION || state.sharedMode || (event.storageArea && event.storageArea !== localStorage)) return;
+  if (event.key?.startsWith(MEETING_TOMBSTONE_PREFIX)) {
+    if (event.newValue !== null) {
+      const removed = applyMeetingTombstonesToState();
+      purgeTombstonedMeetingsFromStorage();
+      if (removed) render();
+    } else {
+      synchronizeMeetingsFromStorage();
+    }
+    return;
+  }
+  if (event.key === MEETINGS_KEY) {
+    purgeTombstonedMeetingsFromStorage();
+    synchronizeMeetingsFromStorage();
+  }
+}
+
+function synchronizeMeetingsFromStorage() {
+  if (SHARED_MEETING_LOCATION || state.sharedMode) return;
+  if (state.recorder || recordingRecoveryRuns.size || meetingProcessingRuns.size || insightRetryRuns.size || questionRuns.size || deletingMeetingIds.size) return;
+  state.meetings = loadMeetings();
+  if (!state.meetings.some((meeting) => meeting.id === state.activeId)) state.activeId = state.meetings[0]?.id || null;
+  render();
+}
+
+function discardDeletedMeetingRuntime(id) {
+  meetingProcessingRuns.get(id)?.abort(new DOMException("Meeting deleted in another tab", "AbortError"));
+  recordingRecoveryRuns.get(id)?.abort(new DOMException("Meeting deleted in another tab", "AbortError"));
+  questionRuns.get(id)?.abort(new DOMException("Meeting deleted in another tab", "AbortError"));
+  insightRetryRuns.delete(id);
+  invalidateShareGenerationForMeeting(id);
+  if (state.recorder?.meeting.id === id) discardRecorderDeletedInAnotherTab(state.recorder);
+}
+
+async function discardRecorderDeletedInAnotherTab(recorder) {
+  if (!recorder || recorder.closing) return;
+  recorder.closing = true;
+  clearInterval(recorder.timer);
+  recorder.processor.onaudioprocess = null;
+  recorder.processor.disconnect();
+  recorder.source.disconnect();
+  const stopped = recorder.mediaRecorder.state === "inactive"
+    ? Promise.resolve()
+    : new Promise((resolve) => recorder.mediaRecorder.addEventListener("stop", resolve, { once: true }));
+  if (recorder.mediaRecorder.state !== "inactive") recorder.mediaRecorder.stop();
+  recorder.stream.getTracks().forEach((track) => track.stop());
+  await recorder.audioContext.close().catch(() => {});
+  await stopped;
+  await recorder.persistQueue.catch(() => {});
+  if (state.recorder === recorder) state.recorder = null;
+  state.recording = false;
+  if (sessionStorage.getItem(ACTIVE_RECORDING_SESSION_KEY) === recorder.meeting.recordingSessionId) {
+    sessionStorage.removeItem(ACTIVE_RECORDING_SESSION_KEY);
+  }
+  await cleanupDeletedMeetingAudio(recorder.meeting.id);
+  render();
+}
+
+async function cleanupDeletedMeetingAudio(id) {
+  if (!meetingDeletionWasRecorded(id)) return;
+  try {
+    await deleteRecording(id);
+    markMeetingDeletionComplete(id);
+  } catch { /* the pending tombstone keeps deletion authoritative until retry */ }
+}
+
+function persistableMeeting({ asking: _asking, ...meeting }) {
+  return {
+    ...meeting,
+    qa: Array.isArray(meeting.qa) ? meeting.qa.filter((entry) => entry?.pending !== true) : [],
+    duration: storedAudioDuration(meeting.duration),
+  };
 }
 
 function probeDuration(file) {
@@ -2091,7 +2582,7 @@ function insightRetryButton(meeting, step) {
   if (meeting.readOnly) return "";
   const runningStep = insightRetryRuns.get(meeting.id);
   const retrying = runningStep === step;
-  const busy = Boolean(runningStep);
+  const busy = Boolean(runningStep) || isMeetingDeleting(meeting);
   const interview = meeting.mode === "interview";
   const label = step === "correction" ? (retrying ? "正在处理" : "重试校正") : (retrying ? "正在生成" : (interview ? "重试整理" : "重试生成"));
   const ariaLabel = step === "correction" ? "重试逐字稿校正" : (interview ? "重试整理面试证据" : "重试生成智能纪要");
@@ -2111,20 +2602,59 @@ function correctionNotice(meeting) {
   const agent = meeting.agentRun?.profile && Number(runUsage.modelTurns) > 0
     ? `<p class="correction-note"><i data-lucide="route"></i>Luna Agent · ${Number(runUsage.modelTurns)} 轮 · ${Number(runUsage.toolCalls) || 0} 次工具调用</p>`
     : "";
-  if (meeting.correctionError) return `${quality}${agent}<div class="inline-warning insight-retry-notice" role="status" aria-live="polite" aria-atomic="true"><span>逐字稿校正未完成：${escapeHtml(meeting.correctionError)}</span>${insightRetryButton(meeting, "correction")}</div>`;
+  const canonicalReviewWarning = meeting.agentRun?.canonicalReview?.status === "degraded"
+    ? '<p class="inline-warning" role="status"><i data-lucide="triangle-alert"></i>术语规范拼写仲裁未完整完成，请重点复核专有名词。</p>'
+    : "";
+  const unsupportedAgentWarning = meeting.agentRun?.status === "unsupported"
+    ? '<p class="inline-warning" role="status"><i data-lucide="triangle-alert"></i>当前模型端点不支持术语 Agent 工具调用，本次已使用有边界的校正流程。</p>'
+    : "";
+  if (meeting.correctionError) return `${quality}${agent}${canonicalReviewWarning}${unsupportedAgentWarning}<div class="inline-warning insight-retry-notice" role="status" aria-live="polite" aria-atomic="true"><span>逐字稿校正未完成：${escapeHtml(meeting.correctionError)}</span>${insightRetryButton(meeting, "correction")}</div>`;
   const correctionDetails = [
     meeting.terminology?.length ? `已统一 ${meeting.terminology.length} 个术语` : "",
     meeting.semanticJoins ? `优化 ${meeting.semanticJoins} 处断句` : "",
   ].filter(Boolean).join(" · ");
   const accepted = correctionDetails ? `<p class="correction-note"><i data-lucide="spell-check-2"></i>${correctionDetails}</p>` : "";
   const rejected = meeting.rejectedCorrections ? `<p class="inline-warning">已保留原始文本：${meeting.rejectedCorrections} 个校正建议未通过安全校验</p>` : "";
-  return `${quality}${agent}${accepted}${rejected}`;
+  return `${quality}${agent}${canonicalReviewWarning}${unsupportedAgentWarning}${accepted}${rejected}`;
+}
+function analysisRunNotice(meeting) {
+  const notices = [];
+  const usage = meeting.analysisRun?.usage || {};
+  if (meeting.analysisRun?.status === "unsupported") {
+    notices.push('<p class="inline-warning" role="status"><i data-lucide="triangle-alert"></i>当前模型端点不支持 Agent 工具调用，本次已使用有边界的证据校验流程生成纪要。</p>');
+  } else if (meeting.analysisRun?.status === "bounded_fallback") {
+    notices.push('<p class="inline-warning" role="status"><i data-lucide="triangle-alert"></i>会议证据超过 Agent 单次输入预算，本次已使用完整分块证据流程生成纪要。</p>');
+  } else if (meeting.analysisRun?.profile && Number(usage.modelTurns) > 0) {
+    notices.push(`<p class="correction-note"><i data-lucide="scan-search"></i>会议解析 Agent · ${Number(usage.modelTurns)} 轮 · ${Number(usage.toolCalls) || 0} 次工具调用</p>`);
+  }
+  notices.push(legacyUnverifiedInsightsNotice(meeting));
+  return notices.join("");
+}
+
+function legacyUnverifiedInsightsNotice(meeting) {
+  if (!hasLegacyUnverifiedInsights(meeting)) return "";
+  return '<p class="inline-warning" role="status"><i data-lucide="triangle-alert"></i>旧版未校验证据，仅供复核。</p>';
+}
+
+function hasLegacyUnverifiedInsights(meeting) {
+  const marker = meeting?.legacy_unverified_insights;
+  const marked = marker === true
+    || (typeof marker === "string" && Boolean(marker.trim()))
+    || (Array.isArray(marker) && marker.length > 0)
+    || (marker && typeof marker === "object" && Object.values(marker).some(Boolean));
+  if (marked) return true;
+  const speakerSummaryWithoutEvidence = (meeting?.speaker_summaries || []).some((item) => (
+    !Array.isArray(item?.evidence) || !item.evidence.some((entry) => String(entry?.quote || "").trim())
+  ));
+  const actionWithoutEvidence = (meeting?.action_items || []).some((item) => !String(item?.evidence || "").trim());
+  return speakerSummaryWithoutEvidence || actionWithoutEvidence;
 }
 function ratingLabel(value) { return ({ strong: "突出", adequate: "符合", mixed: "有待确认", weak: "不足", insufficient: "证据不足" })[value] || "证据不足"; }
 
 function meetingTaskState(meeting) {
   if (!meeting) return { state: "idle", icon: "clock-3", label: "等待开始" };
   if (meeting.readOnly) return { state: "readonly", icon: "lock-keyhole", label: "只读分享稿" };
+  if (isMeetingDeleting(meeting)) return { state: "working", mark: "ING", label: "正在删除记录" };
   const retryStep = insightRetryRuns.get(meeting.id);
   if (retryStep === "correction") return { state: "working", mark: "ING", label: "Agent 正在重新校正逐字稿" };
   if (retryStep === "summary") return { state: "working", mark: "ING", label: meeting.mode === "interview" ? "Agent 正在重新整理面试证据" : "Agent 正在重新生成智能纪要" };

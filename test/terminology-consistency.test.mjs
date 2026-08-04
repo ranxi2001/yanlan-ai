@@ -252,8 +252,8 @@ test("a canonical containing its alias stays idempotent in correction, summaries
     }),
     () => summarizeTranscript({ config, meeting: correctedMeeting }),
   );
-  assert.equal(summary.title, "Descheduler review");
-  assert.equal(summary.summary, "Descheduler and Descheduler remain stable.");
+  assert.equal(summary.title, "Descheduler会议纪要");
+  assert.equal(summary.summary, "[00:00] A：Descheduler and Descheduler remain stable.");
   assert.deepEqual(summary.keywords, ["Descheduler"]);
 
   const publicInput = {
@@ -278,7 +278,7 @@ test("a canonical containing its alias stays idempotent in correction, summaries
 });
 
 test("generated terminology normalization preserves identity fields and canonical formatting", async () => {
-  const source = sourceMeeting(["app reviews disk scheduler."]);
+  const source = sourceMeeting(["app will review disk scheduler."]);
   source.rawSegments[0].speaker = "App";
   const config = chatConfig("术语：app -> Application、disk scheduler -> Descheduler");
   const corrected = await withMockFetch(
@@ -293,28 +293,41 @@ test("generated terminology normalization preserves identity fields and canonica
       summary: "De-scheduler reviews app.",
       keywords: ["De scheduler", "descheduler"],
       highlights: [],
-      speaker_summaries: [{ speaker: "App", summary: "app reviews descheduler.", key_points: ["de-scheduler"] }],
+      speaker_summaries: [{
+        speaker: "App",
+        summary: "app reviews descheduler.",
+        key_points: ["de-scheduler"],
+        evidence: [{ start_seconds: 0, quote: "app will review descheduler." }],
+      }],
       decisions: [],
       decision_records: [],
-      action_items: [{ task: "app checks de scheduler", owner: "App", due: "app" }],
+      action_items: [{ task: "app checks de scheduler", owner: "App", due: "app", start_seconds: 0, evidence: "app will review descheduler." }],
     }),
     () => summarizeTranscript({ config, meeting: correctedMeeting }),
   );
 
-  assert.equal(summary.title, "Descheduler review");
-  assert.equal(summary.summary, "Descheduler reviews Application.");
+  assert.equal(summary.title, "Descheduler会议纪要");
+  assert.equal(summary.summary, "[00:00] App：Application will review Descheduler.");
   assert.deepEqual(summary.keywords, ["Descheduler"]);
   assert.deepEqual(summary.speaker_summaries, [{
     speaker: "App",
-    summary: "Application reviews Descheduler.",
-    key_points: ["Descheduler"],
+    summary: "Application will review Descheduler.",
+    key_points: ["Application will review Descheduler."],
+    evidence: [{ start_seconds: 0, speaker: "App", quote: "Application will review Descheduler." }],
   }]);
-  assert.deepEqual(summary.action_items, [{ task: "Application checks Descheduler", owner: "App", due: "app" }]);
+  assert.deepEqual(summary.action_items, [{
+    task: "Application will review Descheduler.",
+    owner: "",
+    due: "",
+    start_seconds: 0,
+    speaker: "App",
+    evidence: "Application will review Descheduler.",
+  }]);
 
   const published = publicMeeting({ ...correctedMeeting, ...summary });
   assert.equal(published.speaker_summaries[0].speaker, "App");
-  assert.equal(published.action_items[0].owner, "App");
-  assert.equal(published.action_items[0].due, "app");
+  assert.equal(published.action_items[0].owner, "");
+  assert.equal(published.action_items[0].due, "");
 
   const answer = await withMockFetch(
     async () => chatResponse("de scheduler and app"),

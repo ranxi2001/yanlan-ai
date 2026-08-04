@@ -34,17 +34,34 @@ export async function runTerminologyAgentEvaluation(specPath = DEFAULT_TERMINOLO
   const targetAccepted = accepted.filter((entry) => targetAliases.has(String(entry.from || "").normalize("NFKC")));
   const targetRejected = rejected.filter((entry) => targetAliases.has(String(entry.from || "").normalize("NFKC")));
 
-  assert.equal(canonicalOccurrences, spec.terminology.expected_occurrences, "Luna did not canonicalize every expected occurrence");
-  assert.equal(forbiddenOccurrences, 0, "Luna left one or more known aliases in the transcript");
-  assert.deepEqual(transcriptGeometry(corrected.segments), sourceGeometry, "Agent correction changed timestamps or speakers");
-  assert.equal(targetAccepted.length, spec.terminology.expected_occurrences, "Agent correction ledger is missing target accepted occurrences");
-  assert.equal(
-    targetAccepted.every((entry) => String(entry.to || "").normalize("NFKC") === String(spec.terminology.canonical).normalize("NFKC")),
-    true,
-    "Agent correction ledger contains a target alias mapped to the wrong canonical",
-  );
-  assert.equal(targetRejected.length, 0, "Agent correction ledger contains rejected target mappings");
-  assert.ok(corrected.agentRun?.trace?.length, "Agent run trace is missing");
+  try {
+    assert.equal(canonicalOccurrences, spec.terminology.expected_occurrences, "Luna did not canonicalize every expected occurrence");
+    assert.equal(forbiddenOccurrences, 0, "Luna left one or more known aliases in the transcript");
+    assert.deepEqual(transcriptGeometry(corrected.segments), sourceGeometry, "Agent correction changed timestamps or speakers");
+    assert.equal(targetAccepted.length, spec.terminology.expected_occurrences, "Agent correction ledger is missing target accepted occurrences");
+    assert.equal(
+      targetAccepted.every((entry) => String(entry.to || "").normalize("NFKC") === String(spec.terminology.canonical).normalize("NFKC")),
+      true,
+      "Agent correction ledger contains a target alias mapped to the wrong canonical",
+    );
+    assert.equal(targetRejected.length, 0, "Agent correction ledger contains rejected target mappings");
+    assert.equal(rejected.length, 0, "Agent correction ledger contains rejected mappings");
+    assert.ok(corrected.agentRun?.trace?.length, "Agent run trace is missing");
+  } catch (error) {
+    error.agentTrace = corrected.agentRun?.trace || [];
+    error.agentUsage = corrected.agentRun?.usage || {};
+    error.canonicalReview = corrected.agentRun?.canonicalReview || null;
+    error.evaluationDiagnostics = {
+      canonical_occurrences: canonicalOccurrences,
+      forbidden_alias_occurrences: forbiddenOccurrences,
+      target_accepted_ledger_entries: targetAccepted.length,
+      target_rejected_ledger_entries: targetRejected.length,
+      target_destination_variants: new Set(targetAccepted.map((item) => String(item?.to || "").normalize("NFKC"))).size,
+      other_accepted_ledger_entries: accepted.length - targetAccepted.length,
+      other_rejected_ledger_entries: rejected.length - targetRejected.length,
+    };
+    throw error;
+  }
 
   const toolStarts = corrected.agentRun.trace.filter((event) => event.type === "tool.started");
   return {
@@ -218,13 +235,71 @@ function countLiteral(value, term) {
   return count;
 }
 
-function failureReport(error) {
+function countValues(entries, valueForEntry) {
+  const counts = {};
+  for (const entry of entries || []) {
+    const value = String(valueForEntry(entry) || "").trim().slice(0, 120) || "(empty)";
+    counts[value] = (counts[value] || 0) + 1;
+  }
+  return counts;
+}
+
+export function terminologyAgentFailureReport(error) {
+  const state = error?.agentState || {};
+  const trace = Array.isArray(error?.agentTrace) ? error.agentTrace : [];
   return {
     schema: 1,
     ok: false,
-    error: { name: error?.name || "Error", message: error?.message || String(error) },
+    error: {
+      name: safeErrorName(error),
+      code: safeErrorCode(error, "terminology_agent_eval_failed"),
+      message: "Terminology Agent evaluation failed; inspect local diagnostics without publishing provider output",
+    },
     ...(error?.agentUsage ? { agent_usage: error.agentUsage } : {}),
+    ...(error?.canonicalReview ? {
+      canonical_review: {
+        status: error.canonicalReview.status,
+        requested_groups: error.canonicalReview.requestedGroups,
+        reviewed_groups: error.canonicalReview.reviewedGroups,
+        high_confidence_groups: error.canonicalReview.highConfidenceGroups,
+        incomplete_review_groups: error.canonicalReview.incompleteReviewGroups || 0,
+        budget_limited_groups: error.canonicalReview.budgetLimitedGroups || 0,
+        unreviewed_groups: error.canonicalReview.unreviewedGroups || 0,
+        ...(error.canonicalReview.reason ? { reason: error.canonicalReview.reason } : {}),
+      },
+    } : {}),
+    ...(error?.evaluationDiagnostics ? { evaluation: error.evaluationDiagnostics } : {}),
+    ...(error?.agentState ? {
+      agent_state: {
+        covered_segments: state.covered_segment_ids?.length || 0,
+        candidates: state.candidates?.length || 0,
+        signal_resolutions: state.signal_resolutions?.length || 0,
+        validations: state.validations?.length || 0,
+        audio_reviews: state.audio_reviews?.length || 0,
+        finalized: state.finalized === true,
+        validation_violation_codes: countValues(
+          state.validations?.flatMap((item) => item?.violations || []),
+          (item) => item?.code,
+        ),
+      },
+    } : {}),
+    ...(trace.length ? {
+      agent_trace: {
+        tool_calls: trace.filter((event) => event.type === "tool.started").map((event) => event.data?.tool),
+        rejection_events: trace.filter((event) => /rejected$/u.test(event.type)).map((event) => event.type),
+      },
+    } : {}),
   };
+}
+
+function safeErrorName(error) {
+  const name = String(error?.name || "Error");
+  return new Set(["Error", "AbortError", "TimeoutError", "AgentProtocolError", "RunBudgetExceeded", "AssertionError"]).has(name) ? name : "Error";
+}
+
+function safeErrorCode(error, fallback) {
+  const code = String(error?.code || "");
+  return /^(?:http|timeout|aborted|relay-unavailable|network-or-cors|response-interrupted|invalid-response|agent_[a-z0-9_]+|response_[a-z0-9_]+|tool_[a-z0-9_]+)$/u.test(code) ? code : fallback;
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
@@ -232,7 +307,7 @@ if (invokedPath === import.meta.url) {
   runTerminologyAgentEvaluation(process.argv[2] || DEFAULT_TERMINOLOGY_SPEC)
     .then((report) => console.log(JSON.stringify(report, null, 2)))
     .catch((error) => {
-      console.error(JSON.stringify(failureReport(error), null, 2));
+      console.error(JSON.stringify(terminologyAgentFailureReport(error), null, 2));
       process.exitCode = 1;
     });
 }

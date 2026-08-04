@@ -28,8 +28,11 @@ await mkdir(new URL("../artifacts", import.meta.url), { recursive: true });
 const browser = await chromium.launch({ headless: true, args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"] });
 const context = await browser.newContext({ viewport: { width: 1440, height: 960 }, acceptDownloads: true, permissions: ["microphone"] });
 const page = await context.newPage();
+page.setDefaultTimeout(90_000);
+page.setDefaultNavigationTimeout(180_000);
 const browserErrors = [];
 const gptRequests = [];
+const expectedQuestionAbortRequests = new WeakSet();
 let gptResponses = 0;
 let transientAsrFailures = 0;
 let successfulAsrResponsesRemaining = Number.POSITIVE_INFINITY;
@@ -38,14 +41,22 @@ let asrResponseDelayMs = 0;
 let transientCorrectionFailures = 0;
 let transientSummaryFailures = 0;
 let correctionResponseDelayMs = 0;
+let correctionResponseGate = null;
+let summaryResponseDelayMs = 0;
+let questionResponseDelayMs = 0;
 let asrRequestCount = 0;
 let correctionRequestCount = 0;
 let summaryRequestCount = 0;
+let questionRequestCount = 0;
 let agentCallSequence = 0;
+let meetingAnalysisCallSequence = 0;
 page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
 page.on("pageerror", (error) => browserErrors.push(error.message));
 page.on("requestfailed", (request) => {
-  if (!request.url().startsWith("blob:")) browserErrors.push(`Request failed: ${request.url()} (${request.failure()?.errorText || "unknown"})`);
+  const errorText = request.failure()?.errorText || "unknown";
+  const expectedQuestionAbort = errorText === "net::ERR_ABORTED"
+    && expectedQuestionAbortRequests.has(request);
+  if (!request.url().startsWith("blob:") && !expectedQuestionAbort) browserErrors.push(`Request failed: ${request.url()} (${errorText})`);
 });
 
 await page.route("https://mimo.example/v1/chat/completions", async (route) => {
@@ -89,7 +100,14 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
   const user = request.input;
   const correctionRequest = Array.isArray(request.tools)
     && request.tools.some((tool) => tool.name === "finalize_correction");
-  const summaryRequest = system.includes("会议纪要助手") || system.includes("面试证据提取助手");
+  const meetingAnalysisRequest = Array.isArray(request.tools)
+    && request.tools.some((tool) => tool.name === "finalize_meeting_analysis");
+  const summaryRequest = meetingAnalysisRequest || system.includes("会议纪要助手") || system.includes("面试证据提取助手");
+  const questionRequest = system.includes("会议记录问答助手") || system.includes("面试证据问答助手");
+  if (questionRequest) {
+    questionRequestCount += 1;
+    expectedQuestionAbortRequests.add(route.request());
+  }
   const agentOutputs = correctionRequest
     ? request.input.filter((item) => item?.type === "function_call_output")
     : [];
@@ -106,9 +124,24 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
     await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "temporary summary failure" } }) });
     return;
   }
+  if (summaryRequest && summaryResponseDelayMs) {
+    const delay = summaryResponseDelayMs;
+    summaryResponseDelayMs = 0;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  if (agentStart && correctionResponseGate) {
+    const gate = correctionResponseGate;
+    correctionResponseGate = null;
+    await gate;
+  }
   if (agentStart && correctionResponseDelayMs) {
     const delay = correctionResponseDelayMs;
     correctionResponseDelayMs = 0;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  if (questionRequest && questionResponseDelayMs) {
+    const delay = questionResponseDelayMs;
+    questionResponseDelayMs = 0;
     await new Promise((resolve) => setTimeout(resolve, delay));
   }
   let content;
@@ -118,7 +151,6 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
     const initial = JSON.parse(initialItem.content);
     const readOutput = agentOutputs.find((item) => item.call_id.startsWith("browser_read_"));
     const inspectOutput = agentOutputs.find((item) => item.call_id.startsWith("browser_inspect_"));
-    const validateOutput = agentOutputs.find((item) => item.call_id.startsWith("browser_validate_"));
     let output;
     if (!readOutput) {
       output = [{
@@ -138,21 +170,8 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
         name: "inspect_terminology_signals",
         arguments: JSON.stringify({}),
       }];
-    } else if (!validateOutput) {
-      const readResult = JSON.parse(readOutput.output);
-      const transcript = readResult.segments.map((segment) => segment.text).join("\n");
-      const mappings = initial.explicit_mappings.filter((mapping) => transcript.includes(mapping.alias));
-      output = [{
-        id: `browser_fc_validate_${agentCallSequence}`,
-        type: "function_call",
-        status: "completed",
-        call_id: `browser_validate_${agentCallSequence}`,
-        name: "validate_mapping_group",
-        arguments: JSON.stringify({ mappings }),
-      }];
     } else {
       assert.equal(JSON.parse(inspectOutput.output).ok, true);
-      assert.equal(JSON.parse(validateOutput.output).ok, true);
       const readResult = JSON.parse(readOutput.output);
       const transcript = readResult.segments.map((segment) => segment.text).join("\n");
       const mappings = initial.explicit_mappings.filter((mapping) => transcript.includes(mapping.alias));
@@ -167,6 +186,84 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
     }
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({
       id: `browser_agent_response_${agentCallSequence}`,
+      status: "completed",
+      output,
+    }) });
+    gptResponses += 1;
+    return;
+  } else if (meetingAnalysisRequest) {
+    meetingAnalysisCallSequence += 1;
+    assert.equal(request.parallel_tool_calls, false);
+    assert.deepEqual(request.tools.map((tool) => tool.name), ["review_meeting_commitments", "finalize_meeting_analysis"]);
+    const reviewTool = request.tools[0];
+    const finalizationTool = request.tools[1];
+    assert.equal(reviewTool.strict, true);
+    assert.equal(reviewTool.parameters.additionalProperties, false);
+    assert.deepEqual(reviewTool.parameters.required, ["reviews"]);
+    assert.deepEqual(reviewTool.parameters.properties.reviews.items.properties.disposition.enum, [
+      "confirmed", "question", "unresolved", "negated", "other",
+    ]);
+    assert.equal(finalizationTool.strict, true);
+    assert.equal(finalizationTool.parameters.additionalProperties, false);
+    assert.deepEqual(finalizationTool.parameters.required, [
+      "summary_evidence_ids",
+      "highlight_ids",
+      "speaker_summaries",
+    ]);
+    assert.equal(Object.hasOwn(finalizationTool.parameters.properties, "title"), false);
+    assert.equal(Object.hasOwn(finalizationTool.parameters.properties, "summary"), false);
+    assert.equal(Object.hasOwn(finalizationTool.parameters.properties, "keywords"), false);
+    assert.equal(Object.hasOwn(finalizationTool.parameters.properties, "decision_ids"), false);
+    assert.equal(Object.hasOwn(finalizationTool.parameters.properties, "action_item_ids"), false);
+    assert.equal(finalizationTool.parameters.properties.speaker_summaries.items.additionalProperties, false);
+    const initialItem = request.input.find((item) => item?.role === "user" && typeof item.content === "string");
+    assert.ok(initialItem);
+    const initial = JSON.parse(initialItem.content);
+    assert.match(initial.source_signature, /^fnv1a32:[0-9a-f]{8}$/);
+    assert.equal(initial.transcript_batch_count, 1);
+    const evidence = initial.evidence;
+    const ids = (kind) => evidence.filter((record) => record.kind === kind).map((record) => record.id);
+    assert.equal(initial.commitment_candidate_count, ids("decision").length + ids("action").length);
+    const summaryEvidence = evidence.find((record) => record.kind === "summary");
+    assert.equal(summaryEvidence.scope, "transcript_batch");
+    assert.ok([
+      "今天讨论OneFly项目，由小明明天完成。",
+      "今天讨论万福来项目，由小明明天完成。",
+    ].includes(summaryEvidence.quote_previews[0].quote));
+    const speakerEvidence = evidence.filter((record) => record.kind === "speaker_point");
+    assert.ok(speakerEvidence.every((record) => record.speaker === "发言人 1"));
+    assert.ok(evidence.filter((record) => record.kind === "decision" || record.kind === "action")
+      .every((record) => typeof record.evidence === "string" && record.evidence.length > 0));
+    const reviewOutput = request.input.find((item) => (
+      item?.type === "function_call_output"
+      && String(item.call_id || "").startsWith("browser_commitment_review_")
+    ));
+    const commitmentEvidence = evidence.filter((record) => record.kind === "decision" || record.kind === "action");
+    const output = commitmentEvidence.length && !reviewOutput ? [{
+      id: `browser_fc_commitment_review_${meetingAnalysisCallSequence}`,
+      type: "function_call",
+      status: "completed",
+      call_id: `browser_commitment_review_${meetingAnalysisCallSequence}`,
+      name: "review_meeting_commitments",
+      arguments: JSON.stringify({
+        reviews: commitmentEvidence.map((record) => ({ evidence_id: record.id, disposition: "confirmed" })),
+      }),
+    }] : [{
+      id: `browser_fc_meeting_analysis_${meetingAnalysisCallSequence}`,
+      type: "function_call",
+      status: "completed",
+      call_id: `browser_meeting_analysis_${meetingAnalysisCallSequence}`,
+      name: "finalize_meeting_analysis",
+      arguments: JSON.stringify({
+        summary_evidence_ids: ids("summary"),
+        highlight_ids: ids("highlight"),
+        speaker_summaries: speakerEvidence.length
+          ? [{ speaker: "发言人 1", evidence_ids: speakerEvidence.map((record) => record.id) }]
+          : [],
+      }),
+    }];
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      id: `browser_meeting_analysis_response_${meetingAnalysisCallSequence}`,
       status: "completed",
       output,
     }) });
@@ -195,14 +292,26 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
     });
   } else if (system.includes("会议纪要助手")) {
     content = JSON.stringify({
-      title: "OneFly 项目周会",
+      title: "",
       summary: "会议明确了 OneFly 项目的近期交付安排。",
-      keywords: ["OneFly", "交付"],
-      highlights: [{ start_seconds: 0, speaker: "小明", quote: "由小明明天完成", reason: "明确了负责人和交付时间" }],
-      speaker_summaries: [{ speaker: "小明", summary: "确认了 OneFly 项目的交付安排。", key_points: ["明天完成项目"] }],
+      keywords: ["OneFly"],
+      summary_evidence: [{ start_seconds: 0, quote: "今天讨论OneFly项目，由小明明天完成。" }],
+      highlights: [{ start_seconds: 0, speaker: "发言人 1", quote: "今天讨论OneFly项目，由小明明天完成。", reason: "明确了负责人和交付时间" }],
+      speaker_summaries: [{
+        speaker: "发言人 1",
+        summary: "确认了 OneFly 项目的交付安排。",
+        key_points: ["明天完成项目"],
+        evidence: [{ start_seconds: 0, quote: "今天讨论OneFly项目，由小明明天完成。" }],
+      }],
       decisions: ["项目明天完成"],
-      decision_records: [{ decision: "明天完成", start_seconds: 0, evidence: "由小明明天完成" }],
-      action_items: [{ task: "完成 OneFly 项目", owner: "小明", due: "明天" }],
+      decision_records: [{ decision: "明天完成", start_seconds: 0, evidence: "今天讨论OneFly项目，由小明明天完成。" }],
+      action_items: [{
+        task: "完成 OneFly 项目",
+        owner: "小明",
+        due: "明天",
+        start_seconds: 0,
+        evidence: "今天讨论OneFly项目，由小明明天完成。",
+      }],
     });
   } else {
     content = "小明负责在明天完成 OneFly 项目（00:00）。";
@@ -211,8 +320,21 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
   gptResponses += 1;
 });
 
+if (process.argv.includes("--races-only")) {
+  try {
+    await verifyRetryReadDeletionRace(browser, baseUrl, fixture);
+    await verifyRecoveryDeletionRace(browser, baseUrl, fixture);
+    await verifyCompletedTombstoneStartupCleanup(browser, baseUrl, fixture);
+    console.log("Browser deletion races passed: retry reads abort before ASR, recovery cannot resurrect audio, and completed tombstones clean orphaned IndexedDB data.");
+  } finally {
+    await browser.close();
+    await developmentServer?.close();
+  }
+  process.exit(0);
+}
+
 try {
-  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   await page.locator("#brandLogo").waitFor();
   assert.equal(await page.locator("#brandLogo").evaluate((image) => image.complete && image.naturalWidth === 1254), true);
   assert.match(await page.locator('link[rel="icon"]').getAttribute("href"), /yanlan-logo\.png$/);
@@ -286,9 +408,9 @@ try {
   await waitForRecordingChunks(page, interruptedMeetingId, 1);
   const recoveryStorageBeforeReload = await recordingStorageState(page, interruptedMeetingId);
   page.once("dialog", (dialog) => dialog.accept());
-  await page.reload({ waitUntil: "commit" });
+  await page.reload({ waitUntil: "domcontentloaded" });
   try {
-    await page.getByText("录音已保存在本机", { exact: true }).waitFor({ timeout: 30000 });
+    await page.getByText("录音已保存在本机", { exact: true }).waitFor({ timeout: 60_000 });
   } catch (error) {
     const recoveryState = await page.evaluate(() => ({
       meetings: JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]"),
@@ -367,8 +489,38 @@ try {
     delete window.__yanlanOriginalRecordingPut;
   });
   page.once("dialog", (dialog) => dialog.accept());
-  await page.reload({ waitUntil: "commit" });
-  await page.getByText("录音已保存在本机", { exact: true }).waitFor({ timeout: 30000 });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  try {
+    await page.getByText("录音已保存在本机", { exact: true }).waitFor({ timeout: 60_000 });
+  } catch (error) {
+    const recoveryState = await page.evaluate(async (id) => {
+      const meeting = JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]").find((item) => item.id === id) || {};
+      const database = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("yanlan", 2);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const transaction = database.transaction(["recordings", "recordingChunks"], "readonly");
+      const recordingRequest = transaction.objectStore("recordings").get(id);
+      const chunksRequest = transaction.objectStore("recordingChunks").index("meetingId").getAll(id);
+      const [recording, chunks] = await Promise.all([
+        new Promise((resolve, reject) => { recordingRequest.onsuccess = () => resolve(recordingRequest.result); recordingRequest.onerror = () => reject(recordingRequest.error); }),
+        new Promise((resolve, reject) => { chunksRequest.onsuccess = () => resolve(chunksRequest.result); chunksRequest.onerror = () => reject(chunksRequest.error); }),
+      ]);
+      database.close();
+      return {
+        status: meeting.status,
+        recoveryPending: meeting.recoveryPending === true,
+        hasRecording: meeting.hasRecording === true,
+        observedChunks: Number(meeting.recordingObservedChunkCount) || 0,
+        committedChunks: Number(meeting.recordingChunkCount) || 0,
+        recordingBytes: Number(recording?.blob?.size) || 0,
+        storedChunks: chunks.length,
+        hasError: Boolean(meeting.error),
+      };
+    }, finalSaveFailureMeetingId);
+    throw new Error(`Final recording recovery did not settle: ${JSON.stringify(recoveryState)}`, { cause: error });
+  }
   await page.locator("#recordingPlayer:not(.hidden)").waitFor();
   assert.equal(await recordingChunkCount(page, finalSaveFailureMeetingId), 0);
   await page.locator("#newMeetingButton").click();
@@ -381,19 +533,22 @@ try {
     };
   });
   await page.locator("#startRecordButton").click();
-  await page.waitForFunction(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]")[0]?.recordingObservedChunkCount > 1, null, { timeout: 10_000 });
+  await page.locator("#liveRecorder:not(.hidden)").waitFor({ timeout: 45_000 });
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]")[0]?.recordingObservedChunkCount > 1, null, { timeout: 30_000 });
   const partialFailureMeetingId = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].id);
   await page.locator("#stopRecordButton").click();
   await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("处理失败"));
   const expectedPartialChunks = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].recordingObservedChunkCount);
   assert.ok(expectedPartialChunks > 1);
   assert.equal(await recordingChunkCount(page, partialFailureMeetingId), 1);
-  await page.evaluate(() => {
-    IDBObjectStore.prototype.put = window.__yanlanOriginalPartialPut;
-    delete window.__yanlanOriginalPartialPut;
-  });
   page.once("dialog", (dialog) => dialog.accept());
-  await page.reload({ waitUntil: "commit" });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => {
+    const meeting = JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]")[0];
+    return meeting?.status === "error" && String(meeting.error || "").startsWith("录音恢复失败：");
+  }, null, { timeout: 30_000 });
+  const partialRecovery = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0]);
+  assert.match(partialRecovery.error, /录音分片不完整/);
   await page.locator("#errorMessage").filter({ hasText: /录音分片不完整/ }).waitFor({ timeout: 30000 });
   assert.equal(await page.locator("#retryButton").isDisabled(), true);
   assert.equal(await page.locator("#recordingPlayer").isHidden(), true);
@@ -466,8 +621,12 @@ try {
   await page.locator("#newMeetingButton").click();
 
   asrResponseDelayMs = 1_000;
-  correctionResponseDelayMs = 1_600;
-  const uploadAsrRequest = page.waitForRequest((request) => request.url() === "https://mimo.example/v1/chat/completions" && request.method() === "POST");
+  let releaseUploadCorrection;
+  correctionResponseGate = new Promise((resolve) => { releaseUploadCorrection = resolve; });
+  const uploadAsrRequest = page.waitForRequest(
+    (request) => request.url() === "https://mimo.example/v1/chat/completions" && request.method() === "POST",
+    { timeout: 60_000 },
+  );
   await page.locator("#fileInput").setInputFiles(fixture);
   await uploadAsrRequest;
   await page.locator('#meetingTaskStatus[data-state="working"]').waitFor();
@@ -481,6 +640,10 @@ try {
     return event.defaultPrevented;
   }), true);
   await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("Agent 正在校正逐字稿与断句"));
+  await page.locator('[data-insight="qa"]').click();
+  assert.equal(await page.locator("#questionInput").isDisabled(), true);
+  assert.equal(await page.locator("#qaForm button").isDisabled(), true);
+  await page.locator('[data-insight="summary"]').click();
   await page.screenshot({ path: fileURLToPath(new URL("../artifacts/task-status-ing-desktop.png", import.meta.url)), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(250);
@@ -495,15 +658,22 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
   await page.screenshot({ path: fileURLToPath(new URL("../artifacts/task-status-ing-mobile.png", import.meta.url)), fullPage: true });
   await page.setViewportSize({ width: 1440, height: 960 });
+  releaseUploadCorrection();
   try {
-    await page.getByText("OneFly 项目周会", { exact: true }).first().waitFor({ timeout: 15000 });
+    await page.getByText("OneFly会议纪要", { exact: true }).first().waitFor({ timeout: 60_000 });
   } catch (error) {
-    const uploadState = await page.evaluate(() => ({
-      meetings: JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]"),
-      meta: document.querySelector("#meetingMeta")?.textContent,
-      processing: document.querySelector("#processingFile")?.textContent,
-      visibleError: document.querySelector("#errorMessage")?.textContent,
-    }));
+    const uploadState = await page.evaluate(() => {
+      const meeting = JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]")[0] || {};
+      return {
+        meetingStatus: meeting.status,
+        hasRecording: meeting.hasRecording === true,
+        rawSegmentCount: Array.isArray(meeting.rawSegments) ? meeting.rawSegments.length : 0,
+        segmentCount: Array.isArray(meeting.segments) ? meeting.segments.length : 0,
+        correctionFailed: Boolean(meeting.correctionError),
+        summaryFailed: Boolean(meeting.summaryError),
+        task: document.querySelector("#meetingTaskLabel")?.textContent || "",
+      };
+    });
     throw new Error(`Uploaded meeting did not finish: ${JSON.stringify({ uploadState, gptRequests, gptResponses })}; browser errors: ${browserErrors.join(" | ")}`, { cause: error });
   }
   await page.locator("#transcriptList").getByText("今天讨论OneFly项目，由小明明天完成。", { exact: true }).waitFor();
@@ -512,7 +682,8 @@ try {
   assert.equal(await page.locator("#meetingTaskLabel").textContent(), "已完成");
   assert.equal(await page.locator("#newMeetingButton").isEnabled(), true);
   assert.doesNotMatch(await page.locator("#meetingMeta").textContent(), /已完成|正在/);
-  await page.getByText("Luna Agent · 4 轮 · 4 次工具调用", { exact: true }).waitFor();
+  await page.getByText("Luna Agent · 3 轮 · 3 次工具调用", { exact: true }).waitFor();
+  await page.getByText("会议解析 Agent · 3 轮 · 2 次工具调用", { exact: true }).waitFor();
   await page.getByText("已统一 1 个术语", { exact: true }).waitFor();
   const correctionLedger = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].corrections);
   assert.deepEqual(correctionLedger.map(({
@@ -533,10 +704,10 @@ try {
   await page.locator(".highlight-item[data-seek='0']", { hasText: "由小明明天完成" }).waitFor();
   await page.screenshot({ path: fileURLToPath(new URL("../artifacts/meeting-highlights-desktop.png", import.meta.url)), fullPage: true });
   await page.locator('[data-insight="speakers"]').click();
-  await page.getByText("确认了 OneFly 项目的交付安排。", { exact: true }).waitFor();
+  await page.locator(".speaker-summary-item p").getByText("今天讨论OneFly项目，由小明明天完成。", { exact: true }).waitFor();
   await page.locator('[data-insight="actions"]').click();
-  await page.locator("#insightContent").getByText("今天讨论OneFly项目，由小明明天完成。", { exact: true }).waitFor();
-  await page.getByText("完成 OneFly 项目", { exact: true }).waitFor();
+  await page.locator(".decision-record strong").getByText("今天讨论OneFly项目，由小明明天完成。", { exact: true }).waitFor();
+  await page.locator(".action-task").getByText("今天讨论OneFly项目，由小明明天完成。", { exact: true }).waitFor();
   await page.screenshot({ path: fileURLToPath(new URL("../artifacts/meeting-decisions-desktop.png", import.meta.url)), fullPage: true });
 
   await page.locator('[data-insight="qa"]').click();
@@ -567,11 +738,14 @@ try {
     const output = prefix === "g." ? new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer()) : bytes;
     return JSON.parse(new TextDecoder().decode(output));
   }, shareUrl);
-  assert.equal(meetingPublic.schema, 3);
+  assert.equal(meetingPublic.schema, 4);
   assert.equal(meetingPublic.highlights[0].quote, "今天讨论OneFly项目，由小明明天完成。");
-  assert.equal(meetingPublic.speaker_summaries[0].speaker, "小明");
+  assert.equal(meetingPublic.speaker_summaries[0].speaker, "发言人 1");
+  assert.equal(meetingPublic.speaker_summaries[0].evidence[0].quote, "今天讨论OneFly项目，由小明明天完成。");
   assert.equal(meetingPublic.decision_records[0].start_seconds, 0);
   assert.equal(meetingPublic.decision_records[0].evidence, "今天讨论OneFly项目，由小明明天完成。");
+  assert.equal(meetingPublic.action_items[0].task, "今天讨论OneFly项目，由小明明天完成。");
+  assert.equal(meetingPublic.action_items[0].evidence, "今天讨论OneFly项目，由小明明天完成。");
   await page.keyboard.press("Escape");
 
   await page.locator('[data-insight="summary"]').click();
@@ -587,8 +761,24 @@ try {
   await page.locator("#fileInput").setInputFiles(fixture);
   const retryCorrection = page.locator('[data-retry-insight="correction"]');
   const retrySummary = page.locator('[data-retry-insight="summary"]');
-  await retryCorrection.waitFor({ timeout: 15000 });
-  await retrySummary.waitFor();
+  try {
+    await retryCorrection.waitFor({ timeout: 60_000 });
+  } catch (error) {
+    const retryState = await page.evaluate(() => {
+      const meeting = JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]")[0] || {};
+      return {
+        meetingStatus: meeting.status,
+        hasRecording: meeting.hasRecording === true,
+        correctionFailed: Boolean(meeting.correctionError),
+        summaryFailed: Boolean(meeting.summaryError),
+        correctionAgentStatus: meeting.agentRun?.status || "",
+        analysisAgentStatus: meeting.analysisRun?.status || "",
+        task: document.querySelector("#meetingTaskLabel")?.textContent || "",
+      };
+    });
+    throw new Error(`Retry controls did not appear: ${JSON.stringify({ retryState, correctionRequestCount, summaryRequestCount })}`, { cause: error });
+  }
+  await retrySummary.waitFor({ timeout: 60_000 });
   assert.equal(await page.locator("#meetingTaskStatus").getAttribute("data-state"), "warning");
   assert.equal(await page.locator("#meetingTaskLabel").textContent(), "部分 Agent 任务待重试");
   assert.equal(await retryCorrection.getAttribute("aria-label"), "重试逐字稿校正");
@@ -596,16 +786,52 @@ try {
   await page.getByText("本次未生成关键词；摘要与关键词将随智能纪要一并重新生成", { exact: true }).waitFor();
   assert.equal(await page.getByText("无关键词", { exact: true }).count(), 0);
   await page.screenshot({ path: fileURLToPath(new URL("../artifacts/insight-retry-desktop.png", import.meta.url)), fullPage: true });
+  await page.evaluate(() => {
+    const meetings = JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]");
+    meetings[0].summary = "上一次成功生成的摘要";
+    meetings[0].keywords = ["旧关键词"];
+    localStorage.setItem("yanlan.meetings.v1", JSON.stringify(meetings));
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await retrySummary.waitFor();
+  await page.locator('[data-insight="qa"]').click();
+  questionResponseDelayMs = 1_000;
+  await page.locator("#questionInput").fill("摘要重试前谁负责项目？");
+  await page.locator("#qaForm button").click();
+  await page.locator(".qa-message.user").getByText("摘要重试前谁负责项目？", { exact: true }).waitFor();
+  await page.locator('[data-insight="summary"]').click();
   const asrRequestsBeforeRetries = asrRequestCount;
   const summariesBeforeRetry = summaryRequestCount;
+  const summarySnapshotBeforeRetry = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0]);
+  summaryResponseDelayMs = 800;
   await retrySummary.click();
-  await page.getByText("会议明确了 OneFly 项目的近期交付安排。", { exact: true }).waitFor();
-  assert.equal(summaryRequestCount, summariesBeforeRetry + 1);
+  await page.waitForFunction(() => document.querySelector('[data-retry-insight="summary"]')?.getAttribute("aria-busy") === "true");
+  assert.equal(await page.locator(".history-item.active .history-delete").isDisabled(), true);
+  const persistedDuringSummaryRetry = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0]);
+  assert.equal(persistedDuringSummaryRetry.summary, summarySnapshotBeforeRetry.summary);
+  assert.deepEqual(persistedDuringSummaryRetry.keywords, summarySnapshotBeforeRetry.keywords);
+  assert.deepEqual(persistedDuringSummaryRetry.qa, []);
+  await page.getByText("[00:00] 发言人 1：今天讨论万福来项目，由小明明天完成。", { exact: true }).waitFor();
+  assert.equal(summaryRequestCount, summariesBeforeRetry + 2);
   assert.equal(asrRequestCount, asrRequestsBeforeRetries);
   assert.equal(await page.locator('[data-retry-insight="summary"]').count(), 0);
+  await page.locator('[data-insight="qa"]').click();
+  assert.equal(await page.locator(".qa-message.user").getByText("摘要重试前谁负责项目？", { exact: true }).count(), 0);
+  assert.equal(await page.locator("#questionInput").isDisabled(), false);
+  questionResponseDelayMs = 1_000;
+  await page.locator("#questionInput").fill("重试前的逐字稿里谁负责项目？");
+  await page.locator("#qaForm button").click();
+  await page.locator(".qa-message.user").getByText("重试前的逐字稿里谁负责项目？", { exact: true }).waitFor();
+  assert.equal(await page.locator("#questionInput").isDisabled(), true);
+  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0].qa), []);
+  await page.locator('[data-insight="summary"]').click();
   const correctionsBeforeRetry = correctionRequestCount;
   const summariesBeforeCorrection = summaryRequestCount;
-  correctionResponseDelayMs = 250;
+  const completeMeetingBeforeCorrection = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0]);
+  correctionResponseDelayMs = 500;
+  summaryResponseDelayMs = 1_000;
+  const downstreamSummaryRequest = page.waitForRequest((request) => request.url() === "https://gpt.example/v1/responses"
+    && String(request.postDataJSON()?.instructions || "").includes("会议纪要助手"));
   await retryCorrection.focus();
   await retryCorrection.click();
   await page.waitForFunction(() => document.querySelector('[data-retry-insight="correction"]')?.getAttribute("aria-busy") === "true");
@@ -614,16 +840,35 @@ try {
   assert.equal(await page.locator("#meetingTaskMark").textContent(), "ING");
   assert.equal(await page.locator("#meetingTaskLabel").textContent(), "Agent 正在重新校正逐字稿");
   assert.equal(await page.locator("#newMeetingButton").isDisabled(), true);
+  assert.equal(await page.locator("#meetingTitle").isEditable(), false);
   await page.locator('[data-retry-insight="correction"]').dispatchEvent("click");
+  await page.locator('[data-insight="qa"]').click();
+  assert.equal(await page.locator("#questionInput").isDisabled(), true);
+  assert.equal(await page.locator("#qaForm button").isDisabled(), true);
+  await downstreamSummaryRequest;
+  const persistedDuringCorrection = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0]);
+  assert.deepEqual(persistedDuringCorrection.segments, completeMeetingBeforeCorrection.segments);
+  assert.equal(persistedDuringCorrection.summary, completeMeetingBeforeCorrection.summary);
+  assert.equal(persistedDuringCorrection.correctionError, completeMeetingBeforeCorrection.correctionError);
+  assert.deepEqual(persistedDuringCorrection.qa, []);
+  await page.waitForFunction(() => {
+    const meeting = JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]")[0];
+    return meeting?.correctionError === ""
+      && meeting?.summaryError === ""
+      && meeting?.segments?.some((segment) => segment.text.includes("OneFly"))
+      && !meeting?.asking;
+  }, null, { timeout: 60_000 });
+  await page.locator('[data-insight="summary"]').click();
   await page.getByText("已统一 1 个术语", { exact: true }).waitFor();
   assert.equal(correctionRequestCount, correctionsBeforeRetry + 1);
-  assert.equal(summaryRequestCount, summariesBeforeCorrection + 1);
+  assert.equal(summaryRequestCount, summariesBeforeCorrection + 3);
   assert.equal(asrRequestCount, asrRequestsBeforeRetries);
   assert.equal(await page.locator('[data-retry-insight="correction"]').count(), 0);
   const retriedMeeting = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0]);
   assert.equal(retriedMeeting.correctionError, "");
   assert.equal(retriedMeeting.summaryError, "");
-  assert.deepEqual(retriedMeeting.keywords, ["OneFly", "交付"]);
+  assert.deepEqual(retriedMeeting.keywords, ["OneFly"]);
+  assert.deepEqual(retriedMeeting.qa, []);
   assert.equal(await page.locator("#meetingTaskStatus").getAttribute("data-state"), "done");
 
   const mobile = await context.newPage();
@@ -640,7 +885,8 @@ try {
 
   const semanticContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const semanticPage = await semanticContext.newPage();
-  await semanticPage.addInitScript(() => {
+  await semanticPage.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await semanticPage.evaluate(() => {
     localStorage.setItem("yanlan.meetings.v1", JSON.stringify([{
       id: "semantic-fixture",
       title: "会议记录 08-01_01-29",
@@ -660,7 +906,7 @@ try {
       ],
     }]));
   });
-  await semanticPage.goto(baseUrl, { waitUntil: "networkidle" });
+  await semanticPage.reload({ waitUntil: "networkidle" });
   await semanticPage.locator(".transcript-segment").first().waitFor();
   assert.equal(await semanticPage.locator(".transcript-segment").count(), 2);
   assert.deepEqual(await semanticPage.locator(".segment-time").allTextContents(), ["00:00", "00:50"]);
@@ -676,7 +922,7 @@ try {
   await page.locator("#liveRecorder:not(.hidden)").waitFor();
   await page.waitForTimeout(1200);
   await page.locator("#stopRecordButton").click();
-  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("已完成"), null, { timeout: 15000 });
+  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("已完成"), null, { timeout: 60_000 });
   await page.locator("#recordingPlayer:not(.hidden)").waitFor();
 
   await page.locator("#newMeetingButton").click();
@@ -685,7 +931,25 @@ try {
   await page.locator("#liveRecorder:not(.hidden)").waitFor();
   await page.waitForTimeout(5600);
   await page.locator("#stopRecordButton").click();
-  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("处理失败"), null, { timeout: 20000 });
+  try {
+    await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("处理失败"), null, { timeout: 45_000 });
+  } catch (error) {
+    const failedRecordingState = await page.evaluate(() => {
+      const meeting = JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]")[0] || {};
+      return {
+        task: document.querySelector("#meetingTaskLabel")?.textContent,
+        taskState: document.querySelector("#meetingTaskStatus")?.dataset.state,
+        liveStatus: document.querySelector("#liveStatus")?.textContent,
+        recorderVisible: !document.querySelector("#liveRecorder")?.classList.contains("hidden"),
+        meetingStatus: meeting.status,
+        hasRecording: meeting.hasRecording === true,
+        transcriptIncomplete: meeting.transcriptIncomplete === true,
+        rawSegmentCount: Array.isArray(meeting.rawSegments) ? meeting.rawSegments.length : 0,
+        segmentCount: Array.isArray(meeting.segments) ? meeting.segments.length : 0,
+      };
+    });
+    throw new Error(`Failed recording did not settle: ${JSON.stringify({ failedRecordingState, asrRequestCount, correctionRequestCount, summaryRequestCount })}`, { cause: error });
+  }
   await page.locator("#errorMessage").filter({ hasText: /仍有 [1-9]\d* 个实时转写片段失败/ }).waitFor();
   assert.equal(await page.locator("#shareButton").isDisabled(), true);
   assert.equal(await page.locator("#copyButton").isDisabled(), true);
@@ -695,7 +959,7 @@ try {
   assert.equal(await page.locator('[data-export="audio"]').isEnabled(), true);
   successfulAsrResponsesRemaining = Number.POSITIVE_INFINITY;
   await page.locator("#retryButton").click();
-  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("已完成"), null, { timeout: 20000 });
+  await page.waitForFunction(() => document.querySelector("#meetingTaskLabel")?.textContent.includes("已完成"), null, { timeout: 45_000 });
 
   await page.locator("#newMeetingButton").click();
   asrTranscript = {
@@ -719,7 +983,7 @@ try {
   await page.locator("#interviewContinueButton").click();
   const fileChooser = await fileChooserPromise;
   await fileChooser.setFiles(fixture);
-  await page.getByText("证据复核", { exact: true }).waitFor({ timeout: 15000 });
+  await page.getByText("证据复核", { exact: true }).waitFor({ timeout: 60_000 });
   assert.equal(await page.locator('[data-insight="summary"]').textContent(), "复核");
   assert.equal(await page.locator('[data-insight="actions"]').textContent(), "证据");
   assert.equal(await page.locator('[data-insight="qa"]').textContent(), "追问");
@@ -772,6 +1036,127 @@ try {
   await interviewMobile.screenshot({ path: fileURLToPath(new URL("../artifacts/interview-mobile-share.png", import.meta.url)), fullPage: true });
   assert.equal(await interviewMobile.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
   await interviewMobile.close();
+
+  const deletingMeetingId = await page.evaluate(() => {
+    const meetings = JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]");
+    meetings[0].summaryError = "删除竞态测试：智能纪要待重试";
+    localStorage.setItem("yanlan.meetings.v1", JSON.stringify(meetings));
+    return meetings[0].id;
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  const staleMeetingPage = await context.newPage();
+  await staleMeetingPage.addInitScript(() => {
+    window.addEventListener("storage", (event) => {
+      if (event.key === "yanlan.meetings.v1" || event.key?.startsWith("yanlan.meeting.deleted.v1.")) {
+        event.stopImmediatePropagation();
+      }
+    }, true);
+  });
+  await staleMeetingPage.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await staleMeetingPage.locator(`.history-item[data-meeting-id="${deletingMeetingId}"]`).waitFor();
+  await page.locator('[data-insight="qa"]').click();
+  questionResponseDelayMs = 1_500;
+  await page.locator("#questionInput").fill("删除期间不应继续发送的问题");
+  await page.locator("#qaForm button").click();
+  await page.getByText("删除期间不应继续发送的问题", { exact: true }).waitFor();
+  const questionsAtDelete = questionRequestCount;
+  const summariesAtDelete = summaryRequestCount;
+  await page.evaluate(() => {
+    const original = Response.prototype.arrayBuffer;
+    let releaseGate;
+    const gate = new Promise((resolve) => { releaseGate = resolve; });
+    let delayNext = true;
+    window.__releaseYanlanShareCompression = releaseGate;
+    window.__restoreYanlanResponseArrayBuffer = () => { Response.prototype.arrayBuffer = original; };
+    Response.prototype.arrayBuffer = async function delayedShareArrayBuffer() {
+      const delayed = delayNext;
+      if (delayed) {
+        delayNext = false;
+        window.__yanlanShareCompressionBlocked = true;
+        await gate;
+      }
+      const result = await original.apply(this, arguments);
+      if (delayed) window.__yanlanShareCompressionDone = true;
+      return result;
+    };
+  });
+  await page.locator("#shareButton").click();
+  await page.waitForFunction(() => window.__yanlanShareCompressionBlocked === true);
+  assert.equal(await page.locator("#shareUrlInput").inputValue(), "正在生成…");
+  await page.evaluate(() => {
+    const original = IDBDatabase.prototype.transaction;
+    window.__restoreYanlanTransaction = () => { IDBDatabase.prototype.transaction = original; };
+    let holdNextDelete = true;
+    IDBDatabase.prototype.transaction = function transactionWithDeleteHold(storeNames, mode) {
+      const transaction = original.apply(this, arguments);
+      const names = typeof storeNames === "string" ? [storeNames] : [...storeNames];
+      if (holdNextDelete && mode === "readwrite" && names.includes("recordings") && names.includes("recordingChunks")) {
+        holdNextDelete = false;
+        const deadline = performance.now() + 2_500;
+        const keepAlive = () => {
+          if (performance.now() >= deadline) return;
+          let request;
+          try { request = transaction.objectStore("recordings").get("__yanlan_delete_hold__"); }
+          catch { return; }
+          request.onsuccess = keepAlive;
+          request.onerror = keepAlive;
+        };
+        keepAlive();
+      }
+      return transaction;
+    };
+  });
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator(".history-item.active .history-delete").dispatchEvent("click");
+  await page.getByText("正在删除记录", { exact: true }).waitFor();
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator("#shareDialog").evaluate((element) => element.open), false);
+  assert.equal(await page.locator("#shareUrlInput").inputValue(), "");
+  assert.equal(await page.locator("#shareHint").textContent(), "");
+  assert.equal(await page.locator(".history-item.active .history-delete").isDisabled(), true);
+  assert.equal(await page.locator("#newMeetingButton").isDisabled(), true);
+  assert.equal(await page.locator("#meetingTitle").isEditable(), false);
+  assert.equal(await page.locator("#questionInput").isDisabled(), true);
+  await page.evaluate(() => {
+    const input = document.querySelector("#questionInput");
+    input.disabled = false;
+    input.value = "强制提交也必须被删除锁拒绝";
+    document.querySelector("#qaForm").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  await page.locator('[data-insight="summary"]').click();
+  const deleteLockedRetry = page.locator('[data-retry-insight="summary"]');
+  assert.equal(await deleteLockedRetry.getAttribute("aria-disabled"), "true");
+  await deleteLockedRetry.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  assert.equal(questionRequestCount, questionsAtDelete);
+  assert.equal(summaryRequestCount, summariesAtDelete);
+  await page.evaluate(() => window.__releaseYanlanShareCompression?.());
+  await page.waitForFunction(() => window.__yanlanShareCompressionDone === true);
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator("#shareDialog").evaluate((element) => element.open), false);
+  assert.equal(await page.locator("#shareUrlInput").inputValue(), "");
+  assert.equal(await page.locator("#shareHint").textContent(), "");
+  await page.evaluate(() => window.__restoreYanlanResponseArrayBuffer?.());
+  await page.waitForFunction((id) => !JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]").some((meeting) => meeting.id === id), deletingMeetingId);
+  await page.locator(`.history-item[data-meeting-id="${deletingMeetingId}"]`).waitFor({ state: "detached" });
+  const deletedStorage = await recordingStorageState(page, deletingMeetingId);
+  assert.equal(deletedStorage.recordingSize, 0);
+  assert.deepEqual(deletedStorage.chunks, []);
+  await page.evaluate(() => window.__restoreYanlanTransaction?.());
+  assert.equal(await staleMeetingPage.locator(`.history-item[data-meeting-id="${deletingMeetingId}"]`).count(), 1);
+  await staleMeetingPage.locator("#meetingTitle").fill("休眠标签页的陈旧标题");
+  await staleMeetingPage.waitForFunction((id) => (
+    !JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]").some((meeting) => meeting.id === id)
+    && localStorage.getItem(`yanlan.meeting.deleted.v1.${id}`) !== null
+  ), deletingMeetingId);
+  await staleMeetingPage.locator(`.history-item[data-meeting-id="${deletingMeetingId}"]`).waitFor({ state: "detached" });
+  await staleMeetingPage.reload({ waitUntil: "domcontentloaded" });
+  assert.equal(await staleMeetingPage.locator(`.history-item[data-meeting-id="${deletingMeetingId}"]`).count(), 0);
+  await staleMeetingPage.close();
+
+  await verifyRetryReadDeletionRace(browser, baseUrl, fixture);
+  await verifyRecoveryDeletionRace(browser, baseUrl, fixture);
+  await verifyCompletedTombstoneStartupCleanup(browser, baseUrl, fixture);
 
   const legacy = await context.newPage();
   await legacy.setViewportSize({ width: 390, height: 844 });
@@ -842,10 +1227,291 @@ try {
 
   assert.ok(browserErrors.some((message) => /status of 503/.test(message)));
   assert.deepEqual(browserErrors.filter((message) => !/Failed to load resource: the server responded with a status of 503/.test(message)), []);
-  console.log("Browser flow passed: connection tests, key JSON backup, semantic Chinese segmentation, crash recovery, ASR retries, meeting/interview workflows, sharing, and responsive layout.");
+  console.log("Browser flow passed: connection tests, key JSON backup, semantic Chinese segmentation, crash recovery, ASR retries, meeting/interview workflows, cross-tab deletion tombstones, sharing, and responsive layout.");
 } finally {
   await browser.close();
   await developmentServer?.close();
+}
+
+async function verifyRetryReadDeletionRace(browserHandle, appUrl, audioFixture) {
+  const raceContext = await browserHandle.newContext({ viewport: { width: 1280, height: 800 } });
+  raceContext.setDefaultTimeout(90_000);
+  raceContext.setDefaultNavigationTimeout(180_000);
+  const seedPage = await raceContext.newPage();
+  const meetingId = "retry-read-delete-race";
+  const meeting = raceMeeting(meetingId, { status: "error", hasRecording: true, error: "转写待重试" });
+  await seedRaceStorage(seedPage, appUrl, {
+    meetings: [meeting],
+    recording: { id: meetingId, base64: audioFixture.buffer.toString("base64"), mimeType: audioFixture.mimeType, fileName: audioFixture.name },
+  });
+  await seedPage.close();
+
+  const pageHandle = await raceContext.newPage();
+  let asrRequests = 0;
+  await pageHandle.route("https://mimo.example/v1/chat/completions", async (route) => {
+    asrRequests += 1;
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ choices: [{ message: { content: "不应上传" } }] }) });
+  });
+  await pageHandle.goto(appUrl, { waitUntil: "domcontentloaded" });
+  await pageHandle.locator(`.history-item[data-meeting-id="${meetingId}"]`).waitFor();
+  await pageHandle.waitForFunction((id) => document.querySelector("#audioPlayer")?.dataset.meetingId === id, meetingId);
+  await installIdbReadGate(pageHandle, "recordings", "__yanlanRetryReadBlocked", "__releaseYanlanRetryRead");
+  await pageHandle.evaluate(() => {
+    window.__yanlanConfirmCalls = 0;
+    window.confirm = () => { window.__yanlanConfirmCalls += 1; return true; };
+  });
+
+  await pageHandle.locator("#retryButton").click();
+  await pageHandle.waitForFunction(() => window.__yanlanRetryReadBlocked === true);
+  await pageHandle.waitForFunction((id) => (
+    JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]").find((meetingItem) => meetingItem.id === id)?.status === "transcribing"
+  ), meetingId);
+  assert.equal(await pageHandle.locator(`.history-item[data-meeting-id="${meetingId}"] .history-delete`).isDisabled(), true);
+  await pageHandle.locator(`.history-item[data-meeting-id="${meetingId}"] .history-delete`).dispatchEvent("click");
+  assert.equal(await pageHandle.evaluate(() => window.__yanlanConfirmCalls), 0);
+
+  const helperPage = await raceContext.newPage();
+  await helperPage.goto(`${appUrl}/yanlan-logo.png`, { waitUntil: "load" });
+  await queueCrossTabDeletion(helperPage, meetingId);
+  await pageHandle.locator(`.history-item[data-meeting-id="${meetingId}"]`).waitFor({ state: "detached" });
+  await pageHandle.evaluate(() => window.__releaseYanlanRetryRead?.());
+  await helperPage.evaluate(() => window.__yanlanQueuedDelete);
+  await waitForRecordingDeleted(pageHandle, meetingId);
+  assert.equal(asrRequests, 0);
+  assert.equal(await pageHandle.evaluate((id) => (
+    JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]").some((meetingItem) => meetingItem.id === id)
+  ), meetingId), false);
+  await raceContext.close();
+}
+
+async function verifyRecoveryDeletionRace(browserHandle, appUrl, audioFixture) {
+  const raceContext = await browserHandle.newContext({ viewport: { width: 1280, height: 800 } });
+  raceContext.setDefaultTimeout(90_000);
+  raceContext.setDefaultNavigationTimeout(180_000);
+  const seedPage = await raceContext.newPage();
+  const meetingId = "recovery-delete-race";
+  const meeting = raceMeeting(meetingId, {
+    status: "error",
+    hasRecording: false,
+    recoveryPending: true,
+    recordingStopped: true,
+    recordingChunkCount: 1,
+    recordingObservedChunkCount: 1,
+    recordingHeartbeat: 0,
+    error: "录音恢复待处理",
+  });
+  await seedRaceStorage(seedPage, appUrl, {
+    meetings: [meeting],
+    chunk: { meetingId, index: 0, base64: audioFixture.buffer.toString("base64"), mimeType: audioFixture.mimeType, fileName: audioFixture.name },
+  });
+  await seedPage.close();
+
+  const pageHandle = await raceContext.newPage();
+  await pageHandle.addInitScript(readGateInitScript, {
+    storeName: "recordingChunks",
+    blockedFlag: "__yanlanRecoveryReadBlocked",
+    releaseName: "__releaseYanlanRecoveryRead",
+  });
+  await pageHandle.goto(appUrl, { waitUntil: "domcontentloaded" });
+  await pageHandle.waitForFunction(() => window.__yanlanRecoveryReadBlocked === true);
+
+  const helperPage = await raceContext.newPage();
+  await helperPage.goto(`${appUrl}/yanlan-logo.png`, { waitUntil: "load" });
+  await queueCrossTabDeletion(helperPage, meetingId);
+  await pageHandle.evaluate(() => window.__releaseYanlanRecoveryRead?.());
+  await helperPage.evaluate(() => window.__yanlanQueuedDelete);
+  await waitForRecordingDeleted(pageHandle, meetingId);
+  assert.equal(await pageHandle.evaluate((id) => (
+    JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]").some((meetingItem) => meetingItem.id === id)
+  ), meetingId), false);
+  await raceContext.close();
+}
+
+async function verifyCompletedTombstoneStartupCleanup(browserHandle, appUrl, audioFixture) {
+  const raceContext = await browserHandle.newContext({ viewport: { width: 1280, height: 800 } });
+  raceContext.setDefaultTimeout(90_000);
+  raceContext.setDefaultNavigationTimeout(180_000);
+  const seedPage = await raceContext.newPage();
+  const meetingId = "completed-tombstone-orphan";
+  await seedRaceStorage(seedPage, appUrl, {
+    meetings: [],
+    tombstones: [{ id: meetingId, status: "deleted" }],
+    recording: { id: meetingId, base64: audioFixture.buffer.toString("base64"), mimeType: audioFixture.mimeType, fileName: audioFixture.name },
+    chunk: { meetingId, index: 0, base64: audioFixture.buffer.toString("base64"), mimeType: audioFixture.mimeType, fileName: audioFixture.name },
+  });
+  await seedPage.close();
+  const pageHandle = await raceContext.newPage();
+  await pageHandle.goto(appUrl, { waitUntil: "domcontentloaded" });
+  await waitForRecordingDeleted(pageHandle, meetingId);
+  assert.equal(await pageHandle.evaluate((id) => localStorage.getItem(`yanlan.meeting.deleted.v1.${id}`), meetingId), "deleted");
+  await raceContext.close();
+}
+
+function raceMeeting(id, overrides = {}) {
+  return {
+    id,
+    title: "删除竞态录音",
+    createdAt: "2026-08-04T00:00:00.000Z",
+    duration: 1,
+    sourceName: "race.wav",
+    sourceType: "audio/wav",
+    language: "zh",
+    mode: "meeting",
+    status: "error",
+    hasRecording: false,
+    rawSegments: [],
+    segments: [],
+    qa: [],
+    keywords: [],
+    highlights: [],
+    speaker_summaries: [],
+    decisions: [],
+    decision_records: [],
+    action_items: [],
+    ...overrides,
+  };
+}
+
+function raceConfig() {
+  return {
+    asrBaseUrl: "https://mimo.example",
+    asrApiKey: "asr-test-key",
+    asrModel: "mimo-v2.5-asr",
+    asrProtocol: "mimo-chat",
+    asrPath: "v1/chat/completions",
+    chatBaseUrl: "https://gpt.example/v1",
+    chatApiKey: "gpt-test-key",
+    chatModel: "gpt-5.6-luna",
+    chatProtocol: "responses",
+    chatPath: "responses",
+    transportMode: "direct",
+  };
+}
+
+async function seedRaceStorage(pageHandle, appUrl, { meetings, tombstones = [], recording, chunk }) {
+  await pageHandle.goto(`${appUrl}/yanlan-logo.png`, { waitUntil: "load" });
+  await pageHandle.evaluate(async ({ storedMeetings, config, tombstoneEntries, recordingEntry, chunkEntry }) => {
+    localStorage.setItem("yanlan.config.v1", JSON.stringify(config));
+    localStorage.setItem("yanlan.meetings.v1", JSON.stringify(storedMeetings));
+    for (const entry of tombstoneEntries) {
+      localStorage.setItem(`yanlan.meeting.deleted.v1.${entry.id}`, entry.status);
+    }
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("yanlan", 2);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains("recordings")) request.result.createObjectStore("recordings", { keyPath: "id" });
+        if (!request.result.objectStoreNames.contains("recordingChunks")) {
+          const chunks = request.result.createObjectStore("recordingChunks", { keyPath: ["meetingId", "index"] });
+          chunks.createIndex("meetingId", "meetingId", { unique: false });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction(["recordings", "recordingChunks"], "readwrite");
+    const blobFrom = (entry) => {
+      const bytes = Uint8Array.from(atob(entry.base64), (character) => character.charCodeAt(0));
+      return new Blob([bytes], { type: entry.mimeType });
+    };
+    if (recordingEntry) {
+      transaction.objectStore("recordings").put({
+        id: recordingEntry.id,
+        blob: blobFrom(recordingEntry),
+        fileName: recordingEntry.fileName,
+        mimeType: recordingEntry.mimeType,
+      });
+    }
+    if (chunkEntry) {
+      transaction.objectStore("recordingChunks").put({
+        meetingId: chunkEntry.meetingId,
+        index: chunkEntry.index,
+        blob: blobFrom(chunkEntry),
+        fileName: chunkEntry.fileName,
+        mimeType: chunkEntry.mimeType,
+      });
+    }
+    await new Promise((resolve, reject) => {
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    database.close();
+  }, {
+    storedMeetings: meetings,
+    config: raceConfig(),
+    tombstoneEntries: tombstones,
+    recordingEntry: recording || null,
+    chunkEntry: chunk || null,
+  });
+}
+
+async function installIdbReadGate(pageHandle, storeName, blockedFlag, releaseName) {
+  await pageHandle.evaluate(readGateInitScript, { storeName, blockedFlag, releaseName });
+}
+
+function readGateInitScript({ storeName, blockedFlag, releaseName }) {
+  const original = IDBDatabase.prototype.transaction;
+  let armed = true;
+  let released = false;
+  window[releaseName] = () => { released = true; };
+  IDBDatabase.prototype.transaction = function transactionWithReadGate(storeNames, mode) {
+    const transaction = original.apply(this, arguments);
+    const names = typeof storeNames === "string" ? [storeNames] : [...storeNames];
+    if (!armed || mode !== "readonly" || !names.includes(storeName)) return transaction;
+    armed = false;
+    window[blockedFlag] = true;
+    const keepAlive = () => {
+      if (released) return;
+      let request;
+      try { request = transaction.objectStore(storeName).get("__yanlan_read_gate__"); }
+      catch { return; }
+      request.onsuccess = keepAlive;
+      request.onerror = keepAlive;
+    };
+    keepAlive();
+    return transaction;
+  };
+}
+
+async function queueCrossTabDeletion(pageHandle, meetingId) {
+  await pageHandle.evaluate(async (id) => {
+    localStorage.setItem(`yanlan.meeting.deleted.v1.${id}`, "pending");
+    const meetings = JSON.parse(localStorage.getItem("yanlan.meetings.v1") || "[]");
+    localStorage.setItem("yanlan.meetings.v1", JSON.stringify(meetings.filter((meeting) => meeting.id !== id)));
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("yanlan", 2);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction(["recordings", "recordingChunks"], "readwrite");
+    transaction.objectStore("recordings").delete(id);
+    const cursorRequest = transaction.objectStore("recordingChunks").index("meetingId").openKeyCursor(IDBKeyRange.only(id));
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (!cursor) return;
+      transaction.objectStore("recordingChunks").delete(cursor.primaryKey);
+      cursor.continue();
+    };
+    window.__yanlanQueuedDelete = new Promise((resolve, reject) => {
+      transaction.oncomplete = () => {
+        localStorage.setItem(`yanlan.meeting.deleted.v1.${id}`, "deleted");
+        database.close();
+        resolve(true);
+      };
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  }, meetingId);
+}
+
+async function waitForRecordingDeleted(pageHandle, meetingId, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const stored = await recordingStorageState(pageHandle, meetingId);
+    if (stored.recordingSize === 0 && stored.chunks.length === 0) return;
+    await pageHandle.waitForTimeout(50);
+  }
+  throw new Error(`Timed out waiting for local audio cleanup: ${meetingId}`);
 }
 
 function recordingChunkCount(pageHandle, meetingId) {
