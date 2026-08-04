@@ -24,8 +24,10 @@ Yanlan is an open-source, self-hostable AI audio workspace that runs entirely in
 - Record in the browser, transcribe in near real time by segment, and continuously commit audio chunks to IndexedDB so persisted audio can be recovered after an accidental refresh
 - Use Yanlan as a local recorder without any API key, then play or export the audio directly
 - Upload and chunk common audio formats; the default MiMo data-URL path mixes only the current PCM range instead of duplicating the entire decoded recording
-- Preserve raw ASR segments while the Luna agent reads transcript windows, submits candidates, scans aliases recording-wide, validates mapping groups, and optionally asks MiMo to recheck uncertain audio. Only `finalize_correction` can commit an artifact; deterministic code applies validated mappings and records every accepted or rejected occurrence without changing timeline or speaker metadata
+- Preserve raw ASR segments while the Luna agent reads transcript windows, submits candidates, scans aliases recording-wide, validates mapping groups, and optionally asks MiMo to recheck uncertain audio. Conflicting independent spelling reviews require a final factual adjudication. Only `finalize_correction` can commit an artifact; deterministic code applies validated mappings and records every accepted or rejected occurrence without changing timeline or speaker metadata
 - Run the Responses tool loop with strict JSON Schema, exact `call_id` correlation, immutable state, budgets, and append-only traces; reasoning and function items are replayed verbatim with tool results across turns
+- Let the meeting-analysis agent classify every bounded decision/action candidate through `review_meeting_commitments`, then atomically commit transcript-verified evidence through `finalize_meeting_analysis`; the Harness rejects missing, duplicate, direct-question, and explicitly absent commitments, while Luna's conditional, modal, and hearsay classifications are checked by a public gold canary. Gateways without tool support fall back to the same evidence ledger
+- Preserve Agent-confirmed decisions and actions across repeated sharing and export with public source/commitment fingerprints only, without traces, model IDs, or additional transcript text; injected items without a matching fingerprint still use strict sanitization
 - Generate an overview, keywords, replayable highlights, speaker summaries, source-backed decisions, action items, and transcript Q&A
 - Enter a candidate alias, role, interview round, competencies, and job description before an interview
 - Organize interview evidence, gaps, and follow-up questions by competency; code validates timestamps and quotes but never decides whether a quote proves a competency, and never advances/rejects a candidate
@@ -35,7 +37,7 @@ Yanlan is an open-source, self-hostable AI audio workspace that runs entirely in
 - Generate a read-only page containing the transcript, timestamps, and summary
 - Choose between direct browser requests and a local same-origin relay for user-defined API base URLs
 - Require HTTPS for remote model endpoints; HTTP is accepted only for loopback hosts (`localhost`, `127.0.0.0/8`, and `[::1]`)
-- Store recordings in IndexedDB and workspace data in localStorage
+- Store recordings in IndexedDB and workspace data in localStorage; deletion writes a per-ID tombstone first so stale tabs cannot resurrect a deleted meeting
 - Import and export both API keys as versioned JSON; imports cannot change model endpoints or other settings
 - Test each MiMo or GPT base URL, key, and model before saving, with distinct guidance for authentication, quota, endpoint, network, and CORS failures
 - Retry GPT terminology correction or the complete insight bundle after failure; when correction changes the transcript, Yanlan refreshes every downstream insight instead of mixing result versions
@@ -61,13 +63,13 @@ When you only need text from one recording, there is no need to start the web ap
 
 ```bash
 export MIMO_API_KEY="your-key"
-npx --yes github:ranxi2001/yanlan-ai#v0.5.1 transcribe recording.mp3 -o recording.txt
+npx --yes github:ranxi2001/yanlan-ai#v0.6.0 transcribe recording.mp3 -o recording.txt
 ```
 
 You can also install the CLI globally:
 
 ```bash
-npm install --global github:ranxi2001/yanlan-ai#v0.5.1
+npm install --global github:ranxi2001/yanlan-ai#v0.6.0
 yanlan transcribe interview.m4a -o interview.md --language en
 ```
 
@@ -147,7 +149,8 @@ The relay listens only on `127.0.0.1`, validates Host and Origin, accepts only `
 - Export Key produces JSON containing plaintext credentials. Keep it only on a trusted device in a controlled location. Import reads only the two keys and ignores any endpoint or other configuration fields.
 - Recording chunks are committed to IndexedDB throughout capture, then atomically combined into the complete recording and removed after a normal stop.
 - After an accidental close, Yanlan can recover consecutive chunks that were already committed. The final chunk of roughly one second may not yet have been emitted, so export a backup after important recordings.
-- Audio segments are sent to the configured MiMo API; transcript windows are sent to the configured GPT API. The agent may request a MiMo recheck of at most 30 seconds only when terminology evidence is insufficient, under a separate call budget.
+- Meeting deletion permanently retains a localStorage tombstone containing only the meeting ID and deletion state before removing metadata and IndexedDB audio. It contains no title or transcript and prevents a stale tab that missed synchronization events from writing deleted content back.
+- Audio segments are sent to the configured MiMo API; transcript windows are sent to the configured GPT API. The agent may request a MiMo recheck of at most 90 seconds only when terminology evidence is insufficient, under a separate call budget.
 - Responses requests explicitly set `store: false`. The harness replays complete typed output locally to preserve tool context and stores a run trace without keys or transcript bodies in the meeting. Third-party gateways remain subject to their own privacy policies.
 - The local relay runs only through `npm run local`. The static live version never proxies or stores user keys.
 - Shared links and offline pages exclude API keys, original recordings, Q&A history, and raw ASR backups.
@@ -162,7 +165,7 @@ The relay listens only on `127.0.0.1`, validates Host and Origin, accepts only `
 npm run build
 ```
 
-The generated `dist/` directory can be deployed to GitHub Pages, Cloudflare Pages, Netlify, or any static server. Shared links store the compressed transcript in the URL fragment. Direct links work well for shorter transcripts; export an offline HTML file for longer records to avoid URL truncation by messaging clients.
+The generated `dist/` directory can be deployed to GitHub Pages, Cloudflare Pages, Netlify, or any static server. The bundled Pages workflow uploads only after unit, package, full browser, and dependency-audit gates pass. Shared links store the compressed transcript in the URL fragment. Direct links work well for shorter transcripts; export an offline HTML file for longer records to avoid URL truncation by messaging clients.
 
 ## Validation
 
@@ -186,6 +189,14 @@ npm run eval:terminology:agent
 
 Optionally set `MIMO_API_KEY` to expose the short-audio review tool during the eval; local `ffmpeg` is required.
 
+The live meeting-analysis evaluation reuses the public fixture and runs a public semantic canary with gold dispositions in the same command, so an all-empty insight artifact cannot pass vacuously. It prints only privacy-safe timing, count, hash, and usage metrics, never the real meeting title, summary, or transcript body:
+
+```bash
+YANLAN_LUNA_BASE_URL="https://example.com/v1" \
+YANLAN_LUNA_API_KEY="your-key" \
+npm run eval:meeting:agent
+```
+
 The browser end-to-end test starts an isolated local server and generates its own audio fixture:
 
 ```bash
@@ -194,7 +205,9 @@ npm run test:browser
 
 ## Project Status
 
-The current mainline includes an application-owned Responses Agent Harness with recording-wide terminology consistency as its first profile: Luna owns reasoning and tool selection, MiMo provides controlled audio evidence, and deterministic code owns invariants, commit, and trace. `v0.5.1` is informed by anonymized measurements from a 61-minute real meeting and adds large-file preflight rejection, ASR quality gates with adaptive retries, stable timeline ordering, auditable terminology patches, concurrent long-form summaries, complete transcript-backed evidence, and recording recovery consistency fixes. `v0.5.0` simplified MiMo setup and migrated legacy base URLs, added JSON key backup, independent MiMo/GPT connection tests, CORS guidance, GPT retry controls, and Chinese semantic segmentation without collapsing the atomic timeline.
+`v0.6.0` extends the application-owned Responses Agent Harness to two profiles: recording-wide terminology consistency and intelligent meeting analysis. Luna chooses tools, MiMo supplies controlled audio evidence, and deterministic runtime code owns evidence validation, invariants, atomic commit, and trace. Long meetings first extract bounded evidence concurrently; the meeting agent then classifies every commitment candidate before the runtime derives the confirmed decision/action set. The terminology agent uses independent spelling reviews plus conflict adjudication and requires merging only for identifier groups with spacing, case, or fused-form equivalence; close ordinary words can remain distinct. Q&A, correction retries, and summary retries are bound to a transcript version, while cross-tab tombstones abort in-flight audio work and prevent deleted meetings from being written back.
+
+`v0.5.1` was informed by anonymized measurements from a 61-minute real meeting and added large-file preflight rejection, ASR quality gates with adaptive retries, stable timeline ordering, auditable terminology patches, concurrent long-form summaries, complete transcript-backed evidence, and recording recovery consistency fixes.
 
 The next priorities include speaker diarization, transcript editing, collaborative annotations, team permissions, and more model integrations. Roadmap discussions and priorities are maintained in GitHub Issues.
 

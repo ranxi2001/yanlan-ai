@@ -167,7 +167,9 @@ test("invalid or cross-recording accepted ledgers cannot rewrite summaries, answ
     const controlSummary = await summarizeTranscript({ config, meeting: validMeeting });
     const controlAnswer = await askTranscript({ config, meeting: validMeeting, question: "使用了什么术语？" });
     const controlPublic = publicMeeting(validMeeting);
-    assert.equal(controlSummary.title, `${canonical} title`);
+    assert.equal(controlSummary.title, `${canonical}会议纪要`);
+    assert.match(controlSummary.summary, new RegExp(canonical));
+    assert.doesNotMatch(controlSummary.summary, /stalealias summary/);
     assert.equal(controlAnswer, `${canonical} answer`);
     assert.equal(controlPublic.title, `${canonical} title`);
 
@@ -228,9 +230,10 @@ test("invalid or cross-recording accepted ledgers cannot rewrite summaries, answ
         const answer = await askTranscript({ config, meeting: attack.meeting, question: "使用了什么术语？" });
         const shared = publicMeeting(attack.meeting);
 
-        assert.equal(summary.title, `${alias} title`);
-        assert.equal(summary.summary, `${alias} summary`);
-        assert.deepEqual(summary.keywords, [alias]);
+        assert.notEqual(summary.title, `${canonical}会议纪要`);
+        assert.doesNotMatch(`${summary.title}\n${summary.summary}`, new RegExp(canonical));
+        assert.doesNotMatch(summary.summary, new RegExp(`${alias} summary`));
+        assert.equal(summary.keywords.includes(canonical), false);
         assert.equal(answer, `${alias} answer`);
         assert.equal(shared.title, `${alias} title`);
         assert.equal(shared.summary, `${alias} summary`);

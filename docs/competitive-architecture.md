@@ -101,7 +101,7 @@ flowchart LR
 | 单元 | 负责 | 明确不负责 |
 | --- | --- | --- |
 | Luna supervisor | 理解目标、选择白名单工具、根据 tool output 决定下一步、提出术语补丁和派生内容 | 不直接读取 API key，不修改 raw ASR，不决定时间戳/说话人，不提交最终 artifact |
-| MiMo 受控工具 | 当前只读取本会议中由 runtime 截取的不超过 30 秒音频，执行复核 ASR 并返回有界证据 | 不接收任意 URL/路径，不调用其他工具，不做总结、术语统一或最终写入 |
+| MiMo 受控工具 | 当前只读取本会议中由 runtime 截取的不超过 90 秒音频，执行复核 ASR 并返回有界证据 | 不接收任意 URL/路径，不调用其他工具，不做总结、术语统一或最终写入 |
 | deterministic finalizer | 重放补丁，验证 schema、来源哈希、时间/说话人几何、术语一致性、引用证据和输出完整性 | 不补写模型遗漏，不猜 canonical，不把失败候选自动降级为成功 |
 | profile invariant | 当前验证逐字稿覆盖、候选证据、映射冲突、来源哈希与时间/说话人几何；后续再抽象成可组合 registry | 不依赖 prompt 自觉；不把 `Descheduler` 或其他 fixture 术语硬编码进通用流程 |
 
@@ -140,9 +140,12 @@ MCP 适合放在最外层，把言澜能力提供给 Codex、Claude、Cursor 等
 - `read_transcript_window`：顺序读取不可变逐字稿窗口，并记录录音覆盖率；
 - `submit_term_candidates`：提交 alias、canonical、置信度和 segment evidence，不修改逐字稿；
 - `reject_term_candidates`：显式撤回被后续证据否定的模型候选；用户明确映射不可撤回；
-- `scan_alias_occurrences` / `validate_mapping_group`：整段扫描并验证候选组；
-- `transcribe_audio_range`：可选调用 MiMo 复核本会议不超过 30 秒的疑难范围；
+- `scan_alias_occurrences`：仅在出现歧义时批量扫描候选 alias；最终提交仍会确定性重扫全部 mapping；
+- `resolve_terminology_signals`：把强标识符组统一到 canonical，或把启发式近似词明确判为不同实体；
+- `transcribe_audio_range`：可选调用 MiMo 复核本会议不超过 90 秒的疑难范围；
 - `finalize_correction`：唯一提交入口，由确定性代码应用补丁和生成可回放 ledger。
+
+会议解析 profile 开放 `review_meeting_commitments` 和 `finalize_meeting_analysis`。并发候选提取先建立带原话和时间的只读证据账本；Luna 必须把每条决定/行动候选分类为已确认、问题、未决、否定或其他，Harness 校验完整覆盖后才允许 runtime 从 confirmed 集合原子生成标题、摘要、关键词、金句、发言人要点、决策和行动项。公开产物只携带实际发布项的来源与承诺指纹，用于重复净化时保持 Agent 语义且不复制 trace 或正文；工具不受支持时也只使用同一账本，不发布绕过证据校验的自由文本。
 
 `inspect_job`、`retry_chunk`、`ask_with_timestamps`、`export_meeting` 和会议 Bot 管理可以随后包装为 MCP 工具。底层 artifact commit 不暴露给 supervisor 或外部 MCP；它是 `finalize_correction` 通过 invariant 后调用的可信代码路径。`export_meeting` 只写入用户明确指定的本地路径。
 
@@ -157,13 +160,13 @@ Vexa 官方 MCP 文档展示了如何把“加入会议、读取 transcript、�
 - MiMo 分片结果经过每秒字符数、每秒 completion token 数和重复 n-gram 质量门，异常片段缩短后重试。
 - 事实层只对重复的无语义口头填充词做可回放去重；普通文本重叠和英文词干都保留原文，避免删除条件、模态或事实语境。
 - GPT 只返回术语 patch；明确 alias 由程序全录音扫描并确定性应用，重复候选在所有批次聚合后统一回放，canonical 冲突或证据不足时保留原文。
-- 长总结使用有上限并发和稳定顺序，后续把每层结果写入版本化 artifact，而不是只保存在一次模型响应中。
+- 长总结使用有上限并发和稳定顺序生成证据账本，会议 Agent 通过严格 finalizer 原子提交完整 artifact。
 
 ### Agent Mode v1
 
 - 固定一个 Luna supervisor，通过 Responses API 运行；模型、reasoning effort、tools 和预算由配置钉住，supervisor 无权动态更换模型或扩大权限。
 - 已实现轻量 Responses runner，不引入 openai-agents-js 或 LangGraph 运行时依赖；运行中原样保留完整 typed items、准确 `call_id`、reasoning items 和 tool outputs，持久化不含正文的 run trace 与轮次/工具用量。
-- 首个 profile 开放 `read_transcript_window`、`submit_term_candidates`、`reject_term_candidates`、`scan_alias_occurrences`、`validate_mapping_group`、可选 `transcribe_audio_range` 和 `finalize_correction`；所有参数使用 strict schema 并在执行前本地复验。
+- 当前包含术语一致性和会议解析两个 profile。术语 profile 开放 `read_transcript_window`、`inspect_terminology_signals`、`submit_term_candidates`、`reject_term_candidates`、批量 `scan_alias_occurrences`、`resolve_terminology_signals`、可选 `transcribe_audio_range` 和 `finalize_correction`；会议 profile 开放 `review_meeting_commitments` 与 `finalize_meeting_analysis`。所有参数使用 strict schema 并在执行前本地复验。
 - MiMo 只在 runtime 控制的初始转写与 `transcribe_audio_range` 内运行；工具不获得存储凭据、任意文件读取或提交权限。
 - finalizer 在提交前运行 transcript coverage、mapping evidence/conflict、source hash、timeline 与 speaker invariant；失败返回结构化 violations，模型可在预算内继续调用工具。
 - 用 fake Responses client 建立 runtime contract tests：非法 schema/arguments 不执行工具，tool output 保留准确 `call_id`，reasoning items 原样回传，并行调用不串线，预算耗尽前停止副作用，有 pending call 或 incomplete/empty response 时不得 final。

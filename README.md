@@ -24,8 +24,10 @@
 - 浏览器录音，分段实时转写，并把录音分片持续写入 IndexedDB；意外刷新后可恢复已经落盘的音频
 - 无需 API Key 也可作为纯本地录音器使用，结束后直接播放或导出音频
 - 上传常见格式的音频并分段转写；默认 MiMo data URL 路径在解码时仅保留当前 PCM 分片，不再复制整段单声道音频
-- 保留原始 ASR 片段；Luna Agent 可按需读取逐字稿窗口、提交术语候选、全录音扫描 alias、验证映射组，并对不确定处调用 MiMo 复核。只有 `finalize_correction` 工具能提交结果；程序把通过验证的同一实体统一为一个 canonical，每次替换都保存可回放台账，不改变时间轴与说话人归属
+- 保留原始 ASR 片段；Luna Agent 可按需读取逐字稿窗口、提交术语候选、全录音扫描 alias、验证映射组，并对不确定处调用 MiMo 复核。独立拼写意见冲突时必须经过最终事实裁决；只有 `finalize_correction` 工具能提交结果。程序把通过验证的同一实体统一为一个 canonical，每次替换都保存可回放台账，不改变时间轴与说话人归属
 - Responses tool loop 使用严格 JSON Schema、精确 `call_id`、不可变运行状态、调用预算和追加式 trace；模型的 reasoning/function items 会随工具结果原样回传，避免多轮推理断裂
+- 会议解析 Agent 会先通过 `review_meeting_commitments` 逐条裁决全部决定/行动候选，再由 `finalize_meeting_analysis` 从不可变证据账本原子提交标题、摘要、金句、发言人要点、决策和行动项；漏判、重复、直接提问或明确未形成承诺会被 Harness 退回，条件、模态和传闻由 Luna 按公开 gold canary 分类，不支持工具的兼容网关则降级到同一证据账本
+- Agent 已确认的决策与行动项在公开 JSON 中只保留来源及承诺指纹，不包含 trace、模型 ID 或额外正文；分享稿和多次导出可据此保持幂等，未获指纹的注入项仍走严格净化
 - 会议概览、关键词、可回听金句、发言人总结、带原话证据的关键决策、行动项和逐字稿问答
 - 面试前录入候选人代称、岗位、轮次、能力项和 JD
 - 面试后按能力项整理证据、缺口和下一轮追问；程序只验证时间与原话，不自动判断原话是否证明能力，也不自动推进/淘汰候选人
@@ -35,7 +37,7 @@
 - 生成包含逐字稿、时间和摘要的只读链接
 - 浏览器直连与本地同源网关双模式，兼容不同用户配置的 API Base URL
 - 远程模型端点强制使用 HTTPS；只有 `localhost`、`127.0.0.0/8` 和 `[::1]` 回环地址可使用 HTTP
-- 录音保存在 IndexedDB，会议数据保存在 localStorage
+- 录音保存在 IndexedDB，会议数据保存在 localStorage；删除先写入 per-ID tombstone，阻止其他旧标签页复活已删除会议
 - 两组 API Key 支持带版本标识的 JSON 导入与导出，导入文件不能修改模型地址或其他配置
 - MiMo 与 GPT 均可在保存前测试当前 Base URL、Key 和模型，并区分鉴权、额度、接口路径、网络/CORS 等常见错误
 - GPT 术语校正和整份智能纪要失败后可分别重试；校正改变逐字稿时自动刷新全部下游洞察，不会混用新旧结果
@@ -59,13 +61,13 @@ MiMo-V2.5-ASR 的模型能力和部署信息见小米官方的 [MiMo-V2.5-ASR �
 
 ```bash
 export MIMO_API_KEY="你的 Key"
-npx --yes github:ranxi2001/yanlan-ai#v0.5.1 transcribe recording.mp3 -o recording.txt
+npx --yes github:ranxi2001/yanlan-ai#v0.6.0 transcribe recording.mp3 -o recording.txt
 ```
 
 也可以全局安装：
 
 ```bash
-npm install --global github:ranxi2001/yanlan-ai#v0.5.1
+npm install --global github:ranxi2001/yanlan-ai#v0.6.0
 yanlan transcribe interview.m4a -o interview.md --language zh
 ```
 
@@ -145,7 +147,8 @@ flowchart LR
 - “导出 Key”生成的 JSON 含有明文凭据，应只保存在可信设备和受控位置；导入只读取两组 Key，不接受文件中的 Base URL 或其他配置。
 - 录音分片在录制期间持续提交到本机 IndexedDB，正常结束后合并为完整录音并清理临时分片。
 - 页面意外关闭后可恢复已提交的连续分片；尚未触发保存的最后约一秒仍可能丢失，重要录音应在结束后及时导出备份。
-- 音频片段会发送给配置的 MiMo API；逐字稿窗口会发送给配置的 GPT API。Agent 只有在术语证据不足时才可请求最多 30 秒的 MiMo 音频复核，并受独立调用预算限制。
+- 删除会议时先在 localStorage 永久保留只含会议 ID 与删除状态的 tombstone，再清理元数据和 IndexedDB 音频；它不含标题或逐字稿，并用于阻止漏掉同步事件的旧标签页重新写回已删除内容。
+- 音频片段会发送给配置的 MiMo API；逐字稿窗口会发送给配置的 GPT API。Agent 只有在术语证据不足时才可请求最多 90 秒的 MiMo 音频复核，并受独立调用预算限制。
 - Responses 请求显式设置 `store: false`；Harness 在本机回放完整 typed output 来维持工具上下文，并把不含 Key 和逐字稿正文的运行 trace 保存在当前会议中。第三方网关仍以其自身隐私政策为准。
 - 本地网关只在 `npm run local` 启动，静态在线版不会代管或保存用户 Key。
 - 分享链接和离线网页不包含 API Key、原始录音、问答历史或原始 ASR 备份。
@@ -160,7 +163,7 @@ flowchart LR
 npm run build
 ```
 
-`dist/` 是可部署到 GitHub Pages、Cloudflare Pages、Netlify 或任意静态服务器的产物。分享链接把压缩后的逐字稿放在 URL fragment 中，短稿适合直接分享；长稿建议导出离线 HTML，避免聊天软件截断 URL。
+`dist/` 是可部署到 GitHub Pages、Cloudflare Pages、Netlify 或任意静态服务器的产物。仓库自带的 Pages workflow 只会在单测、打包、完整浏览器测试和依赖审计全部通过后上传。分享链接把压缩后的逐字稿放在 URL fragment 中，短稿适合直接分享；长稿建议导出离线 HTML，避免聊天软件截断 URL。
 
 ## 验证
 
@@ -184,6 +187,14 @@ npm run eval:terminology:agent
 
 可选设置 `MIMO_API_KEY`，让 Agent eval 同时开放 MiMo 短音频复核工具；需要本机可执行 `ffmpeg`。
 
+真实会议解析评测复用公开样本，并在同一次运行中执行带 gold disposition 的公开语义 canary，防止“所有洞察为空”仍被误判为成功。报告只输出脱敏的耗时、数量、哈希和用量指标，不打印真实会议标题、摘要或逐字稿正文：
+
+```bash
+YANLAN_LUNA_BASE_URL="https://example.com/v1" \
+YANLAN_LUNA_API_KEY="your-key" \
+npm run eval:meeting:agent
+```
+
 浏览器端到端验收会自行启动隔离的本地服务并生成测试音频：
 
 ```bash
@@ -192,7 +203,9 @@ npm run test:browser
 
 ## 项目状态
 
-当前主线已加入自研 Responses Agent Harness，并以录音级术语一致性作为首个 profile：Luna 负责推理和工具选择，MiMo 提供受控音频证据，程序负责 invariant、提交和 trace。`v0.5.1` 基于一段 61 分钟真实会议的匿名测量，增加大文件快速预检、ASR 质量门与自适应重试、稳定时间排序、可审计术语补丁、并发长总结、完整原话证据约束和录音恢复一致性修复；`v0.5.0` 简化 MiMo 配置并自动迁移旧 Base URL，增加 Key JSON 导入导出、MiMo/GPT 连接测试、推荐服务 CORS 说明、GPT 失败重试，以及不破坏原子时间轴的中文语义断句。下一阶段将把异常 ASR 路由和长纪要也迁移为 profile，并继续推进说话人分离、逐字稿编辑与协作批注。
+`v0.6.0` 将自研 Responses Agent Harness 扩展为录音级术语一致性和智能会议解析两个 profile：Luna 负责工具选择，MiMo 提供受控音频证据，确定性 runtime 负责证据校验、不变量、原子提交和 trace。长会议先并发提取有界证据，再由会议 Agent 选择证据 ID；术语 Agent 使用独立拼写审查与冲突裁决，只强制合并具备 spacing/case/fused 等价证据的标识符，普通近似词可判为不同实体。问答、校正重试和纪要重试均绑定逐字稿版本，删除操作由跨标签 tombstone 保护，处理中不会把半成品或已删除会议写回本机。
+
+`v0.5.1` 基于一段 61 分钟真实会议的匿名测量，增加大文件快速预检、ASR 质量门与自适应重试、稳定时间排序、可审计术语补丁、并发长总结、完整原话证据约束和录音恢复一致性修复。下一阶段继续推进说话人分离、逐字稿编辑与协作批注。
 
 会议产品、开源语音组件与 Agent/MCP 的技术取舍见[竞品架构调研](./docs/competitive-architecture.md)。
 

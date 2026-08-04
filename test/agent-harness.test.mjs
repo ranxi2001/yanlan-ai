@@ -430,6 +430,40 @@ test("a non-completed Responses result cannot execute tools or complete from out
   }
 });
 
+test("provider error prose and opaque identifiers never enter a persisted Agent trace", async () => {
+  const sentinel = "PRIVATE_TRANSCRIPT_SENTINEL sk-provider-secret";
+  const adapter = createScriptedModelAdapter([{
+    id: sentinel,
+    status: "failed",
+    error: { message: `gateway echoed ${sentinel}` },
+    incomplete_details: { reason: sentinel },
+    output: [],
+  }]);
+
+  await assert.rejects(
+    () => runAgent({
+      adapter,
+      profile: createProfile([]),
+      input: "Private transcript input",
+      initialState: {},
+      policy: { maxModelTurns: 1, maxToolCalls: 0 },
+    }),
+    (error) => {
+      assert.equal(error.code, "response_failed");
+      assert.equal(error.message, "Model response did not complete (failed)");
+      assert.equal(Object.hasOwn(error, "lastResponse"), false);
+      assert.equal(Object.hasOwn(error, "responseError"), false);
+      assert.doesNotMatch(JSON.stringify(error.agentTrace), /PRIVATE_TRANSCRIPT_SENTINEL|sk-provider-secret/u);
+      assert.deepEqual(error.agentTrace.at(-1).data, {
+        code: "response_failed",
+        model_turns: 1,
+        tool_calls: 0,
+      });
+      return true;
+    },
+  );
+});
+
 test("a terminal profile state rejects later tool calls without mutating state", async () => {
   const executions = [];
   const adapter = createScriptedModelAdapter([{
@@ -565,6 +599,27 @@ test("history and reported token budgets stop the run before further execution",
       && error.kind === "total_tokens"
       && error.requested === 120
     ),
+  );
+});
+
+test("invalid provider envelopes still report the model usage already consumed", async () => {
+  const adapter = createScriptedModelAdapter([{
+    choices: [{ message: { content: "legacy envelope" } }],
+    usage: { input_tokens: 25, output_tokens: 5, total_tokens: 30 },
+  }]);
+  await assert.rejects(
+    () => runAgent({
+      adapter,
+      profile: createProfile([]),
+      input: "Exercise compatibility accounting.",
+      initialState: {},
+      policy: { maxModelTurns: 1, maxToolCalls: 0 },
+    }),
+    (error) => {
+      assert.equal(error.code, "invalid_response_output");
+      assert.deepEqual(error.agentUsage, { modelTurns: 1, toolCalls: 0, modelTokens: 30 });
+      return true;
+    },
   );
 });
 

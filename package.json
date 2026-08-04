@@ -1,6 +1,6 @@
 {
   "name": "yanlan-ai",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "type": "module",
   "description": "Yanlan: an open-source AI meeting workspace, MiMo transcription CLI, and Agent Skill.",
   "license": "MIT",
@@ -29,10 +29,12 @@
     "cli": "node bin/yanlan.mjs",
     "eval:terminology": "node scripts/terminology-eval.mjs",
     "eval:terminology:agent": "node scripts/terminology-agent-eval.mjs",
+    "eval:meeting:agent": "node scripts/meeting-agent-eval.mjs",
     "test": "node --test test/*.test.mjs",
     "test:browser": "node scripts/browser-test.mjs",
+    "test:browser:races": "node scripts/browser-test.mjs --races-only",
     "test:package": "node scripts/package-test.mjs",
-    "check": "node --check src/app.js && node --check src/api.js && node --check src/agent/harness.js && node --check src/agent/responses-adapter.js && node --check src/agent/tool-registry.js && node --check src/agent/trace.js && node --check src/agent/profiles/terminology.js && node --check scripts/terminology-agent-eval.mjs && node --check src/key-backup.js && node --check src/cli.js && node --check bin/yanlan.mjs && node --check src/storage.js && node --check server/local.mjs && npm test && npm run build"
+    "check": "node --check src/app.js && node --check src/api.js && node --check src/agent/harness.js && node --check src/agent/responses-adapter.js && node --check src/agent/tool-registry.js && node --check src/agent/trace.js && node --check src/agent/profiles/meeting-analysis.js && node --check src/agent/profiles/terminology.js && node --check scripts/meeting-agent-eval.mjs && node --check scripts/terminology-agent-eval.mjs && node --check src/key-backup.js && node --check src/cli.js && node --check bin/yanlan.mjs && node --check src/storage.js && node --check server/local.mjs && npm test && npm run build"
   },
   "dependencies": {
     "lucide": "^0.468.0"

@@ -18,5 +18,116 @@
       "d schedule"
     ],
     "expected_occurrences": 7
+  },
+  "meeting_agent": {
+    "real_fixture": {
+      "expected_decisions": 0,
+      "expected_action_items": 0,
+      "minimum_verified_evidence_records": 1
+    },
+    "semantic_canary": {
+      "evidence": [
+        {
+          "id": "summary-1",
+          "kind": "summary",
+          "scope": "transcript_batch",
+          "batch_index": 0,
+          "quotes": [
+            {
+              "start_seconds": 0,
+              "speaker": "Evaluator",
+              "quote": "This is a public synthetic semantic evaluation fixture."
+            }
+          ],
+          "keywords": ["release"]
+        },
+        {
+          "id": "c01",
+          "kind": "decision",
+          "start_seconds": 10,
+          "decision": "Approve the release",
+          "evidence": "If all tests pass, we will approve the release."
+        },
+        {
+          "id": "c02",
+          "kind": "decision",
+          "start_seconds": 20,
+          "decision": "The committee approved the budget",
+          "evidence": "Reportedly, the committee approved the budget."
+        },
+        {
+          "id": "c03",
+          "kind": "decision",
+          "start_seconds": 30,
+          "decision": "Ship Friday",
+          "evidence": "We might ship Friday."
+        },
+        {
+          "id": "c04",
+          "kind": "decision",
+          "start_seconds": 40,
+          "decision": "Do not release",
+          "evidence": "We decided not to release."
+        },
+        {
+          "id": "c05",
+          "kind": "decision",
+          "start_seconds": 50,
+          "decision": "Release decision",
+          "evidence": "No decision was made about the release."
+        },
+        {
+          "id": "c06",
+          "kind": "action",
+          "start_seconds": 60,
+          "speaker": "Evaluator",
+          "task": "Ship Friday",
+          "owner": "",
+          "due": "Friday",
+          "evidence": "We discussed who will ship Friday."
+        },
+        {
+          "id": "c07",
+          "kind": "action",
+          "start_seconds": 70,
+          "speaker": "Evaluator",
+          "task": "Approve the release",
+          "owner": "Alex",
+          "due": "",
+          "evidence": "Alex must approve the release."
+        },
+        {
+          "id": "c08",
+          "kind": "action",
+          "start_seconds": 80,
+          "speaker": "Evaluator",
+          "task": "Publish the release",
+          "owner": "Xiaoming",
+          "due": "",
+          "evidence": "We explicitly assigned Xiaoming to publish the release."
+        },
+        {
+          "id": "c09",
+          "kind": "action",
+          "start_seconds": 90,
+          "speaker": "Evaluator",
+          "task": "Deploy Friday",
+          "owner": "Alex",
+          "due": "Friday",
+          "evidence": "If QA signs off, Alex will deploy Friday."
+        }
+      ],
+      "expected_dispositions": {
+        "c01": "unresolved",
+        "c02": "other",
+        "c03": "unresolved",
+        "c04": "confirmed",
+        "c05": "negated",
+        "c06": "unresolved",
+        "c07": "confirmed",
+        "c08": "confirmed",
+        "c09": "unresolved"
+      }
+    }
   }
 }

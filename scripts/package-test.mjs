@@ -27,6 +27,7 @@ try {
     "bin/yanlan.mjs",
     "src/api.js",
     "src/agent/harness.js",
+    "src/agent/profiles/meeting-analysis.js",
     "src/agent/profiles/terminology.js",
     "src/agent/responses-adapter.js",
     "src/agent/tool-registry.js",
