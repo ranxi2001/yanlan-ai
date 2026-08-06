@@ -33,6 +33,7 @@ try {
     "src/agent/tool-registry.js",
     "src/cli.js",
     "skills/yanlan-transcribe/SKILL.md",
+    "public/THIRD_PARTY_NOTICES.txt",
   ]) {
     assert.ok(files.has(required), `package is missing ${required}`);
   }

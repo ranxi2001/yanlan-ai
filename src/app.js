@@ -8,7 +8,6 @@ import {
   correctTranscript,
   formatTimestamp,
   normalizeMimoBaseUrl,
-  mapWithConcurrency,
   publicMeeting,
   readableTranscriptSegments,
   summarizeTranscript,
@@ -20,8 +19,11 @@ import {
 } from "./api.js";
 import { assessTranscriptionQuality } from "./asr-quality.js";
 import { reconcileTranscriptSegments, transcriptionQualityError, transcribePcmAdaptively } from "./asr-pipeline.js";
+import { createStreamingAudioDecoder, isStreamingAudioOpenError, mapAsyncIterableWithConcurrency } from "./audio-stream.js";
 import {
+  canUseMimoWholeFileFallback,
   MAX_MIMO_FALLBACK_BYTES,
+  MAX_MIMO_FALLBACK_SECONDS,
   MAX_MIMO_UPLOAD_SECONDS,
   audioDurationOrNull,
   mimoUploadLimitMessage,
@@ -40,6 +42,7 @@ const SHARED_MEETING_LOCATION = new URLSearchParams(location.hash.slice(1)).has(
 const MAX_MEETINGS = 40;
 const MAX_RECORDING_SECONDS = 4 * 60 * 60;
 const ASR_REQUEST_CONCURRENCY = 2;
+const MAX_LIVE_ASR_BUFFERED_CHUNKS = 2;
 const RECORDING_HEARTBEAT_MS = 1_000;
 const RECORDING_STALE_MS = 4_000;
 const ACTIVE_TASK_STATUSES = new Set(["recording", "recovering", "transcribing", "correcting", "summarizing"]);
@@ -669,12 +672,7 @@ async function recoverInterruptedMeeting(meetingId) {
       assertMeetingRunCurrent(meeting, controller, recordingRecoveryRuns, "Recording recovery was superseded");
     }
     if (!blob?.size) throw new Error("恢复后的录音为空");
-    let probedDuration;
-    try {
-      probedDuration = await probeDuration(blob);
-    } catch (error) {
-      throw new Error(`恢复后的录音无法被浏览器解码：${error.message}`);
-    }
+    const probedDuration = await probeDuration(blob).catch(() => null);
     assertMeetingRunCurrent(meeting, controller, recordingRecoveryRuns, "Recording recovery was superseded");
     const recoveredDuration = audioDurationOrNull(probedDuration) ?? storedAudioDuration(latest.duration);
     const recoveryNote = latest.recordingStopped
@@ -737,7 +735,7 @@ async function handleFileSelection(event) {
   const file = event.target.files?.[0];
   event.target.value = "";
   if (!file) return;
-  if (!file.type.startsWith("audio/") && !/\.(wav|mp3|m4a|webm|ogg|mp4)$/i.test(file.name)) {
+  if (!file.type.startsWith("audio/") && !/\.(wav|mp3|m4a|webm|ogg|mp4|aac|flac|mka|mkv)$/i.test(file.name)) {
     showToast("请选择常见格式的音频文件", true);
     return;
   }
@@ -820,7 +818,7 @@ async function processStoredAudio(
     meeting.rawSegments = transcription.rawSegments;
     meeting.segments = transcription.segments;
     if (!meeting.segments.length) throw new Error("MiMo 没有返回可用的逐字稿");
-    await enrichMeeting(meeting, processingConfig);
+    await enrichMeeting(meeting, processingConfig, controller);
   } finally {
     if (meetingProcessingRuns.get(meeting.id) === controller) meetingProcessingRuns.delete(meeting.id);
   }
@@ -840,27 +838,43 @@ async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = au
   const uploadError = mimoUploadLimitError(blob, probedDuration, processingConfig);
   if (uploadError) throw uploadError;
   try {
-    throwIfSignalAborted(signal);
-    const decoded = await decodeAudio(blob);
-    throwIfSignalAborted(signal);
-    meeting.duration = storedAudioDuration(decoded.length / decoded.sampleRate);
-    const chunkSamples = Math.max(15, Number(processingConfig.chunkSeconds) * 3) * decoded.sampleRate;
-    const jobs = [];
-    for (let offset = 0, index = 0; offset < decoded.length; offset += chunkSamples, index += 1) {
-      const end = Math.min(decoded.length, offset + chunkSamples);
-      jobs.push({ offset, end, index });
+    return await transcribeStreamingBlob(meeting, blob, probedDuration, processingConfig, signal);
+  } catch (error) {
+    if (error.name === "AbortError" || error.name === "AudioLimitError" || !isStreamingAudioOpenError(error)) throw error;
+    if (!canUseMimoWholeFileFallback({ size: blob.size, duration: probedDuration })) {
+      throw new Error(`当前浏览器无法流式解码这段音频（${error.message}）。整文件兼容方式仅用于时长已知、不超过 ${Math.round(MAX_MIMO_FALLBACK_SECONDS / 60)} 分钟且不超过 ${Math.round(MAX_MIMO_FALLBACK_BYTES / 1024 / 1024)} MiB 的文件；请使用最新版 Chrome 或 Edge，或改用标准 Transcriptions 协议`);
     }
-    let completed = 0;
-    const results = await mapWithConcurrency(jobs, ASR_REQUEST_CONCURRENCY, async ({ offset, end, index }) => {
+    updateMeetingTaskProgress(meeting, "正在使用兼容方式转写音频");
+    const result = await transcribeAudioWithRetry({ config: processingConfig, blob, fileName, language: meeting.language, signal });
+    throwIfSignalAborted(signal);
+    requireTranscriptionQuality(result, meeting.duration, meeting);
+    const rawSegments = normalizeSegments(result.segments, meeting.duration);
+    const reconciled = reconcileTranscriptSegments(rawSegments);
+    meeting.asrReconciliations = reconciled.reconciliations;
+    return { rawSegments, segments: reconciled.segments };
+  }
+}
+
+async function transcribeStreamingBlob(meeting, blob, probedDuration, processingConfig, signal) {
+  throwIfSignalAborted(signal);
+  const chunkSeconds = Math.max(15, Number(processingConfig.chunkSeconds) * 3);
+  const decoder = await createStreamingAudioDecoder(blob, {
+    chunkSeconds,
+    maxDurationSeconds: MAX_MIMO_UPLOAD_SECONDS,
+    signal,
+  });
+  const expectedDuration = audioDurationOrNull(decoder.durationSeconds) ?? audioDurationOrNull(probedDuration);
+  if (expectedDuration !== null) meeting.duration = storedAudioDuration(expectedDuration);
+  let completedSeconds = 0;
+  try {
+    const results = await mapAsyncIterableWithConcurrency(decoder, ASR_REQUEST_CONCURRENCY, async ({ pcm, startSeconds, durationSeconds }, index) => {
       throwIfSignalAborted(signal);
-      const pcm = mixAudioRange(decoded.buffer, offset, end);
-      const start = offset / decoded.sampleRate;
       let recovered;
       try {
         recovered = await transcribePcmAdaptively({
           pcm,
-          sampleRate: decoded.sampleRate,
-          startSeconds: start,
+          sampleRate: decoder.sampleRate,
+          startSeconds,
           transcribe: async ({ pcm: part, startSeconds, depth }) => {
             throwIfSignalAborted(signal);
             if (depth > 0) {
@@ -868,7 +882,7 @@ async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = au
             }
             return transcribeAudioWithRetry({
               config: processingConfig,
-              blob: encodeWav(part, decoded.sampleRate),
+              blob: encodeWav(part, decoder.sampleRate),
               fileName: `part-${String(index).padStart(4, "0")}-${Math.round(startSeconds * 1_000)}.wav`,
               language: meeting.language,
               signal,
@@ -880,29 +894,26 @@ async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = au
         throw error;
       }
       throwIfSignalAborted(signal);
-      completed += 1;
-      updateMeetingTaskProgress(meeting, `正在转写音频 · ${Math.round((completed / jobs.length) * 100)}%`);
+      completedSeconds += durationSeconds;
+      const progress = expectedDuration !== null
+        ? `${Math.min(99, Math.round((completedSeconds / expectedDuration) * 100))}%`
+        : `已完成 ${formatTimestamp(completedSeconds)}`;
+      updateMeetingTaskProgress(meeting, `正在流式转写音频 · ${progress}`);
       return recovered;
     });
     throwIfSignalAborted(signal);
+    meeting.duration = storedAudioDuration(
+      audioDurationOrNull(decoder.durationSeconds)
+      ?? audioDurationOrNull(decoder.processedEndSeconds)
+      ?? expectedDuration,
+    );
     const rawSegments = results.flatMap((result) => result?.rawSegments || []);
     meeting.asrQualityEvents.push(...results.flatMap((result) => result?.qualityEvents || []));
     const reconciled = reconcileTranscriptSegments(rawSegments);
     meeting.asrReconciliations = reconciled.reconciliations;
     return { rawSegments, segments: reconciled.segments };
-  } catch (error) {
-    if (error.name !== "EncodingError" && !/decode|解码/i.test(error.message)) throw error;
-    if (blob.size > MAX_MIMO_FALLBACK_BYTES) {
-      throw new Error("浏览器无法分段解码该音频，且原文件超过 40 MiB，已停止整文件 data URL 上传；请切分文件或改用标准 Transcriptions 协议");
-    }
-    updateMeetingTaskProgress(meeting, "正在使用兼容方式转写音频");
-    const result = await transcribeAudioWithRetry({ config: processingConfig, blob, fileName, language: meeting.language, signal });
-    throwIfSignalAborted(signal);
-    requireTranscriptionQuality(result, meeting.duration, meeting);
-    const rawSegments = normalizeSegments(result.segments, meeting.duration);
-    const reconciled = reconcileTranscriptSegments(rawSegments);
-    meeting.asrReconciliations = reconciled.reconciliations;
-    return { rawSegments, segments: reconciled.segments };
+  } finally {
+    decoder.dispose();
   }
 }
 
@@ -919,69 +930,54 @@ function requireTranscriptionQuality(result, duration, meeting) {
   throw transcriptionQualityError(assessment, 0, duration);
 }
 
-async function decodeAudio(blob) {
-  const context = new AudioContext();
-  try {
-    const buffer = await context.decodeAudioData(await blob.arrayBuffer());
-    if (buffer.duration > MAX_MIMO_UPLOAD_SECONDS) {
-      const error = new Error("默认 MiMo 上传路径最多处理 30 分钟音频；请切分文件、使用实时录音，或改用标准 Transcriptions 协议");
-      error.name = "AudioLimitError";
-      throw error;
-    }
-    return { buffer, length: buffer.length, sampleRate: buffer.sampleRate };
-  } catch (error) {
-    if (error.name === "AudioLimitError") throw error;
-    const wrapped = new Error(`浏览器无法解码该音频：${error.message}`);
-    wrapped.name = "EncodingError";
-    throw wrapped;
-  } finally {
-    await context.close().catch(() => {});
-  }
-}
-
 function createMeetingAudioRangeTranscriber(meeting, processingConfig = state.config) {
-  let decodedPromise;
   const asrConfig = { ...processingConfig };
-  return async ({ start_seconds: requestedStart, end_seconds: requestedEnd, signal }) => {
-    const start = Math.max(0, Number(requestedStart) || 0);
-    const requestedEndSeconds = Math.max(0, Number(requestedEnd) || 0);
-    const knownDuration = Number(meeting.duration) || 0;
-    const end = knownDuration > 0 ? Math.min(knownDuration, requestedEndSeconds) : requestedEndSeconds;
-    if (!(end > start) || end - start > 90) throw new Error("MiMo 复核音频范围必须大于 0 秒且不超过 90 秒");
-    decodedPromise ||= getRecording(meeting.id).then((record) => {
-      if (!record?.blob) throw new Error("本机没有找到可供 MiMo 复核的录音");
-      return decodeAudio(record.blob);
-    });
-    const decoded = await decodedPromise;
-    const sampleStart = Math.max(0, Math.floor(start * decoded.sampleRate));
-    const sampleEnd = Math.min(decoded.length, Math.ceil(end * decoded.sampleRate));
-    if (sampleEnd <= sampleStart) throw new Error("MiMo 复核音频范围超出录音长度");
-    const pcm = mixAudioRange(decoded.buffer, sampleStart, sampleEnd);
-    const result = await transcribeAudioWithRetry({
-      config: asrConfig,
-      blob: encodeWav(pcm, decoded.sampleRate),
-      fileName: `agent-review-${Math.round(start * 1_000)}-${Math.round(end * 1_000)}.wav`,
-      language: meeting.language,
-      signal,
-    });
-    return {
-      text: result.text,
-      segments: (result.segments || []).map((segment) => ({
-        start_seconds: start + Math.max(0, Number(segment.start_seconds) || 0),
-        end_seconds: start + Math.max(0, Number(segment.end_seconds) || 0),
-        text: String(segment.text || ""),
-      })),
-    };
+  let previous = Promise.resolve();
+  return (request) => {
+    const task = previous.then(() => transcribeMeetingAudioRange(meeting, asrConfig, request));
+    previous = task.catch(() => {});
+    return task;
   };
 }
 
-function mixAudioRange(buffer, start, end) {
-  const output = new Float32Array(Math.max(0, end - start));
-  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
-    const input = buffer.getChannelData(channel);
-    for (let index = start; index < end; index += 1) output[index - start] += input[index] / buffer.numberOfChannels;
+async function transcribeMeetingAudioRange(meeting, asrConfig, { start_seconds: requestedStart, end_seconds: requestedEnd, signal }) {
+  const start = Math.max(0, Number(requestedStart) || 0);
+  const requestedEndSeconds = Math.max(0, Number(requestedEnd) || 0);
+  const knownDuration = Number(meeting.duration) || 0;
+  const end = knownDuration > 0 ? Math.min(knownDuration, requestedEndSeconds) : requestedEndSeconds;
+  if (!(end > start) || end - start > 90) throw new Error("MiMo 复核音频范围必须大于 0 秒且不超过 90 秒");
+  const record = await getRecording(meeting.id);
+  if (!record?.blob) throw new Error("本机没有找到可供 MiMo 复核的录音");
+  const decoder = await createStreamingAudioDecoder(record.blob, {
+    chunkSeconds: Math.min(30, end - start),
+    startSeconds: start,
+    endSeconds: end,
+    maxDurationSeconds: MAX_MIMO_UPLOAD_SECONDS,
+    signal,
+  });
+  try {
+    const results = await mapAsyncIterableWithConcurrency(decoder, 1, async ({ pcm, startSeconds }, index) => {
+      const result = await transcribeAudioWithRetry({
+        config: asrConfig,
+        blob: encodeWav(pcm, decoder.sampleRate),
+        fileName: `agent-review-${Math.round(startSeconds * 1_000)}-${String(index).padStart(2, "0")}.wav`,
+        language: meeting.language,
+        signal,
+      });
+      return {
+        text: String(result.text || "").trim(),
+        segments: (result.segments || []).map((segment) => ({
+          start_seconds: startSeconds + Math.max(0, Number(segment.start_seconds) || 0),
+          end_seconds: startSeconds + Math.max(0, Number(segment.end_seconds) || 0),
+          text: String(segment.text || ""),
+        })),
+      };
+    });
+    const segments = results.flatMap((result) => result.segments).sort((left, right) => left.start_seconds - right.start_seconds);
+    return { text: results.map((result) => result.text).filter(Boolean).join(" "), segments };
+  } finally {
+    decoder.dispose();
   }
-  return output;
 }
 
 function mimoUploadLimitError(blob, duration, processingConfig = state.config) {
@@ -989,14 +985,18 @@ function mimoUploadLimitError(blob, duration, processingConfig = state.config) {
   return message ? new Error(message) : null;
 }
 
-async function enrichMeeting(meeting, processingConfig = { ...state.config }) {
-  meetingProcessingRuns.get(meeting.id)?.abort(new DOMException("Meeting processing superseded", "AbortError"));
-  const controller = new AbortController();
-  meetingProcessingRuns.set(meeting.id, controller);
+async function enrichMeeting(meeting, processingConfig = { ...state.config }, existingController = null) {
+  const controller = existingController || new AbortController();
+  if (existingController) {
+    assertMeetingRunCurrent(meeting, controller, meetingProcessingRuns, "Meeting enrichment was superseded");
+  } else {
+    meetingProcessingRuns.get(meeting.id)?.abort(new DOMException("Meeting processing superseded", "AbortError"));
+    meetingProcessingRuns.set(meeting.id, controller);
+  }
   try {
     await enrichMeetingRun(meeting, { ...processingConfig }, controller.signal);
   } finally {
-    if (meetingProcessingRuns.get(meeting.id) === controller) meetingProcessingRuns.delete(meeting.id);
+    if (!existingController && meetingProcessingRuns.get(meeting.id) === controller) meetingProcessingRuns.delete(meeting.id);
   }
 }
 
@@ -1312,8 +1312,8 @@ async function startRecording() {
       meeting, stream, audioContext, source, processor, mediaRecorder, mediaChunkCount: 0, persistedMediaChunkCount: 0, persistedChunkIndexes: new Set(),
       config: { ...state.config },
       pendingPcm: [], pendingSamples: 0, processedSamples: 0, sampleRate: audioContext.sampleRate,
-      startedAt: performance.now(), queue: Promise.resolve(), persistQueue: Promise.resolve(), pendingRequests: 0,
-      errors: [], failedChunks: [], persistenceErrors: [], failedPersistence: [], silentChunks: 0, closing: false, stopped: false, finalizing: false, lastHeartbeatAt: 0,
+      startedAt: performance.now(), queue: Promise.resolve(), persistQueue: Promise.resolve(), pendingRequests: 0, queuedLiveChunks: 0,
+      errors: [], liveReplayRequired: false, persistenceErrors: [], failedPersistence: [], silentChunks: 0, closing: false, stopped: false, finalizing: false, lastHeartbeatAt: 0,
       transcriptionEnabled: hasCompleteConfig(),
     };
     mediaRecorder.addEventListener("dataavailable", (event) => persistMediaChunk(recorder, event.data));
@@ -1341,7 +1341,7 @@ function capturePcm(recorder, inputBuffer) {
     for (let index = 0; index < length; index += 1) mono[index] += input[index] / inputBuffer.numberOfChannels;
   }
   updateWaveform(rms(mono));
-  if (recorder.transcriptionEnabled) {
+  if (recorder.transcriptionEnabled && !recorder.liveReplayRequired) {
     recorder.pendingPcm.push(mono);
     recorder.pendingSamples += mono.length;
     if (recorder.pendingSamples >= Number(recorder.config.chunkSeconds) * recorder.sampleRate) flushLiveChunk(recorder);
@@ -1351,6 +1351,21 @@ function capturePcm(recorder, inputBuffer) {
 
 function flushLiveChunk(recorder) {
   if (!recorder.transcriptionEnabled || !recorder.pendingSamples) return;
+  if (recorder.liveReplayRequired) {
+    recorder.processedSamples += recorder.pendingSamples;
+    recorder.pendingPcm = [];
+    recorder.pendingSamples = 0;
+    return;
+  }
+  if (recorder.queuedLiveChunks >= MAX_LIVE_ASR_BUFFERED_CHUNKS) {
+    recorder.processedSamples += recorder.pendingSamples;
+    recorder.pendingPcm = [];
+    recorder.pendingSamples = 0;
+    recorder.liveReplayRequired = true;
+    recorder.errors.push("实时转写速度落后，结束后将从本机录音补全");
+    renderLiveStatus();
+    return;
+  }
   const pcm = concatenatePcm(recorder.pendingPcm, recorder.pendingSamples);
   const start = recorder.processedSamples / recorder.sampleRate;
   recorder.processedSamples += recorder.pendingSamples;
@@ -1364,6 +1379,7 @@ function flushLiveChunk(recorder) {
     sampleRate: 16000,
     pcm: resample(pcm, recorder.sampleRate, 16000),
   };
+  recorder.queuedLiveChunks += 1;
   recorder.queue = recorder.queue.then(async () => {
     recorder.pendingRequests += 1;
     renderLiveStatus();
@@ -1371,9 +1387,10 @@ function flushLiveChunk(recorder) {
       await transcribeLiveChunk(recorder, chunk);
     } catch (error) {
       recorder.errors.push(error.message);
-      recorder.failedChunks.push(chunk);
+      recorder.liveReplayRequired = true;
     } finally {
       recorder.pendingRequests -= 1;
+      recorder.queuedLiveChunks -= 1;
       renderLiveStatus();
     }
   });
@@ -1471,20 +1488,6 @@ async function transcribeLiveChunk(recorder, chunk) {
   }
 }
 
-async function retryFailedLiveChunks(recorder) {
-  const failed = [...recorder.failedChunks];
-  recorder.failedChunks = [];
-  recorder.errors = [];
-  for (const chunk of failed) {
-    try {
-      await transcribeLiveChunk(recorder, chunk);
-    } catch (error) {
-      recorder.failedChunks.push(chunk);
-      recorder.errors.push(error.message);
-    }
-  }
-}
-
 async function stopRecording() {
   const recorder = state.recorder;
   if (!recorder || recorder.closing) return;
@@ -1513,6 +1516,11 @@ async function finishStoppedRecording(recorder) {
   if (recorder.finalizing) return;
   recorder.finalizing = true;
   const meeting = recorder.meeting;
+  const finalizationController = recorder.transcriptionEnabled ? new AbortController() : null;
+  if (finalizationController) {
+    meetingProcessingRuns.get(meeting.id)?.abort(new DOMException("Meeting processing superseded", "AbortError"));
+    meetingProcessingRuns.set(meeting.id, finalizationController);
+  }
   meeting.status = recorder.transcriptionEnabled ? "transcribing" : "recorded";
   try {
     await retryFailedPersistence(recorder);
@@ -1540,10 +1548,28 @@ async function finishStoppedRecording(recorder) {
       return;
     }
     await recorder.queue;
-    if (recorder.failedChunks.length) await retryFailedLiveChunks(recorder);
-    if (recorder.failedChunks.length) {
-      meeting.transcriptIncomplete = true;
-      throw new Error(`仍有 ${recorder.failedChunks.length} 个实时转写片段失败。录音已完整保存，请点击重试后再生成纪要。`);
+    if (finalizationController) {
+      assertMeetingRunCurrent(meeting, finalizationController, meetingProcessingRuns, "Recording finalization was superseded");
+    }
+    if (recorder.liveReplayRequired) {
+      meeting.processingDetail = "正在从本机录音补全逐字稿";
+      meeting.rawSegments = [];
+      meeting.segments = [];
+      meeting.asrQualityEvents = [];
+      meeting.asrReconciliations = [];
+      saveAndRender();
+      assertMeetingRunCurrent(meeting, finalizationController, meetingProcessingRuns, "Recording replay was superseded");
+      const transcription = await transcribeStoredBlob(
+        meeting,
+        blob,
+        meeting.sourceName,
+        audioDurationOrNull(meeting.duration),
+        recorder.config,
+        finalizationController.signal,
+      );
+      assertMeetingRunCurrent(meeting, finalizationController, meetingProcessingRuns, "Recording replay was superseded");
+      meeting.rawSegments = transcription.rawSegments;
+      meeting.segments = transcription.segments;
     }
     if (!meeting.rawSegments.length) {
       meeting.status = "recorded";
@@ -1557,7 +1583,10 @@ async function finishStoppedRecording(recorder) {
     const reconciled = reconcileTranscriptSegments(meeting.rawSegments);
     meeting.segments = reconciled.segments;
     meeting.asrReconciliations = reconciled.reconciliations;
-    await enrichMeeting(meeting, recorder.config);
+    await enrichMeeting(meeting, recorder.config, finalizationController);
+    if (finalizationController) {
+      assertMeetingRunCurrent(meeting, finalizationController, meetingProcessingRuns, "Recording finalization was superseded");
+    }
   } catch (error) {
     if (!meeting.hasRecording) {
       meeting.recordingHeartbeat = 0;
@@ -1573,6 +1602,7 @@ async function finishStoppedRecording(recorder) {
     }
     failMeeting(meeting, error);
   } finally {
+    if (finalizationController && meetingProcessingRuns.get(meeting.id) === finalizationController) meetingProcessingRuns.delete(meeting.id);
     recorder.finalizing = false;
   }
 }
@@ -2195,8 +2225,8 @@ function renderLiveStatus() {
   if (!recorder) return;
   if (recorder.persistenceErrors.length) elements.liveStatus.textContent = "本地保存失败，结束时将重试";
   else if (!recorder.transcriptionEnabled) elements.liveStatus.textContent = "音频正在增量保存在本机";
+  else if (recorder.liveReplayRequired) elements.liveStatus.textContent = "实时转写已暂停，结束后将从本机录音补全";
   else if (recorder.pendingRequests) elements.liveStatus.textContent = "正在转写当前片段";
-  else if (recorder.errors.length) elements.liveStatus.textContent = "部分片段等待结束后重试";
   else elements.liveStatus.textContent = recorder.meeting.segments.length ? "逐字稿实时更新中" : "正在监听";
 }
 

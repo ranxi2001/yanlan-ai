@@ -2,6 +2,14 @@
 
 本项目遵循语义化版本号。
 
+## 0.6.1 - 2026-08-06
+
+- 网页文件转写改为 Dedicated Worker 内的增量解封装与 WebCodecs 解码：压缩源缓存固定为 4 MiB，解码帧连续降采样后仅累计 30 秒 16 kHz PCM，通过严格背压把 MiMo 并发和内存中的待转写窗口都限制为 2
+- MiMo 网页路径支持最长 4 小时、512 MiB 的录音；不再为长文件调用 `blob.arrayBuffer()` 或 `decodeAudioData()`，整文件 data URL 回退仅允许时长已知且不超过 30 分钟、大小不超过 40 MiB 的输入
+- 术语 Agent 的最多 90 秒音频复核改为按目标时间范围流式读取，不再缓存整场 `AudioBuffer`
+- 实时 ASR 落后或失败时停止累积内存 PCM，结束录音后从已落盘的完整音频自动流式补全逐字稿；恢复流程允许容器时长未知
+- 新增 PCM 时间线、解码背压以及覆盖主线程 JS 堆与 Chromium 进程 PSS 的真实长录音浏览器验证；本机 61:35 WebM 连续两次被拆成 124 个窗口，PCM 窗口上限 1.83 MiB，主线程 JS 堆增长约 46.0 MiB，Chromium 总 PSS 最多增长约 160.8 MiB
+
 ## 0.6.0 - 2026-08-04
 
 - 新增严格的会议解析 Agent profile：分批模型只生成逐字稿证据候选，Luna 先通过 `review_meeting_commitments` 覆盖并分类全部决定/行动候选，再由 `finalize_meeting_analysis` 触发确定性 runtime 原子生成标题、摘要、关键词、金句、发言人要点、决策和行动项
