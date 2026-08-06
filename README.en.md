@@ -285,7 +285,7 @@ YANLAN_LONG_AUDIO="/path/to/meeting.webm" npm run test:browser:long-audio
 
 The next priorities include speaker diarization, transcript editing, collaborative annotations, team permissions, and more model integrations. Roadmap discussions and priorities are maintained in GitHub Issues.
 
-The [competitive architecture study](./docs/competitive-architecture.md) documents the product, open-source speech, and Agent/MCP trade-offs behind that roadmap (currently in Chinese).
+The Chinese [browser Agent Harness technical report](./docs/browser-agent-harness-technical-report.md) documents the system design, implementation boundaries, and quantitative results. The [competitive architecture study](./docs/competitive-architecture.md) covers the product, open-source speech, and Agent/MCP trade-offs behind that roadmap.
 
 ## License
 

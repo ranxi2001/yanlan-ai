@@ -281,7 +281,7 @@ YANLAN_LONG_AUDIO="/path/to/meeting.webm" npm run test:browser:long-audio
 
 `v0.5.1` 基于一段 61 分钟真实会议的匿名测量，增加大文件快速预检、ASR 质量门与自适应重试、稳定时间排序、可审计术语补丁、并发长总结、完整原话证据约束和录音恢复一致性修复。下一阶段继续推进说话人分离、逐字稿编辑与协作批注。
 
-会议产品、开源语音组件与 Agent/MCP 的技术取舍见[竞品架构调研](./docs/competitive-architecture.md)。
+浏览器前端 Agent Harness 的设计、实现边界与量化结果见[技术报告](./docs/browser-agent-harness-technical-report.md)；会议产品、开源语音组件与 Agent/MCP 的技术取舍见[竞品架构调研](./docs/competitive-architecture.md)。
 
 ## 开源协议
 
