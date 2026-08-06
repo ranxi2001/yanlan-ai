@@ -102,8 +102,8 @@ This position has to be earned through an inspectable control path, real-recordi
 
 | Surface | What is implemented |
 | --- | --- |
-| Recording and recovery | Browser recording, near-real-time segmented transcription, continuous IndexedDB commits, and recovery of persisted chunks after refresh; recording, playback, and export work without an API key |
-| File transcription | Chunk common audio formats while preserving raw ASR; apply quality gates, timeouts, and backoff; stop incomplete note generation on terminal failure and retain the recording for retranscription |
+| Recording and recovery | Browser recording, near-real-time segmented transcription, continuous IndexedDB commits, and recovery after refresh; if live ASR falls behind, replay persisted audio instead of accumulating PCM in memory; recording, playback, and export work without an API key |
+| File transcription | Incrementally decode common audio formats up to four hours in a Dedicated Worker; apply a backpressured MiMo pipeline, quality gates, timeouts, and backoff; retain the recording when processing stops |
 | Trustworthy meeting knowledge | Recording-wide terminology consistency, overview, keywords, replayable highlights, speaker notes, quote-backed decisions and actions, and question-relevant transcript retrieval; transcript changes invalidate and regenerate downstream results |
 | Interview mode | Capture candidate alias, role, round, competencies, and job description; organize quotes, gaps, and follow-up questions by competency with timestamp replay; never score abilities or advance/reject a candidate automatically |
 | Share and export | Local playback with timestamp seeking; export original audio, Markdown, WebVTT, JSON, or standalone HTML; generate a read-only page with transcript, time, and summary |
@@ -111,7 +111,7 @@ This position has to be earned through an inspectable control path, real-recordi
 
 See Xiaomi's official [MiMo-V2.5-ASR repository](https://github.com/XiaomiMiMo/MiMo-V2.5-ASR) for model and deployment details. The web app fixes MiMo ASR to the official Chat Completions format, sending audio as a data URL with `asr_options`, so users no longer select a protocol or enter an endpoint path. The CLI retains a standard OpenAI Transcriptions mode for compatible gateways.
 
-The default MiMo browser upload path accepts files up to 30 minutes and 128 MiB; fallback whole-file uploads are capped at 40 MiB when the browser cannot decode a file. Split longer recordings or use live recording; the CLI can select standard OpenAI Transcriptions with a compatible provider. These bounds prevent native browser decoding from exhausting memory; provider-side limits still apply.
+The MiMo web path uses [Mediabunny](https://mediabunny.dev/guide/reading-media-files) in a Dedicated Worker for incremental container reads and WebCodecs decoding. Compressed-source cache is fixed at 4 MiB, decoded frames are continuously downsampled inside the Worker, and only 30 seconds of 16 kHz PCM is accumulated; decoding advances only when one of two MiMo request slots is free. A one-hour recording is therefore never expanded into a recording-wide `AudioBuffer`. The default limit is four hours and 512 MiB, and the browser must support the file's codec through `AudioDecoder`. If streaming is unavailable, the compatibility whole-file request is limited to files with a known duration of at most 30 minutes and a size of at most 40 MiB; longer files stop safely and remain stored locally. Current Chrome or Edge is recommended. The CLI can still select standard OpenAI Transcriptions with a compatible provider.
 
 ## Recommended Providers
 
@@ -127,13 +127,13 @@ When you only need text from one recording, there is no need to start the web ap
 
 ```bash
 export MIMO_API_KEY="your-key"
-npx --yes github:ranxi2001/yanlan-ai#v0.6.0 transcribe recording.mp3 -o recording.txt
+npx --yes github:ranxi2001/yanlan-ai#v0.6.1 transcribe recording.mp3 -o recording.txt
 ```
 
 You can also install the CLI globally:
 
 ```bash
-npm install --global github:ranxi2001/yanlan-ai#v0.6.0
+npm install --global github:ranxi2001/yanlan-ai#v0.6.1
 yanlan transcribe interview.m4a -o interview.md --language en
 ```
 
@@ -267,7 +267,15 @@ The browser end-to-end test starts an isolated local server and generates its ow
 npm run test:browser
 ```
 
+An optional local test verifies streaming windows, main-thread JS heap, and Linux Chromium process PSS (including Workers/native decoding) with a real hour-scale recording. It makes no model calls and prints only size, duration, window, and memory metrics:
+
+```bash
+YANLAN_LONG_AUDIO="/path/to/meeting.webm" npm run test:browser:long-audio
+```
+
 ## Project Status
+
+`v0.6.1` replaces the previous fail-fast protection for hour-scale files with a genuinely bounded streaming path. Container reads, PCM windows, MiMo concurrency, terminology audio review, and live-recording catch-up all have explicit memory limits. Two consecutive local runs against a 61:35 real WebM each covered 124 windows with a 1.83 MiB PCM-window cap, about 46.0 MiB main-thread JS-heap growth, and at most about 160.8 MiB total Chromium PSS growth, without retaining a recording-wide decoded buffer.
 
 `v0.6.0` extends the application-owned Responses Agent Harness to two profiles: recording-wide terminology consistency and intelligent meeting analysis. Luna chooses tools, MiMo supplies controlled audio evidence, and deterministic runtime code owns evidence validation, invariants, atomic commit, and trace. Long meetings first extract bounded evidence concurrently; the meeting agent then classifies every commitment candidate before the runtime derives the confirmed decision/action set. The terminology agent uses independent spelling reviews plus conflict adjudication and requires merging only for identifier groups with spacing, case, or fused-form equivalence; close ordinary words can remain distinct. Q&A, correction retries, and summary retries are bound to a transcript version, while cross-tab tombstones abort in-flight audio work and prevent deleted meetings from being written back.
 
@@ -279,4 +287,4 @@ The [competitive architecture study](./docs/competitive-architecture.md) documen
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE). Browser streaming uses Mediabunny under MPL-2.0; see the [third-party notices](./public/THIRD_PARTY_NOTICES.txt).

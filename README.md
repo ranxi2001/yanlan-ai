@@ -102,8 +102,8 @@ Harness 的可执行 contract 已写入代码和测试：
 
 | 场景 | 已实现能力 |
 | --- | --- |
-| 录音与恢复 | 浏览器录音、分段近实时转写、IndexedDB 持续落盘、刷新后恢复已提交分片；无需 API Key 也能录音、播放和导出 |
-| 文件转写 | 上传常见音频格式后分段处理；保留原始 ASR，使用质量门、超时和退避重试；失败时停止生成不完整纪要并保留录音供重转 |
+| 录音与恢复 | 浏览器录音、分段近实时转写、IndexedDB 持续落盘、刷新后恢复已提交分片；实时 ASR 落后时从落盘录音补全，不在内存堆积 PCM；无需 API Key 也能录音、播放和导出 |
+| 文件转写 | Dedicated Worker 增量解码最长 4 小时的常见音频；使用有背压的 MiMo 分片、质量门、超时和退避重试；失败时停止生成不完整纪要并保留录音供重转 |
 | 可信会议知识 | 录音级术语统一、会议概览、关键词、可回听金句、发言人要点、带原话证据的决策/行动项和相关片段问答；逐字稿版本变化会使下游结果失效并重新生成 |
 | 面试模式 | 录入候选人代称、岗位、轮次、能力项和 JD；按能力项整理原话证据、缺口与下一轮追问，点击时间点回听；不自动判断能力，也不自动推进或淘汰候选人 |
 | 分享与导出 | 本地播放器与时间戳跳转；导出原始录音、Markdown、WebVTT、JSON 和离线 HTML；生成包含逐字稿、时间和摘要的只读链接 |
@@ -111,7 +111,7 @@ Harness 的可执行 contract 已写入代码和测试：
 
 MiMo-V2.5-ASR 的模型能力和部署信息见小米官方的 [MiMo-V2.5-ASR 仓库](https://github.com/XiaomiMiMo/MiMo-V2.5-ASR)。网页端固定使用官方 Chat Completions ASR 格式，通过 data URL 发送音频和 `asr_options`，不再要求用户选择协议或填写请求路径；CLI 仍保留标准 OpenAI Transcriptions 协议，便于连接兼容网关。
 
-默认 MiMo 网页上传路径最多接受 30 分钟且不超过 128 MiB 的文件，浏览器无法解码时的整文件回退上限为 40 MiB。更长文件请先切分或使用实时录音；CLI 可在兼容服务上切换到标准 OpenAI Transcriptions 协议。这个边界用于避免浏览器原生解码在长音频上耗尽内存。
+MiMo 网页路径使用 [Mediabunny](https://mediabunny.dev/guide/reading-media-files) 在 Dedicated Worker 中增量读取容器，并通过 WebCodecs 解码。压缩源缓存固定为 4 MiB，解码帧在 Worker 内连续降采样，16 kHz PCM 只累计 30 秒窗口；生产者仅在两个 MiMo 请求槽位有空间时继续解码。因此一小时录音不会在浏览器中展开为整场 `AudioBuffer`。默认上限为 4 小时、512 MiB；当前浏览器必须支持对应音频 codec 的 `AudioDecoder`。流式能力不可用时，只有时长已知且不超过 30 分钟、文件不超过 40 MiB 的输入允许兼容整文件请求，长文件会安全停止并保留本机录音。推荐最新版 Chrome 或 Edge；CLI 仍可在兼容服务上切换到标准 OpenAI Transcriptions 协议。
 
 ## 推荐配置
 
@@ -125,13 +125,13 @@ MiMo-V2.5-ASR 的模型能力和部署信息见小米官方的 [MiMo-V2.5-ASR �
 
 ```bash
 export MIMO_API_KEY="你的 Key"
-npx --yes github:ranxi2001/yanlan-ai#v0.6.0 transcribe recording.mp3 -o recording.txt
+npx --yes github:ranxi2001/yanlan-ai#v0.6.1 transcribe recording.mp3 -o recording.txt
 ```
 
 也可以全局安装：
 
 ```bash
-npm install --global github:ranxi2001/yanlan-ai#v0.6.0
+npm install --global github:ranxi2001/yanlan-ai#v0.6.1
 yanlan transcribe interview.m4a -o interview.md --language zh
 ```
 
@@ -265,7 +265,15 @@ npm run eval:meeting:agent
 npm run test:browser
 ```
 
+可选使用本机一小时级真实录音验证流式窗口、主线程 JS 堆和 Linux Chromium 进程 PSS（含 Worker/原生解码器）；脚本只输出大小、时长、窗口数与内存指标，不调用模型，也不输出音频或逐字稿内容：
+
+```bash
+YANLAN_LONG_AUDIO="/path/to/meeting.webm" npm run test:browser:long-audio
+```
+
 ## 项目状态
+
+`v0.6.1` 将一小时级文件转写从“提前拒绝以避免 OOM”升级为真正的有界流式链路：容器读取、PCM、MiMo 并发、术语音频复核和实时录音追赶均有明确内存上限。本机 61:35 真实 WebM 连续两次回归均覆盖 124 个窗口，PCM 窗口上限 1.83 MiB、主线程 JS 堆增长约 46.0 MiB、Chromium 总 PSS 最多增长约 160.8 MiB，不再持有整场解码音频。
 
 `v0.6.0` 将自研 Responses Agent Harness 扩展为录音级术语一致性和智能会议解析两个 profile：Luna 负责工具选择，MiMo 提供受控音频证据，确定性 runtime 负责证据校验、不变量、原子提交和 trace。长会议先并发提取有界证据，再由会议 Agent 选择证据 ID；术语 Agent 使用独立拼写审查与冲突裁决，只强制合并具备 spacing/case/fused 等价证据的标识符，普通近似词可判为不同实体。问答、校正重试和纪要重试均绑定逐字稿版本，删除操作由跨标签 tombstone 保护，处理中不会把半成品或已删除会议写回本机。
 
@@ -275,4 +283,4 @@ npm run test:browser
 
 ## 开源协议
 
-[MIT](./LICENSE)
+[MIT](./LICENSE)。浏览器流式音频读取使用 MPL-2.0 的 Mediabunny，详见[第三方声明](./public/THIRD_PARTY_NOTICES.txt)。

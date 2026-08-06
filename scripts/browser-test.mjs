@@ -950,7 +950,7 @@ try {
     });
     throw new Error(`Failed recording did not settle: ${JSON.stringify({ failedRecordingState, asrRequestCount, correctionRequestCount, summaryRequestCount })}`, { cause: error });
   }
-  await page.locator("#errorMessage").filter({ hasText: /仍有 [1-9]\d* 个实时转写片段失败/ }).waitFor();
+  assert.match(await page.locator("#errorMessage").textContent(), /temporary ASR failure|HTTP 503|服务暂时不可用/);
   assert.equal(await page.locator("#shareButton").isDisabled(), true);
   assert.equal(await page.locator("#copyButton").isDisabled(), true);
   assert.equal(await page.locator("#transcriptList").isHidden(), true);
