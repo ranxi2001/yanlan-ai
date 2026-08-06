@@ -9,12 +9,12 @@ import {
   formatTimestamp,
   normalizeMimoBaseUrl,
   publicMeeting,
-  readableTranscriptSegments,
   summarizeTranscript,
   testAsrConnection,
   testChatConnection,
   toMarkdown,
   toVtt,
+  transcriptDisplaySegments,
   transcribeAudioWithRetry,
 } from "./api.js";
 import { assessTranscriptionQuality } from "./asr-quality.js";
@@ -45,6 +45,11 @@ const ASR_REQUEST_CONCURRENCY = 2;
 const MAX_LIVE_ASR_BUFFERED_CHUNKS = 2;
 const RECORDING_HEARTBEAT_MS = 1_000;
 const RECORDING_STALE_MS = 4_000;
+const TRANSCRIPT_VIRTUALIZE_THRESHOLD = 240;
+const TRANSCRIPT_WINDOW_SIZE = 180;
+const TRANSCRIPT_WINDOW_STEP = 40;
+const TRANSCRIPT_WINDOW_OVERSCAN = 50;
+const TRANSCRIPT_ESTIMATED_ROW_HEIGHT = 84;
 const ACTIVE_TASK_STATUSES = new Set(["recording", "recovering", "transcribing", "correcting", "summarizing"]);
 const recordingRecoveryRuns = new Map();
 const connectionTestRuns = {
@@ -56,6 +61,9 @@ const meetingProcessingRuns = new Map();
 const questionRuns = new Map();
 const deletingMeetingIds = new Set();
 const shareGenerationRuns = { token: 0, meetingId: null, ready: null };
+const transcriptProjectionCache = new WeakMap();
+let transcriptScrollFrame = 0;
+let transcriptResizeObserver = null;
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
@@ -101,6 +109,8 @@ const state = {
   config: loadConfig(),
   insight: "summary",
   query: "",
+  expandedTranscriptOverlaps: new Set(),
+  transcriptView: null,
   recorder: null,
   recording: false,
   sharedMode: false,
@@ -173,7 +183,11 @@ function bindEvents() {
   [elements.chatBaseUrlInput, elements.chatApiKeyInput, elements.chatModelInput, elements.chatPathInput]
     .forEach((input) => input.addEventListener("input", () => clearConnectionTest("chat")));
   document.querySelectorAll(".toggle-key-button").forEach((button) => button.addEventListener("click", toggleSecret));
-  elements.searchInput.addEventListener("input", (event) => { state.query = event.target.value.trim().toLocaleLowerCase(); renderTranscript(activeMeeting()); });
+  elements.searchInput.addEventListener("input", (event) => {
+    state.query = event.target.value.trim().toLocaleLowerCase();
+    renderTranscript(activeMeeting());
+    refreshIcons();
+  });
   elements.meetingTitle.addEventListener("input", updateMeetingTitle);
   elements.meetingTitle.addEventListener("blur", normalizeMeetingTitle);
   elements.historyList.addEventListener("click", handleHistoryClick);
@@ -183,6 +197,14 @@ function bindEvents() {
   elements.insightContent.addEventListener("click", seekToSegment);
   elements.transcriptList.addEventListener("click", seekToSegment);
   elements.transcriptList.addEventListener("click", handleTranscriptAction);
+  elements.transcriptList.addEventListener("scroll", handleTranscriptScroll, { passive: true });
+  elements.transcriptList.addEventListener("keydown", handleTranscriptKeyboardNavigation);
+  if (typeof ResizeObserver === "function") {
+    transcriptResizeObserver = new ResizeObserver(() => handleTranscriptResize());
+    transcriptResizeObserver.observe(elements.transcriptList);
+  } else {
+    window.addEventListener("resize", handleTranscriptResize);
+  }
   elements.sidebarOpen.addEventListener("click", openSidebar);
   elements.sidebarClose.addEventListener("click", closeSidebar);
   elements.sidebarScrim.addEventListener("click", closeSidebar);
@@ -291,7 +313,9 @@ function renderMain(meeting) {
 
 function renderTranscript(meeting) {
   if (!meeting) return;
-  const segments = readableTranscriptSegments(meeting.segments || []).filter((segment) => !state.query || `${segment.speaker} ${segment.text}`.toLocaleLowerCase().includes(state.query));
+  const view = transcriptView(meeting);
+  const segments = view.segments;
+  elements.transcriptList.setAttribute("aria-rowcount", String(segments.length));
   if (!segments.length) {
     if (meeting.status === "recorded") {
       elements.transcriptList.innerHTML = '<div class="recording-only-state"><i data-lucide="file-audio"></i><strong>录音已保存在本机</strong><span>现在可以播放或导出音频，配置模型后可继续生成逐字稿。</span><button class="secondary-button" type="button" data-transcribe-recording><i data-lucide="captions"></i><span>生成逐字稿</span></button></div>';
@@ -301,12 +325,253 @@ function renderTranscript(meeting) {
     elements.transcriptList.innerHTML = `<div class="no-results">${meeting.status === "recovering" ? '<span class="inline-loader"></span>正在恢复已增量保存的录音片段' : (state.recording ? (state.recorder?.transcriptionEnabled ? '<span class="inline-loader"></span>等待第一个实时转写片段' : "正在录音，音频仅保存在本机") : (state.query ? "没有匹配内容" : "模型未返回逐字稿"))}</div>`;
     return;
   }
-  elements.transcriptList.innerHTML = segments.map((segment, index) => `
-    <article class="transcript-segment">
-      <button class="segment-time" data-seek="${Number(segment.start_seconds) || 0}" title="跳转到此时间">${formatTimestamp(segment.start_seconds)}</button>
-      <div><div class="speaker-line"><span class="speaker-avatar">${escapeHtml(speakerInitial(segment.speaker, index))}</span><span class="speaker-name">${escapeHtml(segment.speaker || "发言人")}</span></div><p class="segment-text">${escapeHtml(segment.text)}</p></div>
-    </article>`).join("");
+  renderTranscriptWindow(meeting, view);
   if (state.recording && !state.query) elements.transcriptList.scrollTop = elements.transcriptList.scrollHeight;
+}
+
+function transcriptView(meeting) {
+  const source = Array.isArray(meeting.segments) ? meeting.segments : [];
+  const current = state.transcriptView;
+  if (current?.meetingId === meeting.id && current.source === source && current.query === state.query) return current;
+
+  let projected = transcriptProjectionCache.get(source);
+  if (!projected) {
+    projected = transcriptDisplaySegments(source);
+    transcriptProjectionCache.set(source, projected);
+  }
+  const segments = state.query
+    ? projected.filter((segment) => transcriptSegmentSearchText(meeting, segment).includes(state.query))
+    : projected;
+  const virtualized = segments.length > TRANSCRIPT_VIRTUALIZE_THRESHOLD;
+  const view = {
+    meetingId: meeting.id,
+    source,
+    query: state.query,
+    segments,
+    virtualized,
+    start: state.recording && !state.query ? Math.max(0, segments.length - TRANSCRIPT_WINDOW_SIZE) : 0,
+    end: segments.length,
+    heights: null,
+    heightTree: null,
+    measureFrame: 0,
+    stickToBottom: false,
+    lastScrollTop: 0,
+  };
+  if (virtualized) initializeTranscriptHeights(view);
+  state.transcriptView = view;
+  elements.transcriptList.scrollTop = 0;
+  return view;
+}
+
+function initializeTranscriptHeights(view) {
+  const count = view.segments.length;
+  view.heights = new Float64Array(count);
+  view.heightTree = new Float64Array(count + 1);
+  view.layoutWidth = elements.transcriptList.clientWidth;
+  const availableWidth = Math.max(240, elements.transcriptList.clientWidth - 110);
+  const charactersPerLine = Math.max(18, Math.floor(availableWidth / 12));
+  for (let index = 0; index < count; index += 1) {
+    const textLength = [...String(view.segments[index].source_text || view.segments[index].text || "")].length;
+    const lines = Math.max(1, Math.ceil(textLength / charactersPerLine));
+    const height = TRANSCRIPT_ESTIMATED_ROW_HEIGHT + Math.max(0, lines - 1) * 25;
+    view.heights[index] = height;
+    const position = index + 1;
+    view.heightTree[position] += height;
+    const parent = position + (position & -position);
+    if (parent <= count) view.heightTree[parent] += view.heightTree[position];
+  }
+}
+
+function renderTranscriptWindow(meeting, view) {
+  if (!view.virtualized) {
+    view.start = 0;
+    view.end = view.segments.length;
+    elements.transcriptList.innerHTML = transcriptRowsMarkup(meeting, view, 0, view.end);
+    return;
+  }
+  view.start = Math.min(view.start, Math.max(0, view.segments.length - TRANSCRIPT_WINDOW_SIZE));
+  view.end = Math.min(view.segments.length, view.start + TRANSCRIPT_WINDOW_SIZE);
+  const topHeight = transcriptHeightPrefix(view, view.start);
+  const bottomHeight = transcriptHeightPrefix(view, view.segments.length) - transcriptHeightPrefix(view, view.end);
+  elements.transcriptList.innerHTML = `<div class="transcript-virtual-spacer" data-transcript-spacer="top" style="height:${topHeight}px" aria-hidden="true"></div>${transcriptRowsMarkup(meeting, view, view.start, view.end)}<div class="transcript-virtual-spacer" data-transcript-spacer="bottom" style="height:${bottomHeight}px" aria-hidden="true"></div>`;
+  scheduleTranscriptMeasurement(view);
+}
+
+function transcriptRowsMarkup(meeting, view, start, end) {
+  return view.segments.slice(start, end).map((segment, offset) => {
+    const index = start + offset;
+    const sourceId = Number(segment.collapsed_overlap?.source_segment_id);
+    const hasOverlap = Number.isInteger(sourceId);
+    const overlapKey = hasOverlap ? transcriptOverlapKey(meeting.id, sourceId) : "";
+    const sourceText = hasOverlap
+      ? String(meeting.segments?.[sourceId]?.text ?? segment.source_text ?? segment.text)
+      : segment.text;
+    const visibleSearchText = `${segment.speaker || ""} ${segment.text}`.toLocaleLowerCase();
+    const forcedBySearch = Boolean(
+      hasOverlap
+      && state.query
+      && !visibleSearchText.includes(state.query)
+      && `${segment.speaker || ""} ${sourceText}`.toLocaleLowerCase().includes(state.query),
+    );
+    const expanded = hasOverlap && (forcedBySearch || state.expandedTranscriptOverlaps.has(overlapKey));
+    const displayText = expanded ? sourceText : segment.text;
+    const overlapToggle = hasOverlap && !forcedBySearch
+      ? `<button class="overlap-toggle" type="button" data-overlap-source="${sourceId}" aria-expanded="${expanded}" aria-label="${expanded ? "折叠重叠原文" : "展开重叠原文"}" title="${expanded ? "折叠重叠原文" : "展开重叠原文"}"><i data-lucide="${expanded ? "eye-off" : "eye"}"></i></button>`
+      : "";
+    return `
+      <article class="transcript-segment" data-transcript-index="${index}" aria-posinset="${index + 1}" aria-setsize="${view.segments.length}">
+        <button class="segment-time" data-seek="${Number(segment.start_seconds) || 0}" title="跳转到此时间">${formatTimestamp(segment.start_seconds)}</button>
+        <div><div class="speaker-line"><span class="speaker-avatar">${escapeHtml(speakerInitial(segment.speaker, index))}</span><span class="speaker-name">${escapeHtml(segment.speaker || "发言人")}</span></div><div class="segment-copy"><p class="segment-text">${escapeHtml(displayText)}</p>${overlapToggle}</div></div>
+      </article>`;
+  }).join("");
+}
+
+function handleTranscriptKeyboardNavigation(event) {
+  if (event.target !== elements.transcriptList) return;
+  const distance = Math.max(80, elements.transcriptList.clientHeight * 0.8);
+  if (event.key === "Home") elements.transcriptList.scrollTop = 0;
+  else if (event.key === "End") elements.transcriptList.scrollTop = elements.transcriptList.scrollHeight;
+  else if (event.key === "PageDown" || event.key === "ArrowDown") elements.transcriptList.scrollTop += distance;
+  else if (event.key === "PageUp" || event.key === "ArrowUp") elements.transcriptList.scrollTop -= distance;
+  else return;
+  event.preventDefault();
+}
+
+function handleTranscriptResize() {
+  const view = state.transcriptView;
+  const meeting = activeMeeting();
+  const width = elements.transcriptList.clientWidth;
+  if (!view?.virtualized || !meeting || meeting.id !== view.meetingId || width <= 0) return;
+  if (Math.abs(width - Number(view.layoutWidth || 0)) < 1) return;
+
+  const sticksToBottom = view.stickToBottom || elements.transcriptList.scrollHeight
+    - elements.transcriptList.scrollTop
+    - elements.transcriptList.clientHeight <= 2;
+  const anchorIndex = transcriptHeightIndexAt(view, elements.transcriptList.scrollTop);
+  const anchorOffset = elements.transcriptList.scrollTop - transcriptHeightPrefix(view, anchorIndex);
+  initializeTranscriptHeights(view);
+  const maximum = Math.max(0, view.segments.length - TRANSCRIPT_WINDOW_SIZE);
+  const target = Math.max(0, anchorIndex - TRANSCRIPT_WINDOW_OVERSCAN);
+  view.start = sticksToBottom
+    ? maximum
+    : Math.min(maximum, Math.floor(target / TRANSCRIPT_WINDOW_STEP) * TRANSCRIPT_WINDOW_STEP);
+  renderTranscriptWindow(meeting, view);
+  refreshIcons();
+  requestAnimationFrame(() => {
+    if (state.transcriptView !== view) return;
+    elements.transcriptList.scrollTop = sticksToBottom
+      ? elements.transcriptList.scrollHeight
+      : transcriptHeightPrefix(view, anchorIndex) + anchorOffset;
+    view.stickToBottom = sticksToBottom;
+    view.lastScrollTop = elements.transcriptList.scrollTop;
+    if (sticksToBottom) {
+      requestAnimationFrame(() => {
+        if (state.transcriptView !== view) return;
+        elements.transcriptList.scrollTop = elements.transcriptList.scrollHeight;
+        view.lastScrollTop = elements.transcriptList.scrollTop;
+      });
+    }
+  });
+}
+
+function handleTranscriptScroll() {
+  const view = state.transcriptView;
+  if (!view?.virtualized || transcriptScrollFrame) return;
+  transcriptScrollFrame = requestAnimationFrame(() => {
+    transcriptScrollFrame = 0;
+    if (state.transcriptView !== view) return;
+    const sticksToBottom = elements.transcriptList.scrollHeight
+      - elements.transcriptList.scrollTop
+      - elements.transcriptList.clientHeight <= 2;
+    if (sticksToBottom) view.stickToBottom = true;
+    else if (elements.transcriptList.scrollTop < view.lastScrollTop - 2) view.stickToBottom = false;
+    view.lastScrollTop = elements.transcriptList.scrollTop;
+    const visibleIndex = transcriptHeightIndexAt(view, elements.transcriptList.scrollTop);
+    const target = Math.max(0, visibleIndex - TRANSCRIPT_WINDOW_OVERSCAN);
+    const maximum = Math.max(0, view.segments.length - TRANSCRIPT_WINDOW_SIZE);
+    const start = Math.min(maximum, Math.floor(target / TRANSCRIPT_WINDOW_STEP) * TRANSCRIPT_WINDOW_STEP);
+    if (start === view.start) return;
+    const meeting = activeMeeting();
+    if (!meeting || meeting.id !== view.meetingId) return;
+    view.start = start;
+    renderTranscriptWindow(meeting, view);
+    refreshIcons();
+    if (sticksToBottom && start === maximum) {
+      requestAnimationFrame(() => {
+        if (state.transcriptView !== view) return;
+        elements.transcriptList.scrollTop = elements.transcriptList.scrollHeight;
+        view.stickToBottom = true;
+        view.lastScrollTop = elements.transcriptList.scrollTop;
+      });
+    }
+  });
+}
+
+function scheduleTranscriptMeasurement(view) {
+  cancelAnimationFrame(view.measureFrame);
+  view.measureFrame = requestAnimationFrame(() => {
+    view.measureFrame = 0;
+    if (state.transcriptView !== view) return;
+    let changed = false;
+    for (const row of elements.transcriptList.querySelectorAll("[data-transcript-index]")) {
+      const index = Number(row.dataset.transcriptIndex);
+      const height = row.getBoundingClientRect().height;
+      if (!Number.isInteger(index) || !Number.isFinite(height) || height <= 0) continue;
+      changed = updateTranscriptHeight(view, index, height) || changed;
+    }
+    if (!changed) return;
+    const top = elements.transcriptList.querySelector('[data-transcript-spacer="top"]');
+    const bottom = elements.transcriptList.querySelector('[data-transcript-spacer="bottom"]');
+    if (top) top.style.height = `${transcriptHeightPrefix(view, view.start)}px`;
+    if (bottom) bottom.style.height = `${transcriptHeightPrefix(view, view.segments.length) - transcriptHeightPrefix(view, view.end)}px`;
+  });
+}
+
+function updateTranscriptHeight(view, index, height) {
+  const rounded = Math.max(1, Math.ceil(height));
+  const difference = rounded - view.heights[index];
+  if (Math.abs(difference) < 1) return false;
+  view.heights[index] = rounded;
+  for (let position = index + 1; position < view.heightTree.length; position += position & -position) {
+    view.heightTree[position] += difference;
+  }
+  return true;
+}
+
+// A Fenwick index keeps scroll lookup and measured-height updates logarithmic.
+function transcriptHeightPrefix(view, count) {
+  let total = 0;
+  for (let position = Math.min(count, view.segments.length); position > 0; position -= position & -position) {
+    total += view.heightTree[position];
+  }
+  return total;
+}
+
+function transcriptHeightIndexAt(view, offset) {
+  let index = 0;
+  let total = 0;
+  let bit = 1;
+  while (bit * 2 < view.heightTree.length) bit *= 2;
+  for (; bit > 0; bit = Math.floor(bit / 2)) {
+    const next = index + bit;
+    if (next < view.heightTree.length && total + view.heightTree[next] <= offset) {
+      index = next;
+      total += view.heightTree[next];
+    }
+  }
+  return Math.min(index, Math.max(0, view.segments.length - 1));
+}
+
+function transcriptSegmentSearchText(meeting, segment) {
+  const sourceText = (segment.source_segment_ids || [])
+    .map((id) => meeting.segments?.[id]?.text)
+    .filter(Boolean)
+    .join(" ");
+  return `${segment.speaker || ""} ${segment.text || ""} ${sourceText} ${segment.source_text || ""}`.toLocaleLowerCase();
+}
+
+function transcriptOverlapKey(meetingId, sourceId) {
+  return `${meetingId}:${sourceId}`;
 }
 
 function renderInsights(meeting) {
@@ -1485,6 +1750,7 @@ async function transcribeLiveChunk(recorder, chunk) {
   if (state.activeId === recorder.meeting.id) {
     renderTranscript(recorder.meeting);
     renderHeader(recorder.meeting);
+    refreshIcons();
   }
 }
 
@@ -1802,8 +2068,20 @@ function seekToSegment(event) {
 }
 
 function handleTranscriptAction(event) {
-  if (!event.target.closest("[data-transcribe-recording]")) return;
-  retryActiveMeeting();
+  const overlapToggle = event.target.closest("[data-overlap-source]");
+  if (overlapToggle) {
+    const meeting = activeMeeting();
+    const sourceId = Number(overlapToggle.dataset.overlapSource);
+    if (!meeting || !Number.isInteger(sourceId)) return;
+    const key = transcriptOverlapKey(meeting.id, sourceId);
+    if (state.expandedTranscriptOverlaps.has(key)) state.expandedTranscriptOverlaps.delete(key);
+    else state.expandedTranscriptOverlaps.add(key);
+    renderTranscript(meeting);
+    elements.transcriptList.querySelector(`[data-overlap-source="${sourceId}"]`)?.focus({ preventScroll: true });
+    refreshIcons();
+    return;
+  }
+  if (event.target.closest("[data-transcribe-recording]")) retryActiveMeeting();
 }
 
 function updateMeetingTitle(event) {

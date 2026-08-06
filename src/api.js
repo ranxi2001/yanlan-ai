@@ -42,6 +42,18 @@ const MAX_READABLE_SEGMENT_CHARACTERS = 800;
 const MAX_READABLE_SEGMENT_SECONDS = 90;
 const MAX_SEMANTIC_JOIN_GAP_SECONDS = 3;
 const MAX_SEMANTIC_JOIN_OVERLAP_SECONDS = 0.25;
+const MIN_DISPLAY_CJK_OVERLAP_UNITS = 4;
+const MIN_DISPLAY_WORD_OVERLAP_UNITS = 10;
+const MIN_DISPLAY_TEMPORAL_OVERLAP_SECONDS = 0.25;
+const DISPLAY_OVERLAP_TIMING_TOLERANCE_SECONDS = 0.2;
+const DISPLAY_MAX_CJK_UNITS_PER_SECOND = 12;
+const DISPLAY_MAX_OTHER_WORD_UNITS_PER_SECOND = 30;
+const DISPLAY_MAX_WORDS_PER_SECOND = 6;
+const DISPLAY_OVERLAP_ALGORITHM_VERSION = "display-overlap-v1";
+const DISPLAY_TECHNICAL_CONNECTORS = new Set(["+", "*", "#", "@", "%", ":", "\\"]);
+const DISPLAY_GRAPHEME_SEGMENTER = typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
+  ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+  : null;
 const MAX_TERMINOLOGY_ENTRIES = 200;
 const MAX_TERMINOLOGY_ENTRY_CHARACTERS = 120;
 const MAX_TERMINOLOGY_PROMPT_CHARACTERS = 2_000;
@@ -2018,6 +2030,14 @@ function correctionSourceSegments(meeting) {
 }
 
 export function readableTranscriptSegments(segments = []) {
+  return projectReadableTranscriptSegments(segments, false);
+}
+
+export function transcriptDisplaySegments(segments = []) {
+  return projectReadableTranscriptSegments(segments, true);
+}
+
+function projectReadableTranscriptSegments(segments, collapseOverlaps) {
   const readable = [];
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index] || {};
@@ -2026,12 +2046,24 @@ export function readableTranscriptSegments(segments = []) {
       end_seconds: Math.max(0, Number(segment.end_seconds) || 0),
       speaker: stringOr(segment.speaker, "发言人"),
       text: stringOr(segment.text, ""),
+      ...(collapseOverlaps ? { source_segment_ids: [index] } : {}),
     };
     const previousSource = segments[index - 1];
     const previous = readable[readable.length - 1];
+    const overlap = collapseOverlaps && previousSource
+      ? displayBoundaryOverlap(previousSource, segment, index - 1, index)
+      : null;
+    if (overlap) {
+      clean.text = overlap.display_text;
+      clean.source_text = String(segment.text || "");
+      clean.collapsed_overlap = overlap.provenance;
+      readable.push(clean);
+      continue;
+    }
     const joinedText = previous ? joinTranscriptText(previous.text, clean.text) : clean.text;
     const joinedEnd = Math.max(previous?.end_seconds || 0, clean.end_seconds || clean.start_seconds);
     const joinsPrevious = previous
+      && !previous.collapsed_overlap
       && previousSource?.join_next === true
       && canJoinTranscriptSegments(previousSource, segment)
       && comparableText(previous.speaker) === comparableText(clean.speaker)
@@ -2043,18 +2075,342 @@ export function readableTranscriptSegments(segments = []) {
     }
     previous.text = joinedText;
     previous.end_seconds = joinedEnd;
+    if (collapseOverlaps) previous.source_segment_ids.push(index);
   }
-  return readable.filter((segment) => segment.text);
+  return readable.filter((segment) => segment.text || segment.collapsed_overlap);
+}
+
+function displayBoundaryOverlap(left, right, leftId, rightId) {
+  if (!hasDisplayTemporalOverlap(left, right)) return null;
+  if (comparableDisplaySpeaker(left.speaker) !== comparableDisplaySpeaker(right.speaker)) return null;
+  const leftText = String(left.text || "");
+  const rightText = String(right.text || "");
+  const match = exactDisplayBoundaryOverlap(leftText, rightText);
+  if (!match) return null;
+  if (!startsAtStandaloneDisplayBoundary(leftText, match.left_start_offset)) return null;
+  if (unsafeDisplayOverlapLeadingWrapper(rightText, match.right_start_offset)) return null;
+  const matchedSource = rightText.slice(match.right_start_offset, match.right_end_offset);
+  if (!displayOverlapFitsTemporalWindow(match.normalized_text, matchedSource, left, right)) return null;
+  const hiddenEnd = displayOverlapHiddenEnd(rightText, match.right_end_offset);
+  if (repeatsDisplayOverlap(rightText.slice(hiddenEnd), match.normalized_text)) return null;
+  const visibleRemainder = rightText.slice(hiddenEnd).trim();
+  if (visibleRemainder && (
+    /^[\p{Punctuation}\p{Mark}\p{Symbol}\p{Other}]/u.test(visibleRemainder)
+    || !displayOverlapUnits(visibleRemainder).length
+  )) return null;
+  if (!displayOverlapContinuationIsSafe(match.normalized_text, matchedSource, visibleRemainder)) return null;
+  return {
+    display_text: rightText.slice(hiddenEnd).trim(),
+    provenance: {
+      algorithm_version: DISPLAY_OVERLAP_ALGORITHM_VERSION,
+      reason: "exact_normalized_boundary_overlap",
+      matched_segment_id: leftId,
+      matched_start_offset: match.left_start_offset,
+      matched_end_offset: match.left_end_offset,
+      source_segment_id: rightId,
+      source_start_offset: match.right_start_offset,
+      source_end_offset: match.right_end_offset,
+      hidden_end_offset: hiddenEnd,
+      matched_text: leftText.slice(match.left_start_offset, match.left_end_offset),
+      source_text: rightText.slice(match.right_start_offset, match.right_end_offset),
+      hidden_text: rightText.slice(0, hiddenEnd),
+      normalized_text: match.normalized_text,
+    },
+  };
+}
+
+function hasDisplayTemporalOverlap(left, right) {
+  if (!hasVerifiedDisplayTiming(left) || !hasVerifiedDisplayTiming(right)) return false;
+  const leftStart = Number(left?.start_seconds);
+  const leftEnd = Number(left?.end_seconds);
+  const rightStart = Number(right?.start_seconds);
+  const rightEnd = Number(right?.end_seconds);
+  return Number.isFinite(leftStart)
+    && Number.isFinite(leftEnd)
+    && Number.isFinite(rightStart)
+    && Number.isFinite(rightEnd)
+    && leftStart >= 0
+    && rightStart >= leftStart
+    && leftEnd > leftStart
+    && rightEnd > rightStart
+    && displayTemporalOverlapSeconds(left, right) >= MIN_DISPLAY_TEMPORAL_OVERLAP_SECONDS;
+}
+
+function hasVerifiedDisplayTiming(segment) {
+  if (segment?.timing_source === "inferred" || segment?.timing_inferred === true) return false;
+  return segment?.timing_source === "provider" || segment?.timing_verified === true;
+}
+
+function exactDisplayBoundaryOverlap(leftText, rightText) {
+  const leftUnits = displayOverlapUnits(leftText);
+  const rightUnits = displayOverlapUnits(rightText);
+  if (!leftUnits.length || !rightUnits.length) return null;
+
+  const pattern = rightUnits.map((unit) => unit.value);
+  const prefixLengths = displayOverlapPrefixLengths(pattern);
+  let length = 0;
+  for (let index = 0; index < leftUnits.length; index += 1) {
+    const value = leftUnits[index].value;
+    while (length > 0 && pattern[length] !== value) length = prefixLengths[length - 1];
+    if (pattern[length] === value) length += 1;
+    if (length === pattern.length && index < leftUnits.length - 1) length = prefixLengths[length - 1];
+  }
+  if (!length) return null;
+
+  const leftOffset = leftUnits.length - length;
+  if (leftOffset > 0 && leftUnits[leftOffset - 1].start === leftUnits[leftOffset].start) return null;
+  if (length < rightUnits.length && rightUnits[length - 1].start === rightUnits[length].start) return null;
+  const normalizedText = rightUnits.slice(0, length).map((unit) => unit.value).join("");
+  const leftStart = leftUnits[leftOffset].start;
+  const leftEnd = leftUnits.at(-1).end;
+  const rightStart = rightUnits[0].start;
+  const rightEnd = rightUnits[length - 1].end;
+  if (
+    displayOverlapNormalizedText(leftText.slice(leftStart, leftEnd)) !== normalizedText
+    || displayOverlapNormalizedText(rightText.slice(rightStart, rightEnd)) !== normalizedText
+    || !strongDisplayOverlap(normalizedText, leftText, rightText, leftStart, leftEnd, rightStart, rightEnd)
+  ) return null;
+  return {
+    left_start_offset: leftStart,
+    left_end_offset: leftEnd,
+    right_start_offset: rightStart,
+    right_end_offset: rightEnd,
+    normalized_text: normalizedText,
+  };
+}
+
+function displayOverlapPrefixLengths(pattern) {
+  const lengths = new Array(pattern.length).fill(0);
+  for (let index = 1; index < pattern.length; index += 1) {
+    let length = lengths[index - 1];
+    while (length > 0 && pattern[index] !== pattern[length]) length = lengths[length - 1];
+    if (pattern[index] === pattern[length]) length += 1;
+    lengths[index] = length;
+  }
+  return lengths;
+}
+
+function displayOverlapUnits(value) {
+  const units = [];
+  const source = displayGraphemes(value);
+  for (let index = 0; index < source.length; index += 1) {
+    const item = source[index];
+    for (const character of item.value.normalize("NFKC").toLocaleLowerCase()) {
+      if (/^[\p{Letter}\p{Number}\p{Mark}\p{Symbol}]$/u.test(character) || character === "\u200d") {
+        units.push({ value: character, start: item.start, end: item.end });
+        continue;
+      }
+      const connector = displaySemanticConnector(character, source[index - 1]?.value, source[index + 1]?.value);
+      if (connector) units.push({ value: connector, start: item.start, end: item.end });
+    }
+  }
+  return units;
+}
+
+function displayGraphemes(value) {
+  const text = String(value || "");
+  if (DISPLAY_GRAPHEME_SEGMENTER) {
+    return [...DISPLAY_GRAPHEME_SEGMENTER.segment(text)].map((item) => ({
+      value: item.segment,
+      start: item.index,
+      end: item.index + item.segment.length,
+    }));
+  }
+  const graphemes = [];
+  let offset = 0;
+  for (const character of text) {
+    if (/^\p{Mark}$/u.test(character) && graphemes.length) {
+      graphemes.at(-1).value += character;
+      graphemes.at(-1).end += character.length;
+    } else {
+      graphemes.push({ value: character, start: offset, end: offset + character.length });
+    }
+    offset += character.length;
+  }
+  return graphemes;
+}
+
+function displaySemanticConnector(character, previous, next) {
+  const previousWord = displayWordCharacter(previous);
+  const nextWord = displayWordCharacter(next);
+  if (/^['’\p{Pd}._/&]$/u.test(character) && previousWord && nextWord) {
+    if (character === "’") return "'";
+    if (/\p{Pd}/u.test(character)) return "-";
+    return character;
+  }
+  if (DISPLAY_TECHNICAL_CONNECTORS.has(character)
+    && (previousWord || nextWord || previous === character || next === character)) return character;
+  return "";
+}
+
+function displayWordCharacter(value) {
+  return /^[\p{Letter}\p{Number}]$/u.test(String(value || "").normalize("NFKC"));
+}
+
+function comparableDisplaySpeaker(value) {
+  return String(value || "发言人").normalize("NFKC").toLocaleLowerCase().trim().replace(/\s+/gu, " ");
+}
+
+function displayOverlapNormalizedText(value) {
+  return displayOverlapUnits(value).map((unit) => unit.value).join("");
+}
+
+function repeatsDisplayOverlap(value, normalizedText) {
+  return displayOverlapNormalizedText(value).includes(normalizedText);
+}
+
+function startsAtStandaloneDisplayBoundary(text, start) {
+  const prefix = String(text || "").slice(0, start).trimEnd();
+  if (!displayOverlapUnits(prefix).length) return true;
+  return /[。！？!?؟.][”’"'）)\]]*$/u.test(prefix);
+}
+
+function strongDisplayOverlap(normalizedText, leftText, rightText, leftStart, leftEnd, rightStart, rightEnd) {
+  if (!normalizedText) return false;
+  const matchedLeftSource = leftText.slice(leftStart, leftEnd);
+  const matchedSource = rightText.slice(rightStart, rightEnd);
+  const leftContext = displayOverlapClauseContext(leftText.slice(0, leftStart));
+  const leftTrailingPunctuation = leftText.slice(leftEnd);
+  if (
+    !sameDisplaySourceText(matchedLeftSource, matchedSource)
+    || criticalFingerprint(matchedSource)
+    || criticalFingerprint(leftContext)
+    || unsafeDisplayOverlapQualifier(leftContext)
+    || unsafeDisplayOverlapQualifier(matchedSource)
+    || unsafeDisplayOverlapWrapper(leftText, leftStart, leftEnd)
+    || /[!?！？؟]/u.test(leftTrailingPunctuation)
+  ) return false;
+  if (!sameDisplayLexicalSequence(matchedLeftSource, matchedSource)) return false;
+  const hasLettersOrNumbers = /[\p{Letter}\p{Number}]/u.test(normalizedText);
+  if (hasLettersOrNumbers && (
+    !displayLexicalBoundary(leftText, leftStart, "before")
+    || !displayLexicalBoundary(rightText, rightEnd, "after")
+  )) return false;
+  const cjkCount = (normalizedText.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu) || []).length;
+  if (cjkCount >= MIN_DISPLAY_CJK_OVERLAP_UNITS) return true;
+  if (cjkCount > 0) return false;
+  const letterCount = (normalizedText.match(/\p{Letter}/gu) || []).length;
+  if (letterCount < MIN_DISPLAY_WORD_OVERLAP_UNITS) return false;
+  const words = matchedSource.match(/[\p{Letter}\p{Number}]+(?:['’\p{Pd}][\p{Letter}\p{Number}]+)*/gu) || [];
+  if (words.length < 2 && letterCount < 12) return false;
+  return true;
+}
+
+function sameDisplaySourceText(left, right) {
+  return String(left || "").normalize("NFC") === String(right || "").normalize("NFC");
+}
+
+function unsafeDisplayOverlapWrapper(text, start, end) {
+  const leading = String(text || "").slice(0, start).trim();
+  const trailing = String(text || "").slice(end).trim();
+  if (leading && !displayOverlapUnits(leading).length) return true;
+  return Boolean(trailing && !/^[、，。．：；,.:;]$/u.test(trailing));
+}
+
+function unsafeDisplayOverlapLeadingWrapper(text, start) {
+  const leading = String(text || "").slice(0, start).trim();
+  return Boolean(leading && !displayOverlapUnits(leading).length);
+}
+
+function displayOverlapContinuationIsSafe(normalizedText, matchedSource, visibleRemainder) {
+  if (!visibleRemainder) return true;
+  const cjkUnits = (normalizedText.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu) || []).length;
+  const wordRuns = displayLexicalRuns(matchedSource)
+    .filter((run) => /[\p{Letter}\p{Number}]/u.test(run)
+      && !/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+$/u.test(run))
+    .length;
+  return cjkUnits <= 8 && wordRuns <= 4;
+}
+
+function displayOverlapClauseContext(value) {
+  return String(value || "").split(/[。！？!?\n]/u).at(-1).slice(-200);
+}
+
+function sameDisplayLexicalSequence(left, right) {
+  const leftRuns = displayLexicalRuns(left);
+  const rightRuns = displayLexicalRuns(right);
+  return leftRuns.length === rightRuns.length
+    && leftRuns.every((run, index) => run === rightRuns[index]);
+}
+
+function displayLexicalRuns(value) {
+  const runs = [];
+  let current = "";
+  let previousEnd = -1;
+  for (const unit of displayOverlapUnits(value)) {
+    if (current && unit.start > previousEnd) {
+      runs.push(current);
+      current = "";
+    }
+    current += unit.value;
+    previousEnd = Math.max(previousEnd, unit.end);
+  }
+  if (current) runs.push(current);
+  return runs;
+}
+
+function unsafeDisplayOverlapQualifier(value) {
+  return /(?:如果|若|假如|假设|除非|一旦|倘若|前提是|可能|也许|或许|未必|不一定|是否|能否|可否|要不要|听说|据说|传闻|似乎|好像|看起来|[吗呢么嘛吧]\s*$|\b(?:if|unless|once|when|whenever|provided|assuming|in case|as long as|whether|should|would|may|maybe|might|could|likely|possibly|perhaps|apparently|seemingly|reportedly|allegedly)\b)/iu.test(String(value || ""));
+}
+
+function displayOverlapFitsTemporalWindow(normalizedText, matchedSource, left, right) {
+  const overlapSeconds = displayTemporalOverlapSeconds(left, right);
+  const cjkUnits = (normalizedText.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu) || []).length;
+  const wordUnits = (normalizedText.match(/[\p{Letter}\p{Number}]/gu) || []).length - cjkUnits;
+  const wordRuns = displayLexicalRuns(matchedSource)
+    .filter((run) => /[\p{Letter}\p{Number}]/u.test(run)
+      && !/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+$/u.test(run))
+    .length;
+  const minimumSeconds = Math.max(
+    cjkUnits / DISPLAY_MAX_CJK_UNITS_PER_SECOND,
+    wordUnits / DISPLAY_MAX_OTHER_WORD_UNITS_PER_SECOND,
+    wordRuns / DISPLAY_MAX_WORDS_PER_SECOND,
+  );
+  return minimumSeconds <= overlapSeconds + DISPLAY_OVERLAP_TIMING_TOLERANCE_SECONDS;
+}
+
+function displayTemporalOverlapSeconds(left, right) {
+  return Math.max(0, Math.min(Number(left?.end_seconds), Number(right?.end_seconds))
+    - Math.max(Number(left?.start_seconds), Number(right?.start_seconds)));
+}
+
+function displayLexicalBoundary(text, offset, direction) {
+  const value = direction === "before" ? text.slice(0, offset) : text.slice(offset);
+  const character = direction === "before" ? [...value].at(-1) : [...value][0];
+  return !character || !/[\p{Letter}\p{Number}\p{Mark}\p{Other}]/u.test(character);
+}
+
+function displayOverlapHiddenEnd(text, matchEnd) {
+  const tail = text.slice(matchEnd);
+  const leadingSpace = tail.match(/^\s*/u)?.[0] || "";
+  const remainder = tail.slice(leadingSpace.length);
+  let punctuation = remainder.match(/^[、，。．：；,.:;]/u)?.[0] || "";
+  const afterPunctuation = remainder.slice(punctuation.length);
+  const punctuationSpace = afterPunctuation.match(/^\s*/u)?.[0] || "";
+  if (punctuation && /^[．：；.:;]/u.test(punctuation) && afterPunctuation && !punctuationSpace) {
+    punctuation = "";
+  }
+  const trailingSpace = punctuation
+    ? punctuationSpace
+    : "";
+  return matchEnd + leadingSpace.length + punctuation.length + trailingSpace.length;
 }
 
 function publicTranscriptSegments(segments = []) {
-  return segments.map((segment) => ({
-    start_seconds: Math.max(0, Number(segment?.start_seconds) || 0),
-    end_seconds: Math.max(0, Number(segment?.end_seconds) || 0),
-    speaker: stringOr(segment?.speaker, "发言人"),
-    text: stringOr(segment?.text, ""),
-    ...(segment?.join_next === true ? { join_next: true } : {}),
-  })).filter((segment) => segment.text);
+  return segments.map((segment) => {
+    const timingInferred = segment?.timing_source === "inferred" || segment?.timing_inferred === true;
+    const timingVerified = !timingInferred
+      && (segment?.timing_source === "provider" || segment?.timing_verified === true);
+    return {
+      start_seconds: Math.max(0, Number(segment?.start_seconds) || 0),
+      end_seconds: Math.max(0, Number(segment?.end_seconds) || 0),
+      speaker: stringOr(segment?.speaker, "发言人"),
+      text: stringOr(segment?.text, ""),
+      ...(timingInferred ? { timing_inferred: true } : {}),
+      ...(timingVerified ? { timing_verified: true } : {}),
+      ...(segment?.join_next === true ? { join_next: true } : {}),
+    };
+  }).filter((segment) => segment.text);
 }
 
 export async function askTranscript({ config, meeting, question, signal }) {
@@ -3629,7 +3985,7 @@ function correctionText(value) {
 
 function criticalFingerprint(value) {
   const text = String(value || "").normalize("NFKC").toLocaleLowerCase();
-  const pattern = /[¥$€£]?[+-]?\d+(?:[.:/-]\d+)*(?:%|元|万|亿|年|月|日|点|时|分|秒)?|(?:高|低)(?:风险|成本|延迟|优先级|概率|置信度|价格|质量|性能)|(?:风险|成本|延迟|优先级|概率|置信度|价格|质量|性能)(?:很|较|更|极|偏)?[高低]|没有|不能|不会|不可|不要|不|没|无|未|非|否|拒绝|反对|禁止|支持|同意|通过|驳回|接受|否决|录用|淘汰|成功|失败|增加|减少|上升|下降|\b(?:no|not|never|without|cannot|can't|won't|don't|doesn't|didn't|isn't|aren't|support|oppose|accept|reject|approve|deny|hire|fail|increase|decrease|success|failure|high[ -]?risk|low[ -]?risk)\b/giu;
+  const pattern = /[¥$€£]?[+-]?\d+(?:[.:/-]\d+)*(?:%|元|万|亿|年|月|日|点|时|分|秒)?|(?:高|低)(?:风险|成本|延迟|优先级|概率|置信度|价格|质量|性能)|(?:风险|成本|延迟|优先级|概率|置信度|价格|质量|性能)(?:很|较|更|极|偏)?[高低]|没有|不能|不会|不可|不要|切勿|勿|不|没|无|未|非|否|拒绝|反对|禁止|支持|同意|通过|驳回|接受|否决|录用|淘汰|成功|失败|增加|减少|上升|下降|\b(?:no|not|never|without|cannot|can't|won't|don't|doesn't|didn't|isn't|aren't|shouldn't|mustn't|support|oppose|accept|reject|approve|deny|hire|fail|increase|decrease|success|failure|high[ -]?risk|low[ -]?risk)\b/giu;
   return (text.match(pattern) || []).join("|");
 }
 
@@ -3877,10 +4233,66 @@ export function buildShareHtml(meeting) {
 }
 
 function buildShareHtmlDocument(meeting) {
+  return paginateShareTranscriptDocument(buildShareHtmlDocumentBase(meeting));
+}
+
+function paginateShareTranscriptDocument(html) {
+  const dataMarker = ",ds=m.display_segments||m.segments;const interview=";
+  const transcriptMarker = "'<section><h2>逐字稿</h2>'+ds.map";
+  const footerMarker = ".join(\"\")+'</section><footer>由言澜 Yanlan 生成</footer>'";
+  if (!html.includes(dataMarker) || !html.includes(transcriptMarker) || !html.includes(footerMarker)) {
+    throw new Error("离线逐字稿模板分页标记缺失");
+  }
+
+  const paginationCss = ".transcript-pages{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:18px}.transcript-pages[hidden]{display:none}.transcript-pages button{display:grid;width:30px;height:30px;place-items:center;padding:0;color:#344054;background:#fff;border:1px solid #d0d5dd;border-radius:6px;cursor:pointer;font-size:18px;line-height:1}.transcript-pages button:hover:not(:disabled){color:#087e8b;border-color:#087e8b}.transcript-pages button:disabled{opacity:.4;cursor:default}.transcript-range{min-width:112px;text-align:center;color:#667085;font-size:12px}";
+  const paginationMarkup = "</div><nav class=\"transcript-pages\" id=\"transcriptPages\" aria-label=\"逐字稿分页\"><button type=\"button\" data-page=\"first\" aria-label=\"第一页\" title=\"第一页\">«</button><button type=\"button\" data-page=\"previous\" aria-label=\"上一页\" title=\"上一页\">‹</button><span class=\"transcript-range\" id=\"transcriptRange\" aria-live=\"polite\"></span><button type=\"button\" data-page=\"next\" aria-label=\"下一页\" title=\"下一页\">›</button><button type=\"button\" data-page=\"last\" aria-label=\"最后一页\" title=\"最后一页\">»</button></nav>";
+  const paginationScript = `const tr=document.querySelector("#transcriptRows"),pn=document.querySelector("#transcriptPages"),pr=document.querySelector("#transcriptRange");const br=()=>{document.querySelectorAll("[data-overlap]").forEach(b=>b.addEventListener("click",()=>{const s=ds[Number(b.dataset.overlap)],p=b.previousElementSibling,x=b.getAttribute("aria-expanded")==="true";b.setAttribute("aria-expanded",String(!x));b.setAttribute("aria-label",x?"展开重叠原文":"折叠重叠原文");b.title=x?"展开重叠原文":"折叠重叠原文";b.textContent=x?"+":"−";p.textContent=x?s.text:s.source_text;}));};const rr=n=>{const pc=Math.max(1,Math.ceil(all.length/ps));pg=Math.max(0,Math.min(pc-1,n));const st=pg*ps;ds=all.slice(st,st+ps);tr.innerHTML=ds.map((s,i)=>'<article><time>'+t(s.start_seconds)+'</time><div><div class="speaker">'+e(s.speaker||"发言人")+'</div><div class="copy"><p>'+e(s.text)+'</p>'+(s.collapsed_overlap?'<button class="overlap-toggle" type="button" data-overlap="'+i+'" aria-expanded="false" aria-label="展开重叠原文" title="展开重叠原文">+</button>':'')+'</div></div></article>').join("");pr.textContent=all.length?(st+1)+"–"+(st+ds.length)+" / "+all.length:"0 / 0";pn.hidden=all.length<=ps;pn.querySelector('[data-page="first"]').disabled=pg===0;pn.querySelector('[data-page="previous"]').disabled=pg===0;pn.querySelector('[data-page="next"]').disabled=pg===pc-1;pn.querySelector('[data-page="last"]').disabled=pg===pc-1;br();};pn.addEventListener("click",v=>{const c=v.target.closest("[data-page]");if(!c)return;const pc=Math.max(1,Math.ceil(all.length/ps));const nx={first:0,previous:pg-1,next:pg+1,last:pc-1}[c.dataset.page];rr(nx);document.querySelector("#transcriptSection").scrollIntoView({block:"start"});});rr(0);`;
+
+  let result = html.replace("</style>", `${paginationCss}</style>`);
+  result = replaceLastShareTemplateMarker(
+    result,
+    dataMarker,
+    ",all=m.display_segments||m.segments,ps=200;let pg=0,ds=all.slice(0,ps);const interview=",
+  );
+  result = replaceLastShareTemplateMarker(
+    result,
+    transcriptMarker,
+    "'<section id=\"transcriptSection\"><h2>逐字稿</h2><div id=\"transcriptRows\">'+ds.map",
+  );
+  result = replaceLastShareTemplateMarker(
+    result,
+    footerMarker,
+    `.join("")+'${paginationMarkup}</section><footer>由言澜 Yanlan 生成</footer>'`,
+  );
+  return result.replace("</script></body>", `${paginationScript}</script></body>`);
+}
+
+function replaceLastShareTemplateMarker(source, marker, replacement) {
+  const index = source.lastIndexOf(marker);
+  if (index < 0) throw new Error("离线逐字稿模板分页标记缺失");
+  return source.slice(0, index) + replacement + source.slice(index + marker.length);
+}
+
+function displayProjectionChangesTranscript(source, display) {
+  if (source.length !== display.length) return true;
+  return display.some((segment, index) => (
+    Boolean(segment.collapsed_overlap)
+    || segment.text !== source[index]?.text
+    || segment.speaker !== source[index]?.speaker
+    || segment.start_seconds !== source[index]?.start_seconds
+    || segment.end_seconds !== source[index]?.end_seconds
+  ));
+}
+
+function buildShareHtmlDocumentBase(meeting) {
   const publicData = publicMeeting(meeting);
-  publicData.segments = readableTranscriptSegments(publicData.segments);
+  const displaySegments = transcriptDisplaySegments(publicData.segments);
+  if (displayProjectionChangesTranscript(publicData.segments, displaySegments)) {
+    publicData.display_segments = displaySegments;
+  }
+  publicData.segments = publicData.segments.map(({ join_next: _joinNext, ...segment }) => segment);
   const payload = JSON.stringify(publicData).replace(/</g, "\\u003c");
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(publicData.title)} · 言澜</title><style>body{margin:0;color:#182230;background:#f7f8fa;font:14px/1.75 system-ui,-apple-system,"PingFang SC",sans-serif}main{width:min(820px,calc(100% - 32px));margin:auto;padding:40px 0 70px}header{padding-bottom:24px;border-bottom:1px solid #dfe3e8}h1{margin:0 0 6px;font-size:26px}h2{margin:28px 0 10px;font-size:17px}h3{margin:16px 0 4px;font-size:14px}.meta,time{color:#667085;font-size:12px}.summary{margin:26px 0;padding-left:16px;border-left:3px solid #087e8b}.notice{padding:12px 14px;color:#7a2e0e;background:#fff5eb;border:1px solid #fed7aa;border-radius:7px}.result{display:flex;gap:16px;align-items:center;margin:16px 0}.pill{padding:3px 8px;border-radius:999px;background:#eef4ff;color:#1849a9;font-weight:650}.competency,.insight-row{padding:14px 0;border-bottom:1px solid #e4e7ec}.competency strong{margin-right:8px}.evidence,.reason{margin:6px 0;color:#475467}.quote{margin:4px 0;font-size:16px}.points{margin:6px 0;padding-left:20px}.decision-time{margin-right:8px;color:#2864dc}article{display:grid;grid-template-columns:62px 1fr;padding:18px 0;border-bottom:1px solid #e4e7ec}article p{margin:2px 0 0;overflow-wrap:anywhere;white-space:pre-line}.speaker{font-weight:650}footer{margin-top:32px;color:#98a2b3;font-size:11px}@media(max-width:560px){main{padding-top:24px}article{grid-template-columns:1fr;gap:5px}.result{align-items:flex-start;flex-direction:column;gap:5px}}</style></head><body><main id="app"></main><script>const m=${payload};const e=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));const t=n=>{n=Math.max(0,Number(n)||0);const h=Math.floor(n/3600),x=Math.floor(n%3600/60),s=Math.floor(n%60);return(h?String(h).padStart(2,"0")+":":"")+String(x).padStart(2,"0")+":"+String(s).padStart(2,"0")};const rl={advance:"建议推进",follow_up:"补充追问",hold:"暂不推进",insufficient:"证据不足"},cl={high:"高",medium:"中",low:"低"},gl={strong:"突出",adequate:"符合",mixed:"有待确认",weak:"不足",insufficient:"证据不足"};const interview=m.mode==="interview"&&m.interviewReport?'<section><p class="notice">AI 辅助评估仅供面试官复核，不用于自动录用决定；请忽略敏感个人属性并核对原始证据。</p><h2>辅助结论</h2><div class="result"><span class="pill">'+e(rl[m.interviewReport.recommendation]||"证据不足")+'</span><span>置信度 '+e(cl[m.interviewReport.confidence]||"低")+'</span></div><p>'+e(m.interviewReport.overview||m.summary||"证据不足")+'</p><h2>能力证据</h2>'+(m.interviewReport.competencies||[]).map(c=>'<div class="competency"><strong>'+e(c.name)+'</strong><span>'+e(gl[c.rating]||"证据不足")+'</span><div>'+e(c.assessment)+'</div>'+(c.evidence||[]).map(v=>'<div class="evidence">['+t(v.start_seconds)+'] “'+e(v.quote)+'”</div>').join("")+'</div>').join("")+'</section>':'';const generic=m.mode!=="interview"?'<section class="summary"><strong>AI 摘要</strong><div>'+e(m.summary||"无")+'</div></section>'+((m.highlights||[]).length?'<section><h2>会议金句</h2>'+m.highlights.map(v=>'<div class="insight-row"><time>'+t(v.start_seconds)+'</time> · <strong>'+e(v.speaker)+'</strong><p class="quote">“'+e(v.quote)+'”</p>'+(v.reason?'<p class="reason">'+e(v.reason)+'</p>':'')+'</div>').join("")+'</section>':'')+((m.speaker_summaries||[]).length?'<section><h2>发言人总结</h2>'+m.speaker_summaries.map(v=>'<div class="insight-row"><h3>'+e(v.speaker)+'</h3><div>'+e(v.summary)+'</div>'+((v.key_points||[]).length?'<ul class="points">'+v.key_points.map(p=>'<li>'+e(p)+'</li>').join("")+'</ul>':'')+'</div>').join("")+'</section>':'')+(((m.decision_records||[]).length||(m.decisions||[]).length)?'<section><h2>关键决策</h2>'+((m.decision_records||[]).length?m.decision_records.map(v=>'<div class="insight-row">'+(v.start_seconds==null?'':'<span class="decision-time">['+t(v.start_seconds)+']</span>')+'<strong>'+e(v.decision)+'</strong>'+(v.evidence?'<p class="evidence">“'+e(v.evidence)+'”</p>':'')+'</div>').join(""):(m.decisions||[]).map(v=>'<div class="insight-row">'+e(v)+'</div>').join(""))+'</section>':''):'';document.querySelector("#app").innerHTML='<header><h1>'+e(m.title)+'</h1><div class="meta">'+e(new Date(m.createdAt).toLocaleString("zh-CN"))+' · '+t(m.duration)+'</div></header>'+interview+generic+'<section><h2>逐字稿</h2>'+m.segments.map(s=>'<article><time>'+t(s.start_seconds)+'</time><div><div class="speaker">'+e(s.speaker||"发言人")+'</div><p>'+e(s.text)+'</p></div></article>').join("")+'</section><footer>由言澜 Yanlan 生成</footer>';<\/script></body></html>`;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(publicData.title)} · 言澜</title><style>body{margin:0;color:#182230;background:#f7f8fa;font:14px/1.75 system-ui,-apple-system,"PingFang SC",sans-serif}main{width:min(820px,calc(100% - 32px));margin:auto;padding:40px 0 70px}header{padding-bottom:24px;border-bottom:1px solid #dfe3e8}h1{margin:0 0 6px;font-size:26px}h2{margin:28px 0 10px;font-size:17px}h3{margin:16px 0 4px;font-size:14px}.meta,time{color:#667085;font-size:12px}.summary{margin:26px 0;padding-left:16px;border-left:3px solid #087e8b}.notice{padding:12px 14px;color:#7a2e0e;background:#fff5eb;border:1px solid #fed7aa;border-radius:7px}.result{display:flex;gap:16px;align-items:center;margin:16px 0}.pill{padding:3px 8px;border-radius:999px;background:#eef4ff;color:#1849a9;font-weight:650}.competency,.insight-row{padding:14px 0;border-bottom:1px solid #e4e7ec}.competency strong{margin-right:8px}.evidence,.reason{margin:6px 0;color:#475467}.quote{margin:4px 0;font-size:16px}.points{margin:6px 0;padding-left:20px}.decision-time{margin-right:8px;color:#2864dc}article{display:grid;grid-template-columns:62px 1fr;padding:18px 0;border-bottom:1px solid #e4e7ec}article p{min-width:0;flex:1;margin:2px 0 0;overflow-wrap:anywhere;white-space:pre-line}.copy{display:flex;min-height:26px;align-items:flex-start;gap:8px}.overlap-toggle{display:grid;width:26px;height:26px;flex:0 0 26px;place-items:center;padding:0;color:#667085;background:#f2f4f7;border:1px solid #d0d5dd;border-radius:6px;cursor:pointer;font-size:18px;line-height:1}.overlap-toggle:hover,.overlap-toggle[aria-expanded=true]{color:#087e8b;background:#e8f8f5;border-color:#087e8b}.speaker{font-weight:650}footer{margin-top:32px;color:#98a2b3;font-size:11px}@media(max-width:560px){main{padding-top:24px}article{grid-template-columns:1fr;gap:5px}.result{align-items:flex-start;flex-direction:column;gap:5px}}</style></head><body><main id="app"></main><script>const m=${payload};const e=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));const t=n=>{n=Math.max(0,Number(n)||0);const h=Math.floor(n/3600),x=Math.floor(n%3600/60),s=Math.floor(n%60);return(h?String(h).padStart(2,"0")+":":"")+String(x).padStart(2,"0")+":"+String(s).padStart(2,"0")};const rl={advance:"建议推进",follow_up:"补充追问",hold:"暂不推进",insufficient:"证据不足"},cl={high:"高",medium:"中",low:"低"},gl={strong:"突出",adequate:"符合",mixed:"有待确认",weak:"不足",insufficient:"证据不足"},ds=m.display_segments||m.segments;const interview=m.mode==="interview"&&m.interviewReport?'<section><p class="notice">AI 辅助评估仅供面试官复核，不用于自动录用决定；请忽略敏感个人属性并核对原始证据。</p><h2>辅助结论</h2><div class="result"><span class="pill">'+e(rl[m.interviewReport.recommendation]||"证据不足")+'</span><span>置信度 '+e(cl[m.interviewReport.confidence]||"低")+'</span></div><p>'+e(m.interviewReport.overview||m.summary||"证据不足")+'</p><h2>能力证据</h2>'+(m.interviewReport.competencies||[]).map(c=>'<div class="competency"><strong>'+e(c.name)+'</strong><span>'+e(gl[c.rating]||"证据不足")+'</span><div>'+e(c.assessment)+'</div>'+(c.evidence||[]).map(v=>'<div class="evidence">['+t(v.start_seconds)+'] “'+e(v.quote)+'”</div>').join("")+'</div>').join("")+'</section>':'';const generic=m.mode!=="interview"?'<section class="summary"><strong>AI 摘要</strong><div>'+e(m.summary||"无")+'</div></section>'+((m.highlights||[]).length?'<section><h2>会议金句</h2>'+m.highlights.map(v=>'<div class="insight-row"><time>'+t(v.start_seconds)+'</time> · <strong>'+e(v.speaker)+'</strong><p class="quote">“'+e(v.quote)+'”</p>'+(v.reason?'<p class="reason">'+e(v.reason)+'</p>':'')+'</div>').join("")+'</section>':'')+((m.speaker_summaries||[]).length?'<section><h2>发言人总结</h2>'+m.speaker_summaries.map(v=>'<div class="insight-row"><h3>'+e(v.speaker)+'</h3><div>'+e(v.summary)+'</div>'+((v.key_points||[]).length?'<ul class="points">'+v.key_points.map(p=>'<li>'+e(p)+'</li>').join("")+'</ul>':'')+'</div>').join("")+'</section>':'')+(((m.decision_records||[]).length||(m.decisions||[]).length)?'<section><h2>关键决策</h2>'+((m.decision_records||[]).length?m.decision_records.map(v=>'<div class="insight-row">'+(v.start_seconds==null?'':'<span class="decision-time">['+t(v.start_seconds)+']</span>')+'<strong>'+e(v.decision)+'</strong>'+(v.evidence?'<p class="evidence">“'+e(v.evidence)+'”</p>':'')+'</div>').join(""):(m.decisions||[]).map(v=>'<div class="insight-row">'+e(v)+'</div>').join(""))+'</section>':''):'';document.querySelector("#app").innerHTML='<header><h1>'+e(m.title)+'</h1><div class="meta">'+e(new Date(m.createdAt).toLocaleString("zh-CN"))+' · '+t(m.duration)+'</div></header>'+interview+generic+'<section><h2>逐字稿</h2>'+ds.map((s,i)=>'<article><time>'+t(s.start_seconds)+'</time><div><div class="speaker">'+e(s.speaker||"发言人")+'</div><div class="copy"><p>'+e(s.text)+'</p>'+(s.collapsed_overlap?'<button class="overlap-toggle" type="button" data-overlap="'+i+'" aria-expanded="false" aria-label="展开重叠原文" title="展开重叠原文">+</button>':'')+'</div></div></article>').join("")+'</section><footer>由言澜 Yanlan 生成</footer>';document.querySelectorAll('[data-overlap]').forEach(b=>b.addEventListener('click',()=>{const s=ds[Number(b.dataset.overlap)],p=b.previousElementSibling,x=b.getAttribute('aria-expanded')==='true';b.setAttribute('aria-expanded',String(!x));b.setAttribute('aria-label',x?'展开重叠原文':'折叠重叠原文');b.title=x?'展开重叠原文':'折叠重叠原文';b.textContent=x?'+':'−';p.textContent=x?s.text:s.source_text;}));<\/script></body></html>`;
 }
 
 function ratingLabel(value) {

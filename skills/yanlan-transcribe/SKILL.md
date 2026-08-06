@@ -17,7 +17,7 @@ Use the deterministic Yanlan CLI for one local audio file at a time. The command
 6. Run the pinned release:
 
 ```bash
-npx --yes github:ranxi2001/yanlan-ai#v0.6.1 transcribe "/absolute/path/recording.mp3" --output "/absolute/path/recording.txt"
+npx --yes github:ranxi2001/yanlan-ai#v0.6.2 transcribe "/absolute/path/recording.mp3" --output "/absolute/path/recording.txt"
 ```
 
 7. Confirm the output file exists and is non-empty. Report its path, selected language, and model. Do not paste a sensitive transcript into the response unless the user asks to see it.

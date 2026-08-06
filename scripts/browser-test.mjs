@@ -911,11 +911,156 @@ try {
   assert.equal(await semanticPage.locator(".transcript-segment").count(), 2);
   assert.deepEqual(await semanticPage.locator(".segment-time").allTextContents(), ["00:00", "00:50"]);
   await semanticPage.getByText(/她是合肥工业大学物流和工程与管理的研究生/).waitFor();
+  await semanticPage.locator("#searchInput").fill("她是合肥工业大学");
+  assert.equal(await semanticPage.locator(".transcript-segment").count(), 1);
+  await semanticPage.locator("#searchInput").fill("");
   await semanticPage.getByText("优化 4 处断句", { exact: true }).waitFor();
   assert.equal(await semanticPage.locator(".segment-text").first().evaluate((element) => getComputedStyle(element).whiteSpace), "pre-line");
   assert.equal(await semanticPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
   await semanticPage.screenshot({ path: fileURLToPath(new URL("../artifacts/semantic-transcript-desktop.png", import.meta.url)), fullPage: true });
   await semanticContext.close();
+
+  const overlapMeeting = {
+    id: "overlap-fixture",
+    title: "重叠转写复核",
+    createdAt: "2026-08-06T08:00:00.000Z",
+    duration: 30,
+    status: "done",
+    mode: "meeting",
+    terminology: [],
+    segments: [
+      { start_seconds: 0, end_seconds: 10, timing_source: "provider", speaker: "A", text: "服务部署" },
+      { start_seconds: 9.5, end_seconds: 20, timing_source: "provider", speaker: "A", text: "服务部署，然后验证回滚流程" },
+      { start_seconds: 18.5, end_seconds: 30, timing_source: "provider", speaker: "A", text: "服务部署，然后验证回滚流程" },
+    ],
+  };
+  const overlapContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const overlapPage = await overlapContext.newPage();
+  await overlapPage.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await overlapPage.evaluate((meeting) => {
+    localStorage.setItem("yanlan.meetings.v1", JSON.stringify([meeting]));
+  }, overlapMeeting);
+  await overlapPage.reload({ waitUntil: "networkidle" });
+  const overlapRows = overlapPage.locator(".transcript-segment");
+  await overlapRows.nth(1).locator(".overlap-toggle").waitFor();
+  assert.equal(await overlapRows.count(), 3);
+  assert.deepEqual(await overlapPage.locator(".segment-time").allTextContents(), ["00:00", "00:09", "00:18"]);
+  assert.equal(await overlapRows.nth(1).locator(".segment-text").textContent(), "然后验证回滚流程");
+  assert.equal(await overlapRows.nth(1).locator(".overlap-toggle").getAttribute("aria-expanded"), "false");
+  assert.equal(await overlapRows.nth(2).locator(".segment-text").textContent(), "");
+  const overlapStorageBefore = await overlapPage.evaluate(() => localStorage.getItem("yanlan.meetings.v1"));
+  await overlapRows.nth(1).locator(".overlap-toggle").focus();
+  await overlapRows.nth(1).locator(".overlap-toggle").press("Enter");
+  assert.equal(await overlapRows.nth(1).locator(".segment-text").textContent(), "服务部署，然后验证回滚流程");
+  assert.equal(await overlapRows.nth(1).locator(".overlap-toggle").getAttribute("aria-expanded"), "true");
+  assert.equal(await overlapPage.evaluate(() => document.activeElement?.getAttribute("data-overlap-source")), "1");
+  await overlapRows.nth(1).locator(".overlap-toggle").press("Enter");
+  await overlapRows.nth(2).locator(".overlap-toggle").click();
+  assert.equal(await overlapRows.nth(2).locator(".segment-text").textContent(), "服务部署，然后验证回滚流程");
+  await overlapRows.nth(2).locator(".overlap-toggle").click();
+  await overlapPage.locator("#searchInput").fill("服务部署，然后验证");
+  await overlapPage.getByText("服务部署，然后验证回滚流程", { exact: true }).first().waitFor();
+  assert.equal(await overlapPage.locator(".overlap-toggle").count(), 0, "a search-forced expansion has no contradictory collapse control");
+  await overlapPage.locator("#searchInput").fill("");
+  await overlapRows.nth(1).locator(".overlap-toggle").waitFor();
+  assert.equal(await overlapPage.evaluate(() => localStorage.getItem("yanlan.meetings.v1")), overlapStorageBefore);
+
+  await overlapPage.locator("#shareButton").click();
+  await overlapPage.waitForFunction(() => document.querySelector("#shareUrlInput")?.value.startsWith("http"));
+  const overlapShareUrl = await overlapPage.locator("#shareUrlInput").inputValue();
+  const sharedOverlapPage = await overlapContext.newPage();
+  await sharedOverlapPage.goto(overlapShareUrl, { waitUntil: "networkidle" });
+  await sharedOverlapPage.locator(".overlap-toggle").first().waitFor();
+  assert.equal(await sharedOverlapPage.locator(".transcript-segment").count(), 3);
+  assert.equal(await sharedOverlapPage.locator(".transcript-segment").nth(1).locator(".segment-text").textContent(), "然后验证回滚流程");
+  assert.equal(await sharedOverlapPage.locator(".transcript-segment").nth(2).locator(".segment-text").textContent(), "");
+  await sharedOverlapPage.locator(".transcript-segment").nth(1).locator(".overlap-toggle").click();
+  assert.equal(await sharedOverlapPage.locator(".transcript-segment").nth(1).locator(".segment-text").textContent(), "服务部署，然后验证回滚流程");
+  await sharedOverlapPage.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await sharedOverlapPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
+
+  const offlineOverlapPage = await overlapContext.newPage();
+  const offlineOverlapErrors = [];
+  offlineOverlapPage.on("pageerror", (error) => offlineOverlapErrors.push(error.message));
+  await offlineOverlapPage.setContent(buildShareHtml(overlapMeeting), { waitUntil: "domcontentloaded" });
+  const offlineOverlapRows = offlineOverlapPage.locator("article");
+  await offlineOverlapRows.nth(1).locator(".overlap-toggle").waitFor();
+  assert.equal(await offlineOverlapRows.nth(1).locator("p").textContent(), "然后验证回滚流程");
+  assert.equal(await offlineOverlapRows.nth(2).locator("p").textContent(), "");
+  await offlineOverlapRows.nth(1).locator(".overlap-toggle").click();
+  assert.equal(await offlineOverlapRows.nth(1).locator("p").textContent(), "服务部署，然后验证回滚流程");
+  assert.deepEqual(offlineOverlapErrors, []);
+
+  const virtualMeeting = {
+    id: "virtual-transcript-fixture",
+    title: "超长逐字稿窗口验证",
+    createdAt: "2026-08-06T08:00:00.000Z",
+    duration: 4_000,
+    status: "done",
+    mode: "meeting",
+    terminology: [],
+    segments: Array.from({ length: 20_000 }, (_, index) => ({
+      start_seconds: index * 0.2,
+      end_seconds: index * 0.2 + 0.1,
+      timing_source: "provider",
+      speaker: "A",
+      text: index === 19_999
+        ? "window-target-19999"
+        : `逐字稿片段${String(index).padStart(5, "0")}${index % 5 === 0 ? ` ${"这是用于验证移动端宽度重排的长句。".repeat(6)}` : ""}`,
+    })),
+  };
+  const virtualPage = await overlapContext.newPage();
+  await virtualPage.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await virtualPage.evaluate((meeting) => localStorage.setItem("yanlan.meetings.v1", JSON.stringify([meeting])), virtualMeeting);
+  await virtualPage.reload({ waitUntil: "networkidle" });
+  const virtualRows = virtualPage.locator(".transcript-segment");
+  await virtualRows.first().waitFor();
+  assert.ok(await virtualRows.count() <= 180);
+  assert.ok(await virtualPage.evaluate(() => document.getElementsByTagName("*").length) < 6_000);
+  await virtualPage.locator("#transcriptList").evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await virtualPage.waitForFunction(() => {
+    const list = document.querySelector("#transcriptList");
+    const row = document.querySelector('.transcript-segment[data-transcript-index="19999"]');
+    if (!list || !row) return false;
+    const listRect = list.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    return rowRect.bottom <= listRect.bottom + 1 && rowRect.top >= listRect.top - 1;
+  });
+  assert.equal(await virtualRows.last().getAttribute("data-transcript-index"), "19999");
+  await virtualPage.setViewportSize({ width: 390, height: 844 });
+  await virtualPage.waitForFunction(() => {
+    const list = document.querySelector("#transcriptList");
+    const row = document.querySelector('.transcript-segment[data-transcript-index="19999"]');
+    if (!list || !row) return false;
+    const listRect = list.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    return rowRect.bottom <= listRect.bottom + 1 && rowRect.top >= listRect.top - 1;
+  });
+  assert.ok(await virtualRows.count() <= 180);
+  await virtualPage.locator("#searchInput").fill("window-target-19999");
+  assert.equal(await virtualRows.count(), 1);
+  assert.equal(await virtualRows.first().locator(".segment-text").textContent(), "window-target-19999");
+  await virtualPage.locator("#searchInput").fill("");
+  await virtualRows.first().waitFor();
+  assert.ok(await virtualRows.count() <= 180);
+  assert.ok(await virtualPage.evaluate(() => document.getElementsByTagName("*").length) < 6_000);
+
+  const offlineVirtualPage = await overlapContext.newPage();
+  const offlineVirtualErrors = [];
+  offlineVirtualPage.on("pageerror", (error) => offlineVirtualErrors.push(error.message));
+  await offlineVirtualPage.setContent(buildShareHtml(virtualMeeting), { waitUntil: "domcontentloaded" });
+  const offlineVirtualRows = offlineVirtualPage.locator("#transcriptRows article");
+  await offlineVirtualRows.first().waitFor();
+  assert.equal(await offlineVirtualRows.count(), 200);
+  assert.ok(await offlineVirtualPage.evaluate(() => document.getElementsByTagName("*").length) < 6_000);
+  assert.equal(await offlineVirtualPage.locator("#transcriptRange").textContent(), "1–200 / 20000");
+  await offlineVirtualPage.getByRole("button", { name: "最后一页" }).click();
+  await offlineVirtualPage.getByText("window-target-19999", { exact: true }).waitFor();
+  assert.equal(await offlineVirtualRows.count(), 200);
+  assert.equal(await offlineVirtualPage.locator("#transcriptRange").textContent(), "19801–20000 / 20000");
+  assert.ok(await offlineVirtualPage.evaluate(() => document.getElementsByTagName("*").length) < 6_000);
+  assert.deepEqual(offlineVirtualErrors, []);
+  await overlapContext.close();
 
   await page.locator("#newMeetingButton").click();
   await page.locator("#startRecordButton").click();

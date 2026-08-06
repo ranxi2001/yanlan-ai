@@ -1,6 +1,6 @@
 {
   "name": "yanlan-ai",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "type": "module",
   "description": "Yanlan: an open-source AI meeting workspace, MiMo transcription CLI, and Agent Skill.",
   "license": "MIT",

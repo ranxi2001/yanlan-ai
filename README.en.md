@@ -104,9 +104,9 @@ This position has to be earned through an inspectable control path, real-recordi
 | --- | --- |
 | Recording and recovery | Browser recording, near-real-time segmented transcription, continuous IndexedDB commits, and recovery after refresh; if live ASR falls behind, replay persisted audio instead of accumulating PCM in memory; recording, playback, and export work without an API key |
 | File transcription | Incrementally decode common audio formats up to four hours in a Dedicated Worker; apply a backpressured MiMo pipeline, quality gates, timeouts, and backoff; retain the recording when processing stops |
-| Trustworthy meeting knowledge | Recording-wide terminology consistency, overview, keywords, replayable highlights, speaker notes, quote-backed decisions and actions, and question-relevant transcript retrieval; transcript changes invalidate and regenerate downstream results |
+| Trustworthy meeting knowledge | Recording-wide terminology consistency, overview, keywords, replayable highlights, speaker notes, quote-backed decisions and actions, and question-relevant transcript retrieval; likely boundary duplicates are conservatively collapsed only in a reversible display projection while facts and exports stay unchanged |
 | Interview mode | Capture candidate alias, role, round, competencies, and job description; organize quotes, gaps, and follow-up questions by competency with timestamp replay; never score abilities or advance/reject a candidate automatically |
-| Share and export | Local playback with timestamp seeking; export original audio, Markdown, WebVTT, JSON, or standalone HTML; generate a read-only page with transcript, time, and summary |
+| Share and export | Local playback with timestamp seeking; export original audio, Markdown, WebVTT, JSON, or standalone HTML; generate a read-only page with transcript, time, and summary; bound long workspace transcripts and standalone HTML to 180-row windows and 200-row pages respectively |
 | BYOK boundaries | Direct browser calls or a local same-origin relay; test MiMo/GPT settings before saving; require HTTPS remotely; keep keys and meeting state in localStorage, audio in IndexedDB, and per-ID tombstones to prevent stale-tab resurrection |
 
 See Xiaomi's official [MiMo-V2.5-ASR repository](https://github.com/XiaomiMiMo/MiMo-V2.5-ASR) for model and deployment details. The web app fixes MiMo ASR to the official Chat Completions format, sending audio as a data URL with `asr_options`, so users no longer select a protocol or enter an endpoint path. The CLI retains a standard OpenAI Transcriptions mode for compatible gateways.
@@ -127,13 +127,13 @@ When you only need text from one recording, there is no need to start the web ap
 
 ```bash
 export MIMO_API_KEY="your-key"
-npx --yes github:ranxi2001/yanlan-ai#v0.6.1 transcribe recording.mp3 -o recording.txt
+npx --yes github:ranxi2001/yanlan-ai#v0.6.2 transcribe recording.mp3 -o recording.txt
 ```
 
 You can also install the CLI globally:
 
 ```bash
-npm install --global github:ranxi2001/yanlan-ai#v0.6.1
+npm install --global github:ranxi2001/yanlan-ai#v0.6.2
 yanlan transcribe interview.m4a -o interview.md --language en
 ```
 
@@ -274,6 +274,8 @@ YANLAN_LONG_AUDIO="/path/to/meeting.webm" npm run test:browser:long-audio
 ```
 
 ## Project Status
+
+`v0.6.2` bounds long-transcript rendering end to end. The workspace uses a 180-row window with an indexed height model and resize anchoring, while standalone HTML renders at most 200 transcript rows per page; a 20,000-segment browser regression keeps the active DOM below 6,000 nodes. Adjacent text is collapsed only in the display projection when the speaker matches, provider timings overlap, source text is exactly equivalent, and conservative boundary checks pass. Every collapse retains source IDs, offsets, and hidden text and can be expanded in the workspace, shared page, or standalone HTML. Public facts, Markdown, WebVTT, and JSON remain canonical.
 
 `v0.6.1` replaces the previous fail-fast protection for hour-scale files with a genuinely bounded streaming path. Container reads, PCM windows, MiMo concurrency, terminology audio review, and live-recording catch-up all have explicit memory limits. Two consecutive local runs against a 61:35 real WebM each covered 124 windows with a 1.83 MiB PCM-window cap, about 46.0 MiB main-thread JS-heap growth, and at most about 160.8 MiB total Chromium PSS growth, without retaining a recording-wide decoded buffer.
 

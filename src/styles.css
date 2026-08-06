@@ -1135,6 +1135,12 @@ textarea:focus-visible {
   flex: 1;
   padding: 14px 22px 40px;
   overflow-y: auto;
+  overflow-anchor: none;
+}
+
+.transcript-virtual-spacer {
+  width: 1px;
+  pointer-events: none;
 }
 
 .transcript-segment {
@@ -1187,12 +1193,47 @@ textarea:focus-visible {
 }
 
 .segment-text {
+  min-width: 0;
+  flex: 1;
   margin: 0;
   color: #344054;
   font-size: 14px;
   line-height: 1.8;
   overflow-wrap: anywhere;
   white-space: pre-line;
+}
+
+.segment-copy {
+  display: flex;
+  min-height: 26px;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.overlap-toggle {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  place-items: center;
+  padding: 0;
+  color: var(--text-faint);
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.overlap-toggle:hover,
+.overlap-toggle[aria-expanded="true"] {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.overlap-toggle svg {
+  width: 14px;
+  height: 14px;
 }
 
 .no-results {

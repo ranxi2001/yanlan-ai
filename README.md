@@ -104,9 +104,9 @@ Harness 的可执行 contract 已写入代码和测试：
 | --- | --- |
 | 录音与恢复 | 浏览器录音、分段近实时转写、IndexedDB 持续落盘、刷新后恢复已提交分片；实时 ASR 落后时从落盘录音补全，不在内存堆积 PCM；无需 API Key 也能录音、播放和导出 |
 | 文件转写 | Dedicated Worker 增量解码最长 4 小时的常见音频；使用有背压的 MiMo 分片、质量门、超时和退避重试；失败时停止生成不完整纪要并保留录音供重转 |
-| 可信会议知识 | 录音级术语统一、会议概览、关键词、可回听金句、发言人要点、带原话证据的决策/行动项和相关片段问答；逐字稿版本变化会使下游结果失效并重新生成 |
+| 可信会议知识 | 录音级术语统一、会议概览、关键词、可回听金句、发言人要点、带原话证据的决策/行动项和相关片段问答；可能重复的边界文字仅在显示层保守折叠，可随时展开原文，事实层与导出不变 |
 | 面试模式 | 录入候选人代称、岗位、轮次、能力项和 JD；按能力项整理原话证据、缺口与下一轮追问，点击时间点回听；不自动判断能力，也不自动推进或淘汰候选人 |
-| 分享与导出 | 本地播放器与时间戳跳转；导出原始录音、Markdown、WebVTT、JSON 和离线 HTML；生成包含逐字稿、时间和摘要的只读链接 |
+| 分享与导出 | 本地播放器与时间戳跳转；导出原始录音、Markdown、WebVTT、JSON 和离线 HTML；生成包含逐字稿、时间和摘要的只读链接；超长逐字稿在主界面有界渲染，离线 HTML 每页最多 200 段 |
 | BYOK 与边界 | 浏览器直连或本地同源网关；MiMo/GPT 配置保存前可测试；远程端点强制 HTTPS；Key 与会议状态保存在 localStorage，录音保存在 IndexedDB，删除由 per-ID tombstone 防止旧标签页复活 |
 
 MiMo-V2.5-ASR 的模型能力和部署信息见小米官方的 [MiMo-V2.5-ASR 仓库](https://github.com/XiaomiMiMo/MiMo-V2.5-ASR)。网页端固定使用官方 Chat Completions ASR 格式，通过 data URL 发送音频和 `asr_options`，不再要求用户选择协议或填写请求路径；CLI 仍保留标准 OpenAI Transcriptions 协议，便于连接兼容网关。
@@ -125,13 +125,13 @@ MiMo 网页路径使用 [Mediabunny](https://mediabunny.dev/guide/reading-media-
 
 ```bash
 export MIMO_API_KEY="你的 Key"
-npx --yes github:ranxi2001/yanlan-ai#v0.6.1 transcribe recording.mp3 -o recording.txt
+npx --yes github:ranxi2001/yanlan-ai#v0.6.2 transcribe recording.mp3 -o recording.txt
 ```
 
 也可以全局安装：
 
 ```bash
-npm install --global github:ranxi2001/yanlan-ai#v0.6.1
+npm install --global github:ranxi2001/yanlan-ai#v0.6.2
 yanlan transcribe interview.m4a -o interview.md --language zh
 ```
 
@@ -272,6 +272,8 @@ YANLAN_LONG_AUDIO="/path/to/meeting.webm" npm run test:browser:long-audio
 ```
 
 ## 项目状态
+
+`v0.6.2` 为长逐字稿增加有界显示：主工作台使用带高度索引和宽度重排锚点的 180 行窗口，离线 HTML 每页最多渲染 200 段，2 万段浏览器回归的活动 DOM 保持在 6,000 个节点以内。相邻分片只有在同发言人、提供方时间重叠、原文精确等价且通过保守边界校验时才会在显示层折叠；每次折叠保留来源 ID、原始偏移和隐藏原文，并可在本机、分享页和离线页展开。公开事实、Markdown、WebVTT 与 JSON 不会被显示投影改写。
 
 `v0.6.1` 将一小时级文件转写从“提前拒绝以避免 OOM”升级为真正的有界流式链路：容器读取、PCM、MiMo 并发、术语音频复核和实时录音追赶均有明确内存上限。本机 61:35 真实 WebM 连续两次回归均覆盖 124 个窗口，PCM 窗口上限 1.83 MiB、主线程 JS 堆增长约 46.0 MiB、Chromium 总 PSS 最多增长约 160.8 MiB，不再持有整场解码音频。
 
