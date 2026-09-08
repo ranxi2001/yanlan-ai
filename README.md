@@ -98,6 +98,8 @@ Harness 的可执行 contract 已写入代码和测试：
 
 ## 产品能力
 
+逐字稿纠错的实验工具链与真实录音结果见[美团面试实测报告](docs/meituan-transcript-live-test-2026-09-09.md)和[13个纠错工具的开源机制对照](docs/transcript-tool-design-2026-09-09.md)。该实验复用现有 Harness，通过 `scripts/transcript-repair.mjs` 运行，尚未接入浏览器默认转写流程；测试保留未解决项，未宣称追平飞书。
+
 ![言澜会议工作台](./docs/yanlan-workspace.png)
 
 | 场景 | 已实现能力 |

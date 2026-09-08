@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "id": "infra-interview-2026-09-reference",
+  "reference_status": "cross_transcript_review_not_audio_gold",
+  "facts": [
+    { "id": "F01", "description": "候选人自述27届计算机技术研究生及量化平台经历", "mentions": ["27|二七|二十七", "量化"] },
+    { "id": "F02", "description": "两人开发，自述承担50%以上，不是独立完成全部", "mentions": ["两人|两个人|另一个人|二人", "50|五十"] },
+    { "id": "F03", "description": "自述日常排查由约4至5小时缩短到20分钟以内，不等于准确率100%", "mentions": ["四五|4.{0,8}5|4～5|4—5", "20|二十"] },
+    { "id": "F04", "description": "开源学习项目约两百多个star及AI刷题工具，疑难项目名待核", "mentions": ["200|两百|二百", "刷题"] },
+    { "id": "F05", "description": "华为实习涉及沙盒、运行时、调度，职业兴趣偏Infra", "mentions": ["华为", "运行时|调度|沙盒"] },
+    { "id": "F06", "description": "区块链和众包标注激励成果，与后续Agent风控方向区分", "mentions": ["区块链", "标注"] },
+    { "id": "F07", "description": "导师推荐量化实践，策略效果为自述且有失效条件", "mentions": ["导师", "失效|市场变化|行情变化"] },
+    { "id": "F08", "description": "两个项目约5和3个PR；贡献项目身份待核", "mentions": ["PR|贡献", "5|五", "3|三"] },
+    { "id": "F09", "description": "部门约20人、小组约4人，两种规模不能混淆", "mentions": ["20|二十", "4|四", "小组|团队|部门"] },
+    { "id": "F10", "description": "美团流程较快，百度和字节有面试排期，不是已有offer", "mentions": ["百度", "字节"] },
+    { "id": "F11", "description": "HR说明美团大模型BU、龙猫团队下的Infra以自研模型为主", "mentions": ["龙猫|Longcat|LongCat", "自研"] },
+    { "id": "F12", "description": "自研与开源并用，搜广推与大模型并行，未完全替换", "mentions": ["开源", "搜广推", "并行|并存|未.{0,4}替换|不能.{0,4}替换"] },
+    { "id": "F13", "description": "追赶并保持第一梯队是目标，两类优化应该都有，不能推断训练路线", "mentions": ["第一梯队", "应该|都有|两类|两种"] },
+    { "id": "F14", "description": "北京上海可选，结果后续通知，无录用结论或明确答复期限", "mentions": ["北京", "上海", "后续|通知|联系"] }
+  ]
+}

@@ -20,6 +20,8 @@ export async function runAgent({
   signal,
   runId,
   clock,
+  onCheckpoint,
+  resume,
 } = {}) {
   if (typeof adapter?.create !== "function") throw new TypeError("Agent requires a model adapter");
   if (!profile || typeof profile !== "object") throw new TypeError("Agent requires a profile");
@@ -27,13 +29,15 @@ export async function runAgent({
   const policy = createAgentPolicy(policyValue);
   const runSignal = combineAbortSignals(signal, AbortSignal.timeout(policy.maxRunMilliseconds));
   const trace = createRunTrace({ runId, clock });
-  let state = immutableState(initialState);
-  let history = normalizeInput(input);
-  let modelTurns = 0;
-  let toolCalls = 0;
-  let modelTokens = 0;
+  if (resume && (resume.schema !== 1 || resume.profile !== profile.name || !Array.isArray(resume.history)
+    || !resume.state || !resume.usage || ["modelTurns", "toolCalls", "modelTokens"].some((key) => !Number.isInteger(resume.usage[key] ?? 0) || (resume.usage[key] ?? 0) < 0))) throw new TypeError("Invalid agent checkpoint");
+  let state = immutableState(resume?.state || initialState);
+  let history = normalizeInput(resume?.history || input);
+  let modelTurns = resume?.usage.modelTurns || 0;
+  let toolCalls = resume?.usage.toolCalls || 0;
+  let modelTokens = resume?.usage.modelTokens || 0;
   let idleTurns = 0;
-  const seenCallIds = new Set();
+  const seenCallIds = new Set((resume?.history || []).filter((item) => item.type === "function_call").map((item) => item.call_id));
 
   trace.append("run.started", { profile: String(profile.name || "agent"), tool_count: registry.definitions.length });
 
@@ -176,6 +180,7 @@ export async function runAgent({
           trace.append("tool.completed", { tool: invocation.tool.name, output_characters: serialized.length });
         }
         history = [...history, ...outputs];
+        if (onCheckpoint) await onCheckpoint({ schema: 1, profile: profile.name, state, history, usage: usageSnapshot() });
         const terminalAfterTools = profile.completeOnTerminalState === true && typeof profile.isTerminalState === "function"
           ? Boolean(await profile.isTerminalState({ state, response }))
           : false;

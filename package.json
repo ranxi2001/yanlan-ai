@@ -16,7 +16,7 @@
   "bin": {
     "yanlan": "./bin/yanlan.mjs"
   },
-  "files": ["bin/", "src/api.js", "src/agent/", "src/asr-pipeline.js", "src/asr-quality.js", "src/cli.js", "skills/yanlan-transcribe/", "public/THIRD_PARTY_NOTICES.txt", "LICENSE", "README.md"],
+  "files": ["bin/", "src/api.js", "src/agent/", "src/asr-pipeline.js", "src/asr-quality.js", "src/meeting-content.js", "src/transcript-speakers.js", "src/reading-transcript.js", "src/audio-span-locator.js", "src/cli.js", "skills/yanlan-transcribe/", "public/THIRD_PARTY_NOTICES.txt", "LICENSE", "README.md"],
   "publishConfig": {
     "access": "public"
   },
@@ -30,8 +30,11 @@
     "eval:terminology": "node scripts/terminology-eval.mjs",
     "eval:terminology:agent": "node scripts/terminology-agent-eval.mjs",
     "eval:meeting:agent": "node scripts/meeting-agent-eval.mjs",
+    "eval:meeting:content": "node scripts/meeting-content-eval.mjs",
+    "eval:transcript:repair": "node scripts/transcript-repair.mjs",
     "test": "node --test test/*.test.mjs",
     "test:browser": "node scripts/browser-test.mjs",
+    "test:browser:content": "node scripts/content-browser-test.mjs",
     "test:browser:long-audio": "node scripts/long-audio-browser-test.mjs",
     "test:browser:races": "node scripts/browser-test.mjs --races-only",
     "test:package": "node scripts/package-test.mjs",

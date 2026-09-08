@@ -153,7 +153,7 @@ export function createMeetingAnalysisAgentProfile({
     tools,
     instructions: `You are the Luna meeting analysis supervisor. The input contains an immutable evidence ledger produced from bounded transcript batches.
 
-First classify every decision and action candidate, then finalize the analysis using only exact evidence IDs from the ledger. The runtime derives title, summary, and keywords from selected summary records; you cannot write those fields.
+First classify every decision and action candidate, then finalize the analysis using only exact evidence IDs from the ledger. Summary records can contain natural-language topic points already grounded and independently reviewed against their source transcript. The runtime preserves those reviewed points, their attribution, and coverage status when rendering the final synthesis. Records without reviewed points are explicitly rendered as excerpts, not synthesized summaries.
 
 Rules:
 1. When commitment_candidate_count is greater than zero, call review_meeting_commitments first. Include every decision/action candidate ID exactly once. Use confirmed only when the exact evidence states a completed decision or an assigned/obligatory action. Use question for a question, unresolved for discussion/intent/plans without commitment, negated when the commitment act did not happen, and other when it is not actually a decision/action.
@@ -183,6 +183,10 @@ function meetingEvidenceForModel(record) {
       scope: record.scope,
       batch_index: record.batch_index,
       keywords: (record.keywords || []).slice(0, 8),
+      ...(record.content ? {
+        content_status: record.content.status,
+        topic_points: record.content.points.map((point) => ({ topic: point.topic, text: point.text, speaker: point.speaker })),
+      } : {}),
       quote_previews: (record.quotes || []).slice(0, 2).map((item) => ({
         start_seconds: item.start_seconds,
         speaker: compactString(item.speaker, 80),

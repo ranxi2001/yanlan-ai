@@ -119,7 +119,7 @@ function agentEvalConfig(env) {
   };
 }
 
-function mimoRangeTool(config, audioPath, env) {
+export function mimoRangeTool(config, audioPath, env = process.env) {
   if (!config.asrApiKey) return undefined;
   return async ({ start_seconds: start, end_seconds: end, signal }) => {
     const wav = await ffmpegAudioRange({

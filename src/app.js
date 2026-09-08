@@ -30,6 +30,7 @@ import {
   storedAudioDuration,
 } from "./audio-limits.js";
 import { createKeyBackup, parseKeyBackup } from "./key-backup.js";
+import { cleanReadingSegments } from "./reading-transcript.js";
 import { deleteRecording, getRecording, getRecordingChunks, saveRecording, saveRecordingChunk } from "./storage.js";
 
 const MEETINGS_KEY = "yanlan.meetings.v1";
@@ -62,11 +63,13 @@ const questionRuns = new Map();
 const deletingMeetingIds = new Set();
 const shareGenerationRuns = { token: 0, meetingId: null, ready: null };
 const transcriptProjectionCache = new WeakMap();
+const readingProjectionCache = new WeakMap();
 let transcriptScrollFrame = 0;
 let transcriptResizeObserver = null;
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
+  transcriptReadingMode: $("#transcriptReadingMode"),
   sidebar: $("#sidebar"), sidebarOpen: $("#sidebarOpen"), sidebarClose: $("#sidebarClose"), sidebarScrim: $("#sidebarScrim"),
   historyList: $("#historyList"), historyCount: $("#historyCount"), newMeetingButton: $("#newMeetingButton"),
   meetingTitle: $("#meetingTitle"), meetingMeta: $("#meetingMeta"), meetingTaskStatus: $("#meetingTaskStatus"),
@@ -143,6 +146,7 @@ async function initialize() {
 }
 
 function bindEvents() {
+  elements.transcriptReadingMode.addEventListener("change", () => { renderTranscript(activeMeeting()); refreshIcons(); });
   elements.newMeetingButton.addEventListener("click", newMeeting);
   elements.recordButton.addEventListener("click", () => requestSource("record"));
   elements.startRecordButton.addEventListener("click", () => requestSource("record"));
@@ -332,12 +336,18 @@ function renderTranscript(meeting) {
 function transcriptView(meeting) {
   const source = Array.isArray(meeting.segments) ? meeting.segments : [];
   const current = state.transcriptView;
-  if (current?.meetingId === meeting.id && current.source === source && current.query === state.query) return current;
+  const reading = elements.transcriptReadingMode.value === "reading";
+  if (current?.meetingId === meeting.id && current.source === source && current.query === state.query && current.reading === reading) return current;
 
   let projected = transcriptProjectionCache.get(source);
   if (!projected) {
     projected = transcriptDisplaySegments(source);
     transcriptProjectionCache.set(source, projected);
+  }
+  if (reading) {
+    let cleaned = readingProjectionCache.get(source);
+    if (!cleaned) { cleaned = cleanReadingSegments(projected); readingProjectionCache.set(source, cleaned); }
+    projected = cleaned;
   }
   const segments = state.query
     ? projected.filter((segment) => transcriptSegmentSearchText(meeting, segment).includes(state.query))
@@ -346,6 +356,7 @@ function transcriptView(meeting) {
   const view = {
     meetingId: meeting.id,
     source,
+    reading,
     query: state.query,
     segments,
     virtualized,
@@ -567,7 +578,7 @@ function transcriptSegmentSearchText(meeting, segment) {
     .map((id) => meeting.segments?.[id]?.text)
     .filter(Boolean)
     .join(" ");
-  return `${segment.speaker || ""} ${segment.text || ""} ${sourceText} ${segment.source_text || ""}`.toLocaleLowerCase();
+  return `${segment.speaker || ""} ${segment.text || ""} ${sourceText} ${segment.source_text || ""} ${segment.reading_source_text || ""}`.toLocaleLowerCase();
 }
 
 function transcriptOverlapKey(meetingId, sourceId) {
@@ -628,6 +639,7 @@ function renderInterviewEvidence(meeting) {
 }
 
 function renderSummary(meeting) {
+  if (meeting.summary_content) meeting = { ...meeting, ...publicMeeting(meeting) };
   if (["recording", "correcting", "summarizing"].includes(meeting.status) && !meeting.summary) {
     elements.insightContent.innerHTML = `<div class="insight-empty"><span class="inline-loader"></span><span>${meeting.status === "recording" ? "结束录音后校正并总结" : statusLabel(meeting.status)}</span></div>`;
     return;
@@ -640,7 +652,9 @@ function renderSummary(meeting) {
   const correction = correctionNotice(meeting);
   const summary = meeting.summaryError
     ? summaryRetryNotice(meeting)
-    : `<p class="summary-text">${escapeHtml(meeting.summary || "暂无摘要")}</p>`;
+    : meeting.summary_content?.points?.length
+      ? meeting.summary_content.points.map((point) => `<section class="insight-section"><h3>${escapeHtml(point.topic)}</h3><p class="summary-text">${escapeHtml(point.text)}</p><div class="evidence-list">${point.evidence.map((entry) => `<button class="evidence-item" type="button" data-seek="${Number(entry.start_seconds) || 0}"><time>${formatTimestamp(entry.start_seconds)}</time><span>${escapeHtml(entry.quote)}</span><i data-lucide="play"></i></button>`).join("")}</div></section>`).join("")
+      : `<p class="summary-text">${escapeHtml(meeting.summary || "暂无摘要")}</p>`;
   elements.insightContent.innerHTML = `${correction}${analysisRunNotice(meeting)}<section class="insight-section"><h2 class="insight-label"><i data-lucide="align-left"></i><span>内容摘要</span></h2>${summary}</section><section class="insight-section"><h2 class="insight-label"><i data-lucide="tags"></i><span>关键词</span></h2>${keywords}</section>`;
 }
 
@@ -1430,6 +1444,10 @@ function applySummaryResult(meeting, summary) {
   for (const field of ["summary", "keywords", "highlights", "speaker_summaries", "decisions", "decision_records", "action_items"]) {
     if (Object.hasOwn(summary, field)) meeting[field] = summary[field];
   }
+  for (const field of ["summary_kind", "summary_content", "contentRun"]) {
+    if (Object.hasOwn(summary, field)) meeting[field] = summary[field];
+    else delete meeting[field];
+  }
   if (meeting.autoTitle && summary.title) meeting.title = summary.title.slice(0, 120);
   if (summary.interviewReport) meeting.interviewReport = summary.interviewReport;
   else delete meeting.interviewReport;
@@ -1470,6 +1488,9 @@ function resetSummaryResult(meeting) {
   meeting.summaryError = "";
   delete meeting.interviewReport;
   delete meeting.analysisRun;
+  delete meeting.summary_kind;
+  delete meeting.summary_content;
+  delete meeting.contentRun;
 }
 
 function transcriptContentSignature(segments) {
@@ -2474,6 +2495,7 @@ async function handleExport(event) {
     if (!record?.blob) { showToast("分享稿不包含原始录音", true); return; }
     downloadBlob(record.blob, record.fileName || `${name}.${extensionForMime(record.mimeType)}`);
   } else if (button.dataset.export === "markdown") downloadBlob(new Blob([toMarkdown(meeting)], { type: "text/markdown;charset=utf-8" }), `${name}.md`);
+  else if (button.dataset.export === "markdown-reading") downloadBlob(new Blob([toMarkdown(meeting, { reading: true })], { type: "text/markdown;charset=utf-8" }), `${name}-阅读稿.md`);
   else if (button.dataset.export === "vtt") downloadBlob(new Blob([toVtt(meeting)], { type: "text/vtt;charset=utf-8" }), `${name}.vtt`);
   else if (button.dataset.export === "json") downloadBlob(new Blob([JSON.stringify(publicMeeting(meeting), null, 2)], { type: "application/json;charset=utf-8" }), `${name}.json`);
   else if (button.dataset.export === "html") { downloadShareHtml(); return; }
@@ -2569,7 +2591,7 @@ function normalizeSegments(segments, duration) {
       ...segment,
       start_seconds: start,
       end_seconds: Math.max(0, explicitEnd || (index === segments.length - 1 ? duration : 0)),
-      timing_source: hasExplicitTiming ? "provider" : "inferred",
+      timing_source: segment.timing_source === "alignment" ? "alignment" : hasExplicitTiming ? "provider" : "inferred",
       speaker: String(segment.speaker || "发言人 1"),
       text: String(segment.text || "").trim(),
     };
@@ -2927,6 +2949,14 @@ function correctionNotice(meeting) {
 }
 function analysisRunNotice(meeting) {
   const notices = [];
+  if (meeting.segments?.some((segment) => segment.speaker_source === "unknown" || segment.speaker_scope === "request")) {
+    notices.push('<p class="correction-note">部分发言尚未完成整场说话人区分；本段标签不代表已确认的参会人。</p>');
+  }
+  if (meeting.summary_kind === "excerpts") {
+    notices.push('<p class="inline-warning" role="status">本次仅提供原文摘录，尚未生成完整摘要。可重新生成后再复核。</p>');
+  } else if (meeting.summary_content?.status === "partial") {
+    notices.push('<p class="inline-warning" role="status">部分摘要未通过事实或覆盖复核，当前只展示已通过的要点。请结合原文检查遗漏。</p>');
+  }
   const usage = meeting.analysisRun?.usage || {};
   if (meeting.analysisRun?.status === "unsupported") {
     notices.push('<p class="inline-warning" role="status"><i data-lucide="triangle-alert"></i>当前模型端点不支持 Agent 工具调用，本次已使用有边界的证据校验流程生成纪要。</p>');

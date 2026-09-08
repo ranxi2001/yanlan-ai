@@ -97,13 +97,13 @@ test("API requests reject credential-bearing remote HTTP endpoints", async () =>
 
 test("normalizes verbose and plain transcription responses", () => {
   assert.deepEqual(parseTranscriptionResponse({ segments: [{ start: 1.5, end: 2.5, speaker: "A", text: "你好" }] }).segments[0], {
-    start_seconds: 1.5, end_seconds: 2.5, timing_source: "provider", speaker: "A", text: "你好",
+    start_seconds: 1.5, end_seconds: 2.5, timing_source: "provider", speaker: "A", speaker_source: "provider", speaker_scope: "request", text: "你好",
   });
   assert.deepEqual(parseTranscriptionResponse({ text: "只有全文" }).segments[0], {
-    start_seconds: 0, end_seconds: 0, timing_source: "inferred", speaker: "发言人 1", text: "只有全文",
+    start_seconds: 0, end_seconds: 0, timing_source: "inferred", speaker: "未区分说话人", speaker_source: "unknown", speaker_scope: "unknown", text: "只有全文",
   });
   assert.deepEqual(parseTranscriptionResponse({ segments: [{ begin_time: 1_500, end_time: 2_500, text: "毫秒时间" }] }).segments[0], {
-    start_seconds: 1.5, end_seconds: 2.5, timing_source: "provider", speaker: "发言人 1", text: "毫秒时间",
+    start_seconds: 1.5, end_seconds: 2.5, timing_source: "provider", speaker: "未区分说话人", speaker_source: "unknown", speaker_scope: "unknown", text: "毫秒时间",
   });
 });
 

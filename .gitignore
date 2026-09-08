@@ -5,6 +5,7 @@ dist/
 /meeting-test-zh.mp3
 /meeting-test-zh.vtt
 /artifacts/
+/yanlan-api-keys-*.json
 
 # Local recordings created or copied into the repository root.
 /*.webm

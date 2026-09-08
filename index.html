@@ -49,6 +49,7 @@
               <div class="menu-popover hidden" id="exportMenu" role="menu">
                 <button type="button" role="menuitem" data-export="audio"><i data-lucide="file-audio"></i><span>录音文件</span></button>
                 <button type="button" role="menuitem" data-export="markdown"><i data-lucide="file-text"></i><span>Markdown 逐字稿</span></button>
+                <button type="button" role="menuitem" data-export="markdown-reading"><i data-lucide="file-text"></i><span>Markdown 阅读稿</span></button>
                 <button type="button" role="menuitem" data-export="vtt"><i data-lucide="captions"></i><span>WebVTT 字幕</span></button>
                 <button type="button" role="menuitem" data-export="json"><i data-lucide="braces"></i><span>JSON 数据</span></button>
                 <button type="button" role="menuitem" data-export="html"><i data-lucide="file-code-2"></i><span>离线分享网页</span></button>
@@ -66,6 +67,7 @@
           <section class="transcript-pane">
             <div class="pane-toolbar">
               <div class="pane-title"><i data-lucide="text-quote"></i><span>逐字稿</span></div>
+              <select id="transcriptReadingMode" aria-label="逐字稿显示模式"><option value="reading">阅读稿</option><option value="original">原始逐字稿</option></select>
               <label class="search-box hidden" id="searchBox"><i data-lucide="search"></i><input id="searchInput" type="search" placeholder="搜索逐字稿" /></label>
             </div>
 

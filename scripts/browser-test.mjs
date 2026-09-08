@@ -704,7 +704,10 @@ try {
   await page.locator(".highlight-item[data-seek='0']", { hasText: "由小明明天完成" }).waitFor();
   await page.screenshot({ path: fileURLToPath(new URL("../artifacts/meeting-highlights-desktop.png", import.meta.url)), fullPage: true });
   await page.locator('[data-insight="speakers"]').click();
-  await page.locator(".speaker-summary-item p").getByText("今天讨论OneFly项目，由小明明天完成。", { exact: true }).waitFor();
+  // Plain-text ASR has no recording-wide speaker identity; do not publish a fake single-speaker summary.
+  assert.equal(await page.locator(".speaker-summary-item").count(), 0);
+  const speakerless = await page.evaluate(() => JSON.parse(localStorage.getItem("yanlan.meetings.v1"))[0]);
+  assert.ok(speakerless.segments.every((segment) => segment.speaker_source === "unknown"));
   await page.locator('[data-insight="actions"]').click();
   await page.locator(".decision-record strong").getByText("今天讨论OneFly项目，由小明明天完成。", { exact: true }).waitFor();
   await page.locator(".action-task").getByText("今天讨论OneFly项目，由小明明天完成。", { exact: true }).waitFor();
@@ -740,8 +743,8 @@ try {
   }, shareUrl);
   assert.equal(meetingPublic.schema, 4);
   assert.equal(meetingPublic.highlights[0].quote, "今天讨论OneFly项目，由小明明天完成。");
-  assert.equal(meetingPublic.speaker_summaries[0].speaker, "发言人 1");
-  assert.equal(meetingPublic.speaker_summaries[0].evidence[0].quote, "今天讨论OneFly项目，由小明明天完成。");
+  assert.deepEqual(meetingPublic.speaker_summaries, []);
+  assert.equal(meetingPublic.speaker_coverage.available, false);
   assert.equal(meetingPublic.decision_records[0].start_seconds, 0);
   assert.equal(meetingPublic.decision_records[0].evidence, "今天讨论OneFly项目，由小明明天完成。");
   assert.equal(meetingPublic.action_items[0].task, "今天讨论OneFly项目，由小明明天完成。");
@@ -811,7 +814,7 @@ try {
   assert.equal(persistedDuringSummaryRetry.summary, summarySnapshotBeforeRetry.summary);
   assert.deepEqual(persistedDuringSummaryRetry.keywords, summarySnapshotBeforeRetry.keywords);
   assert.deepEqual(persistedDuringSummaryRetry.qa, []);
-  await page.getByText("[00:00] 发言人 1：今天讨论万福来项目，由小明明天完成。", { exact: true }).waitFor();
+  await page.getByText("[00:00] 未区分说话人：今天讨论万福来项目，由小明明天完成。", { exact: true }).waitFor();
   assert.equal(summaryRequestCount, summariesBeforeRetry + 2);
   assert.equal(asrRequestCount, asrRequestsBeforeRetries);
   assert.equal(await page.locator('[data-retry-insight="summary"]').count(), 0);

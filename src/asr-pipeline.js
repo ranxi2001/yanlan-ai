@@ -267,7 +267,7 @@ function sortableStart(segment) {
 }
 
 function timingSource(segment) {
-  if (segment?.timing_source === "provider" || segment?.timing_source === "inferred") return segment.timing_source;
+  if (["provider", "inferred", "alignment"].includes(segment?.timing_source)) return segment.timing_source;
   const start = Number(segment?.start_seconds);
   const end = Number(segment?.end_seconds);
   return Number.isFinite(start) && start >= 0 && Number.isFinite(end) && end > start ? "provider" : "inferred";
