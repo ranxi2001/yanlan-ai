@@ -38,9 +38,10 @@ export async function compareTranscripts({ reference, before, after, output }) {
     schema: 1, reference_status: "feishu_machine_transcript_not_audio_gold",
     normalization: "NFKC, lowercase, remove whitespace/punctuation/symbols; no number or terminology normalization",
     before: metric(b), after: metric(a), reference_characters: [...normalizedReference].length,
-    repairs: a.data.repairs?.length || 0, unresolved: a.data.unresolved?.length || 0,
+    repairs: a.data.repairs?.length ?? a.data.accepted?.length ?? 0,
+    unresolved: a.data.unresolved?.length ?? a.data.boundaries?.filter((item) => item.status === "pending").length ?? 0,
     run: a.data.repairRun ? { status: a.data.repairRun.status, elapsedMilliseconds: a.data.repairRun.elapsedMilliseconds, usage: a.data.repairRun.usage,
-      events: a.data.repairRun.trace.reduce((counts, event) => { counts[event.type] = (counts[event.type] || 0) + 1; return counts; }, {}) } : a.data.asr_run || null,
+      events: a.data.repairRun.trace.reduce((counts, event) => { counts[event.type] = (counts[event.type] || 0) + 1; return counts; }, {}) } : a.data.review_run || a.data.asr_run || null,
     limitations: ["Difference from Feishu is not acoustic word/character error rate.", "Filler retention and number spelling affect the score.", "Closer wording does not prove a correction is right; review audio evidence and unresolved spans."],
     feishu_parity: "not_established",
   };
