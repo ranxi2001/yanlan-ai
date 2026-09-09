@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "dataset": "AISHELL/AISHELL-4",
+  "revision": "aada72727856313b19d4a030383c426364931dbf",
+  "development_session": "M_R003S01C01",
+  "heldout_session": "L_R004S01C01",
+  "selection": "All continuous spans >=60s after excluding entire tagged/overlapping utterance unions; original intervening silence retained. Not full-meeting CER.",
+  "streams": [
+    {
+      "id": "M_R003S01C01-full-0",
+      "session_id": "M_R003S01C01",
+      "split": "development",
+      "kind": "full",
+      "duration": 2282.21,
+      "sample_rate": 16000,
+      "source_start": 0.0,
+      "source_end": 2282.21,
+      "source_audio_sha256": "26b4cd2045077e3db7170c376db3cb63b469d208e1d474155721911b3fe9866a",
+      "source_channel": 0,
+      "pcm_sha256": "f336bb819d0393eec3ce0d8fdf51ae9263f0191c0a122401a9c4ed8bca392f4b",
+      "reference_sha256": "1028e596aded35992661aa81b2644355e64b06978e5c0027b2dc1dacf9282372"
+    },
+    {
+      "id": "M_R003S01C01-clean-1",
+      "session_id": "M_R003S01C01",
+      "split": "development",
+      "kind": "clean",
+      "duration": 200.2077499999998,
+      "sample_rate": 16000,
+      "source_start": 1490.3498125,
+      "source_end": 1690.5575625,
+      "source_audio_sha256": "26b4cd2045077e3db7170c376db3cb63b469d208e1d474155721911b3fe9866a",
+      "source_channel": 0,
+      "pcm_sha256": "4bb59402fa7c7efe4e5c0a1c9dc044a1b01e8d3d59d098776cf43234f58c0869",
+      "reference_sha256": "76d41f871202fd23742134e1f68180a985d4bdbfce9826bf52dd5dde8137da38"
+    },
+    {
+      "id": "L_R004S01C01-full-0",
+      "session_id": "L_R004S01C01",
+      "split": "heldout",
+      "kind": "full",
+      "duration": 2195.433,
+      "sample_rate": 16000,
+      "source_start": 0.0,
+      "source_end": 2195.433,
+      "source_audio_sha256": "3c41b70079fb3220e3e8de4bb5dd1c1c54c33978a7d40d58a00332285dbef613",
+      "source_channel": 0,
+      "pcm_sha256": "2778eceab548d65c47ad49422adae4730f1bd256902e699e1fbbf61a4d573bed",
+      "reference_sha256": "eac83c725a55d26ab85b71ce8befb749e9a2a4b07308b4f8f5949eaa2d368458"
+    },
+    {
+      "id": "L_R004S01C01-clean-1",
+      "session_id": "L_R004S01C01",
+      "split": "heldout",
+      "kind": "clean",
+      "duration": 135.84075,
+      "sample_rate": 16000,
+      "source_start": 177.5555,
+      "source_end": 313.39625,
+      "source_audio_sha256": "3c41b70079fb3220e3e8de4bb5dd1c1c54c33978a7d40d58a00332285dbef613",
+      "source_channel": 0,
+      "pcm_sha256": "5ca3d6b875a1ab180404042efacd7d96b5a45138b21e453f9cfd41d3900002b5",
+      "reference_sha256": "6432ef21b3f9361126deef92c2de13a4ae44f0db4f3f8119563f4272f65090ed"
+    },
+    {
+      "id": "L_R004S01C01-clean-2",
+      "session_id": "L_R004S01C01",
+      "split": "heldout",
+      "kind": "clean",
+      "duration": 111.623875,
+      "sample_rate": 16000,
+      "source_start": 880.882125,
+      "source_end": 992.506,
+      "source_audio_sha256": "3c41b70079fb3220e3e8de4bb5dd1c1c54c33978a7d40d58a00332285dbef613",
+      "source_channel": 0,
+      "pcm_sha256": "883a9a4b7cc0c2b0bf84f46823e4ba617c0326e5580a8a86716b19425c57f809",
+      "reference_sha256": "59b95e8117e5aebff84bf90ee8be952f99e41e9d84c4e954fe39ff5e5d714cb9"
+    }
+  ]
+}

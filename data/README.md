@@ -1,5 +1,11 @@
 # 云原生周会评测切片
 
+公共人工标注基准另见[Hugging Face数据落地说明](../docs/hf-asr-benchmark-2026-09-09.md)、[来源规格](hf-asr-benchmark-sources.json)和[固定样本锁](hf-asr-benchmark-lock.json)。实际下载的第三方音频保存在`artifacts/hf-asr-benchmark/`，不会与本目录代码资料一起提交。
+
+新会议的分片/上下文对照见[长音频实测报告](../docs/hf-asr-longform-ablation-2026-09-10.md)、[来源](hf-asr-longform-sources.json)与[会话/连续区间锁](hf-asr-longform-lock.json)。两场完整会议共74分38秒，严格CER单独在447.672秒无重叠连续片段上评分，不等同于完整会议CER。
+
+按需覆盖复核使用另外3场会议，见[实现与实测](../docs/asr-coverage-repair-2026-09-10.md)、[来源](hf-asr-coverage-sources.json)及[固定区间锁](hf-asr-coverage-lock.json)。三场完整会议112分48秒，严格CER覆盖754.059秒连续无重叠区间。
+
 本目录中的音频从本地会议录音按原始时间轴截取，用于固定样本的迭代测评。`data/` 故意保留在 Git 跟踪范围内，不写入 `.gitignore`；它不属于网页静态资源，Vite 构建生成的 `dist/` 不包含这些音频。
 
 - 源文件：`录音-云原生实习周会.webm`

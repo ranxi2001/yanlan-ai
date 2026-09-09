@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "seed": "yanlan-asr-public-benchmark-v1",
+  "sources": [
+    {
+      "id": "aishell1",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "config": "default",
+      "split": "test",
+      "sample_count": 128,
+      "parquet_files": ["data/test-00000-of-00003.parquet", "data/test-00001-of-00003.parquet", "data/test-00002-of-00003.parquet"],
+      "reference_dataset": "AISHELL/AISHELL-1",
+      "reference_revision": "bbe295d530192a4cd41644b711c9aecd087df653",
+      "reference_file": "data_aishell/transcript/aishell_transcript_v0.8.txt",
+      "purpose": "Mandarin utterance ASR; mirror text must match the official transcript by utterance ID."
+    },
+    {
+      "id": "ascend",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "config": "main",
+      "split": "test",
+      "sample_count": 128,
+      "parquet_files": ["main/test-00000-of-00001.parquet"],
+      "purpose": "Spontaneous Chinese-English code-switching; stratified mixed/zh/en utterances."
+    },
+    {
+      "id": "aishell4",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "split": "test",
+      "sessions": ["L_R003S01C02", "S_R004S01C01"],
+      "purpose": "Long multi-speaker meetings, original multichannel audio, TextGrid transcriptions and RTTM speaker labels."
+    }
+  ]
+}

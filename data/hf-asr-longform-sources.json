@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "seed": "yanlan-longform-v1",
+  "sources": [{
+    "id": "aishell4",
+    "dataset": "AISHELL/AISHELL-4",
+    "revision": "aada72727856313b19d4a030383c426364931dbf",
+    "split": "test",
+    "sessions": ["M_R003S01C01", "L_R004S01C01"],
+    "purpose": "New full meetings for frozen chunking ablation, excluded from the prior 320-clip benchmark."
+  }],
+  "development_session": "M_R003S01C01",
+  "heldout_session": "L_R004S01C01"
+}

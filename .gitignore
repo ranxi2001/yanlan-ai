@@ -6,6 +6,8 @@ dist/
 /meeting-test-zh.vtt
 /artifacts/
 /yanlan-api-keys-*.json
+__pycache__/
+*.pyc
 
 # Local recordings created or copied into the repository root.
 /*.webm

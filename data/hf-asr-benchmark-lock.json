@@ -1,0 +1,2568 @@
+{
+  "schema": 1,
+  "id": "yanlan-public-asr-test-v1",
+  "selection_seed": "yanlan-asr-public-benchmark-v1",
+  "scope": "fixed subsets of public test splits; not full official leaderboard",
+  "samples": [
+    {
+      "id": "aishell1:BAC009S0770W0178",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "4dbe2c25e5070d991e1758e1582070b5f6f91d6d64516b544457ba28de64c523",
+      "reference_sha256": "9855a57196c016cf6eed5535aaf672ee4ab0bbd436699b1a65798c74669e3988"
+    },
+    {
+      "id": "aishell1:BAC009S0767W0435",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "2181a1229a4377684f88759105cbb58d1cddae7d4ceffdbad0c069235e37a946",
+      "reference_sha256": "7146d9339035175dfbf0932243af8ca58b3dcf06262d8bd63b6019955d97e5b0"
+    },
+    {
+      "id": "aishell1:BAC009S0905W0299",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "64fb8ddd9af815998d9497fd6a491841432c13cfbb18000144311f8c8cc8a117",
+      "reference_sha256": "2629711c431f99e9ccff7d7a2b2568e75829b3a9052e9a522a32cb1425c04638"
+    },
+    {
+      "id": "aishell1:BAC009S0903W0402",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "1e9e8149a8c620fdabb2b3078f34e3a2a5b86221a0dee66836bc3f7c7b1946e0",
+      "reference_sha256": "9f37baf1b4ec942c7cb17a0f97c402675e94547345ef2ccbaa1377e1101a8eb1"
+    },
+    {
+      "id": "aishell1:BAC009S0907W0170",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "f238ea359593f7ce736aac23cfbfb7a89ab5a213c38399ac0bf4b38e3d7a9d38",
+      "reference_sha256": "484f9bb520944ab14658e6aef50e176c73fb344397c7c3813dd12983721e9337"
+    },
+    {
+      "id": "aishell1:BAC009S0901W0216",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "a257714432730710090acd61725ada7b0caf51e5cec0b64f130a683ef4958690",
+      "reference_sha256": "99f5fe7201b8620b53a08f498a0bf2f381df72f4f0d4906fc689676e8b3812f0"
+    },
+    {
+      "id": "aishell1:BAC009S0904W0337",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "6d6d1db7d54953b4fe32cb0fccd5f2489c07f2f5e422b74f3f32c444e558959f",
+      "reference_sha256": "c490d7a7f9c406db9549eefd7992957ea695d7ee87625361aad9973add9c1b15"
+    },
+    {
+      "id": "aishell1:BAC009S0914W0461",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "2b246abed33ec1f41170a63e66f75a47b32813ed95ef8bf4c241e354754ad095",
+      "reference_sha256": "c148b9727197cc0059af2e02ddb1f0b7888b9fa91b517293dcf40c1aaef169b2"
+    },
+    {
+      "id": "aishell1:BAC009S0913W0427",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "1344239d32d9b57f8356beec5aa4b2a705fd4ebf91717db180017e9d767cdc59",
+      "reference_sha256": "8506c59e2c01f58c6f11fdf328b5b9905ecbb03b040d61585cb6195bef0435df"
+    },
+    {
+      "id": "aishell1:BAC009S0915W0432",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "dcd20013dc61f9a19adb33cf0e4a92e61d37cde5e45ba177605ee629cfb03774",
+      "reference_sha256": "0929533c8cb90b1f497ebbadd8b7424eb80c37d5bb201e0eb7db3ed90abe077a"
+    },
+    {
+      "id": "aishell1:BAC009S0908W0315",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "77a3ad25af018ba61dd4065f44c000a3ef3524a95d9c3454d958a032c173b737",
+      "reference_sha256": "5ccd882b75c57460c06c4fb4410f843b21f28bece1e510d5ae349fa448f4d1c0"
+    },
+    {
+      "id": "aishell1:BAC009S0769W0378",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "94d181d43b7b11379652627334f7d15d1e15d1d1efcad6d5da39e18ac104e317",
+      "reference_sha256": "cc75de3c5129dff2a4b8ed76eae634be064d386782f8b683b79899b2ea212041"
+    },
+    {
+      "id": "aishell1:BAC009S0766W0203",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "a547bd4e697736fc5ecf05a979bdaec0e499ec2443ce7054052ac09b2302b14a",
+      "reference_sha256": "0c4843d70a1391dec0d346615f4575c6c212e14729d0275f2586d1688f98c51a"
+    },
+    {
+      "id": "aishell1:BAC009S0768W0149",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "b85e63a7738b241daae89a089b74202636dae961f83841c11cdb6b8c5015f7cd",
+      "reference_sha256": "ed0623afa4b5240aa4685668bd4df6534b55e278fc437e3857b1f4a5fc685696"
+    },
+    {
+      "id": "aishell1:BAC009S0765W0491",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "adaa439e3f64ae1fc3d9b3a787fe6dc56109fd76b2801524a15efb88258275d4",
+      "reference_sha256": "0bf70fe86bf10a5386722034a5088aa7c530f93b8acf3d49ba66f20034d326a4"
+    },
+    {
+      "id": "aishell1:BAC009S0764W0252",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "47ee50a99bded094b962d7ee1c678a7423c8379c3fdad0266d7cc72592ed2de9",
+      "reference_sha256": "4f5890fdbe90ae3f5178e5958109b97316601f6db66f77cc986457526f48bedc"
+    },
+    {
+      "id": "aishell1:BAC009S0912W0405",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "074735b200cdbebaa252b0c33a140cdc784ecb61b17889b22e424590561a91e0",
+      "reference_sha256": "24e9d58910749c9e098f8208b96978e66d410f9222a9c4d9e7045c6cdc975c25"
+    },
+    {
+      "id": "aishell1:BAC009S0902W0231",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "0dc1120b9b153ec603bfffa7b7576a1f2e627d279d52feb8de472a45dda48c83",
+      "reference_sha256": "48602f72cb2c73b3c05395b878573bdc8e7cb27d8bdf0eb7be6e9d92826b3153"
+    },
+    {
+      "id": "aishell1:BAC009S0916W0481",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "a37e877b956b1c2e1f6d39a83759779cc96c4ee9c4de1d57779651bafae98d62",
+      "reference_sha256": "6e6b8f361a8ecf0e56a1737e93425a364d943093654789c7cb1b2227ee33e431"
+    },
+    {
+      "id": "aishell1:BAC009S0906W0295",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "651e96e6fe5db4f138182f61a0d75333b927f20b124e22c38768830556e3e21f",
+      "reference_sha256": "5dca652f2b906fc07f939b957a226040050662dc87e40616b004ac38968aa8c1"
+    },
+    {
+      "id": "aishell1:BAC009S0770W0351",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "5a5b5ec426b4efd7107216c16eca2743663ecdaa8fdd1a0d08be4e96b97d969a",
+      "reference_sha256": "507abb5ba92541db60102eb73a0517508e231a929bb9f00595dd03ca8f4a1327"
+    },
+    {
+      "id": "aishell1:BAC009S0767W0285",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "fa490f7ee83a68a6b72d2f86d3a8274e40583e609051596babc19c61ace21265",
+      "reference_sha256": "6a8e05c822d286e14b4aaede534cc96ad853e5cc42359e76f009b04f878690e8"
+    },
+    {
+      "id": "aishell1:BAC009S0905W0485",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "af4371b9414705c0c919e845df395feeb9e8b86d08469304be6289cf6fef6dc7",
+      "reference_sha256": "264b791e82fd1a6689c25062a3c19a8874c98c27e1c8764d2ca21b1390e7955e"
+    },
+    {
+      "id": "aishell1:BAC009S0903W0328",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "0a1fdabb9848f2c8bb59261cc4b8c84cd2b46f983b1b89fddab0c9adc149cc25",
+      "reference_sha256": "5c53ce291df6ed2e17ca3ea50aade24c16787a140c03bcebe88040b04082fa97"
+    },
+    {
+      "id": "aishell1:BAC009S0907W0246",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "bcd36180759baa24e7b94c2b4675ea9a97a274dd6d7e557c8387d169c5c90a5e",
+      "reference_sha256": "610349ab179cbe8f31ba6ca3b4a3887323b942d86db467eaaeab3629986a2db0"
+    },
+    {
+      "id": "aishell1:BAC009S0901W0364",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "f18e92328104b54f6d361b3d44437be8c12814585a3ecb37e800d6b2cf1245c1",
+      "reference_sha256": "72aea7ca4e2668a354a12c09df63e35b5a6462e394525f9967529914e7ea2900"
+    },
+    {
+      "id": "aishell1:BAC009S0904W0379",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "eb4e7684102a628c1b3b6c97f8a44a958b1da9184a53755caeec5cd313e2d556",
+      "reference_sha256": "d921bc2c3fa10d3c5464ba76fdd245958479cacbe3e7591522ce9f9f05ee572b"
+    },
+    {
+      "id": "aishell1:BAC009S0914W0482",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "3abdb62e077d7e4c13442a7948b77dfe1d22d42e6fc5de6739ce1428b881b425",
+      "reference_sha256": "5249048c3ed0e4ed1492ce050b4dd352972bbb6a809838d784a47ec5f6058e0d"
+    },
+    {
+      "id": "aishell1:BAC009S0913W0393",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "13f099505f951a07db09cef18d6e46c1ad581000636f9236de6b742ee71debd3",
+      "reference_sha256": "d0ff4ad23aca3aea4c773fff636667060ce62d1ec707c468911b96ff49079013"
+    },
+    {
+      "id": "aishell1:BAC009S0915W0241",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "bda7481195908d9e054805473556fb164faa92ea9de7f16ea6f6f6421b5013f4",
+      "reference_sha256": "0b0d40c5779a40cfbd7a593f9fb94acd15621b7a6ef6da2a43ac3ca7e32cb952"
+    },
+    {
+      "id": "aishell1:BAC009S0908W0445",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "d76e1242414cc96ebcb2180d995075621641a3ba322ec0405638423a988eb38f",
+      "reference_sha256": "22781914d8e4477d47b6d7abea819c9461d09ae0695d3c53a10dfa57bd4f6ab6"
+    },
+    {
+      "id": "aishell1:BAC009S0769W0415",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "34e539d938dccba5f8f8dcac9bcdf989ee6b1827b34924037af9cf0014535e39",
+      "reference_sha256": "b335b9d728dfec1492f35664c6cbdff732a4c7d92d0b100dbb58da74bc3e1ed0"
+    },
+    {
+      "id": "aishell1:BAC009S0766W0376",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "52d4d8e2a9e915f7e051898fab5df9144d166a76a22a4ea0dab3d989ee669e06",
+      "reference_sha256": "d7dec9565df830614f3ad67bca725cd14e796ced847814a6b770677d5f30ef43"
+    },
+    {
+      "id": "aishell1:BAC009S0768W0428",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "11ceb260a0fa6167853a8438e32522dad99f24d8d037541ce3332cd3757a61ac",
+      "reference_sha256": "5bf99d2ecbb46e61da4556179182a8f2d3163b181a52454cc8eeb2797ac6ffa7"
+    },
+    {
+      "id": "aishell1:BAC009S0765W0219",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "d8404b4164130b546386533669bee66f285b4778c0745ff1d235161b34969959",
+      "reference_sha256": "86076e6668c6170daadf88a27a88f7a62818cb7d47cf6265c3749ee878b3a610"
+    },
+    {
+      "id": "aishell1:BAC009S0764W0465",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "5ba1bf39f966b22928a77ed5310d0defd4abdf564487f6bebba8548880608e0b",
+      "reference_sha256": "dbc32f5998680e335e7fd15e6e97e83260054ee64631ac3c6da59c1b143d4c48"
+    },
+    {
+      "id": "aishell1:BAC009S0912W0177",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "09e2b1daabb3301995aab46769b3704529d6757e6208189dfb706fd875941c2d",
+      "reference_sha256": "9c221d2b67d1d1f3f63a1b86a10c2ec7875d2e76d6b6b0cd7d8ad25e5001e21f"
+    },
+    {
+      "id": "aishell1:BAC009S0902W0327",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "17b3cf4ad9222c4741f61d4b5daeed163d40b0f8aab3f376cffe9216ce567d08",
+      "reference_sha256": "d28d6d3a5b8b2ae3acfa9d75ec60a28ad916fb5342bb20093e2d161f76b8f83c"
+    },
+    {
+      "id": "aishell1:BAC009S0916W0331",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "6d7e9400e1633313bcec283bb4b090938bfaecdead167494b5d0e1203bc4cde7",
+      "reference_sha256": "0b45fa4025c42f10d1de37a5e030c64e806aefa847a19d7262e9d014eaa432ff"
+    },
+    {
+      "id": "aishell1:BAC009S0906W0487",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "46ea4afaa2725500e81c9b24c539eef1f4189b06aa95e09314db8a6a078bbe14",
+      "reference_sha256": "d98503ef107b5e13788bd72af66b47977f489e24ace967876d37d3ef4feaa8c3"
+    },
+    {
+      "id": "aishell1:BAC009S0770W0234",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "a532acdb7d1dfe2cf7e6b77e19f60c583c14172f18d60cb6032e5a26a2f49a93",
+      "reference_sha256": "f8837b6af39098a2237d9b892a25ddcc0197bf414e8de72a32c7a57b0b42faef"
+    },
+    {
+      "id": "aishell1:BAC009S0767W0150",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "06e3a14a4912b21653915fe4f9903301e59127bddd8f30d3bb408e43e7279c54",
+      "reference_sha256": "9929e8db7c32433b958d15ea73dc82d6f4c47aba179d4c430a93b662578138d9"
+    },
+    {
+      "id": "aishell1:BAC009S0905W0263",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "0d46bc04ec4cb7eded279f3ee2e6568667a2dc6d41cac9b6cc39b97bcd1299d9",
+      "reference_sha256": "69821524b4d278e804d22b8179e942c691809e0e9ff1e2ae632bd366fda82999"
+    },
+    {
+      "id": "aishell1:BAC009S0903W0123",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "51e5a184fc09ee2d7f79cc231b3360fbc7f196676252d0f2ab473dc0d3836bd2",
+      "reference_sha256": "c68bc0d177ce6c00ad478a11017bf83e064474e0e781e3721d2cb0e0ae845a00"
+    },
+    {
+      "id": "aishell1:BAC009S0907W0204",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "562c3f2dad4d4208985390ea7e442d2a9cbef2277320a0d78d40f07e152e5ab4",
+      "reference_sha256": "69e1b13358968a901fa69696f18faccec1e37f931850d6d985c30d5c287bfc44"
+    },
+    {
+      "id": "aishell1:BAC009S0901W0244",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "2f4c8ae888fe7340bd170921477d1c016e122b0af5e442bef6f456c61af42526",
+      "reference_sha256": "361114589d40e82e6f2135c8c4ce9538043ad7fbecce491ba875903283d03b52"
+    },
+    {
+      "id": "aishell1:BAC009S0904W0269",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "29dcf7f98b3ea0563cc4c7990f1ebdb03e9d1382982c07a82d187a1634af48ba",
+      "reference_sha256": "3800e4ca20c72b4d612baddef910d078f66744e76e128657e4617e7ce8841474"
+    },
+    {
+      "id": "aishell1:BAC009S0914W0318",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "9d185ea29ae52d8ae3f714def4c9b5d402e88d01b896c17bab87a17794c978fe",
+      "reference_sha256": "dd8f21034cd0168565e1ca7d910f2f9e3084fe11595335d7a81fca8b137971a0"
+    },
+    {
+      "id": "aishell1:BAC009S0913W0172",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "83b8d742620cf362c94642e532ca47c09d44c035b7e27519eb545df0c23b4157",
+      "reference_sha256": "b2008a818e21c921ed521a383a41e5e8ed388c2a971f900859e8932919679685"
+    },
+    {
+      "id": "aishell1:BAC009S0915W0320",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "266e469a77839580b001daab43b4daeb5db55102bad7f8e50fa5bb967c461bbf",
+      "reference_sha256": "d18e0ccd366a679377af231ff07572cada4afd6b1c6751da0771c358933db0ee"
+    },
+    {
+      "id": "aishell1:BAC009S0908W0469",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "82810e46e74f0c074d8e42e460ab7a0039b4e7be2fdec6d4c59aadeda3abcb30",
+      "reference_sha256": "3731143539267a58195373e45ae3ebeb7d8f52a36c21ddc3a8ece52d66cd96b6"
+    },
+    {
+      "id": "aishell1:BAC009S0769W0351",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "cf76d8a49155ef53c66e8d0741f79ec8a01c71f366ef1f79473d617fd29bb4eb",
+      "reference_sha256": "13e5ad371b7d70cb8473ed1d19fa65c08913bc2de687aa88fc1f36cb962329e5"
+    },
+    {
+      "id": "aishell1:BAC009S0766W0196",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "bf85186438555e9864d98bf4133deca4f4ef969299fc4ed6bc41a01989ff9347",
+      "reference_sha256": "5f034706c2a3a4141fc4e7af4ba823220cdefced75cc2087b5bf284eb9812db0"
+    },
+    {
+      "id": "aishell1:BAC009S0768W0215",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "f1fc304afeb25c852f6717e0d07d561d6666c8b29c2c0b34b224df48581403d2",
+      "reference_sha256": "bfd9debd369e75e6aa25d646ce327144b6dc0b6525cc42d2eb066a84e26c6267"
+    },
+    {
+      "id": "aishell1:BAC009S0765W0231",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "e75a12e5147721dac5f258b16b68eb8a835ae0a92ffeb6e78dccd1d1aec5d225",
+      "reference_sha256": "5c1d8f46bf97257b120b3884c4bb42d85e846f555c066d6eb32cc61abd3f3ee6"
+    },
+    {
+      "id": "aishell1:BAC009S0764W0301",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "724a6af6ea64212c1d45c8f10f5e047e04cd150b366cf7a75bac71593d7d5e90",
+      "reference_sha256": "bfb71ae159688f81b6ef69e55a9692c732305677cdd3f490dc81cb31278940ac"
+    },
+    {
+      "id": "aishell1:BAC009S0912W0127",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "e103bc4b335608c296d16c3ed649f7514954b70fd175efff0519709c95ae1d8f",
+      "reference_sha256": "7fceb79493f6911e8028356a379561b1fa6a633c07836df900ce16606e0796dd"
+    },
+    {
+      "id": "aishell1:BAC009S0902W0185",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "6ec9bfbb12c842d36d9f2ab69fcea8d358e389d3f8d50a601659ad4e1a6d4cb2",
+      "reference_sha256": "8ad7a58e54f19511ce3e2f99c1cbe8d55b555e7dff823d1adff210aa85f888b0"
+    },
+    {
+      "id": "aishell1:BAC009S0916W0316",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "1c721859bc9b5bdf67dba32f29a8a40a173613ed89b1c133a1588a5c9d52be64",
+      "reference_sha256": "a6225d1e5d8239277eb6971b8400cc9c6e467d3dc43d286c4902ed39ac4115ed"
+    },
+    {
+      "id": "aishell1:BAC009S0906W0354",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "8894112d5d99367d472df3a6c8a9d5cfd6d01f42b2c8bff2c47f539118dfd412",
+      "reference_sha256": "f47d762e17fa0ca89ba40b50be102fd90078f6fedac56d9581c83e48d822561f"
+    },
+    {
+      "id": "aishell1:BAC009S0770W0452",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "b40435f35b5546e705f080e3fac6d72c177a9d382e2043bf4048f72e2a3be2dc",
+      "reference_sha256": "6b26772eff8780461632639d49f38c0b213371aa5129effe0e6d085fe30d4235"
+    },
+    {
+      "id": "aishell1:BAC009S0767W0495",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "3daade403f32e33daf6f1047d5649f432843171c303f70626974f489edae247a",
+      "reference_sha256": "e6df2a0ffc6919a2a196d502b44b0279a04e46b5a40482ac681765d24f4a8679"
+    },
+    {
+      "id": "aishell1:BAC009S0905W0248",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "600a0c96d4a7312f72176ceb5e68bb12f8f5963113b002d8a0aaba40495f3c2d",
+      "reference_sha256": "31ad9ddd8fb8b13c461e23645455691578945c157d1df2deb14c65726382f83b"
+    },
+    {
+      "id": "aishell1:BAC009S0903W0276",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "8d07b927b4c418f545c84d8e19ee41f1a2ac0f381be67ded89a5912669ffbae7",
+      "reference_sha256": "22c69098d16791cec1dd06e843cdf6c115bbaa7f35998440e04cd0fd613206e4"
+    },
+    {
+      "id": "aishell1:BAC009S0907W0280",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "9126bd0547053c5c76f9bb4700f7c2a97d6e58fcf238c1f2c9704b4db8d7748b",
+      "reference_sha256": "6c0674686d75e6535df9fbf5b9ba3ea75215b64655a67c1bceda767be5e54e9e"
+    },
+    {
+      "id": "aishell1:BAC009S0901W0234",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "df44edec5b8376c5929227dceb6622f7647f0883b49173a67ba865e8fb334f8c",
+      "reference_sha256": "35c73f03963d9eb16caaee75cf2bfdc1756abe47e96054bb0d9cecf89096318a"
+    },
+    {
+      "id": "aishell1:BAC009S0904W0445",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "270f43f957fdd20601e13611c33277705b892ac4b26f23efaf5863355d08dff9",
+      "reference_sha256": "69c4575a818b955677643fb54e9fa2c38c385f80993bf3cc74f915f71de37bc2"
+    },
+    {
+      "id": "aishell1:BAC009S0914W0431",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "428635d2e7feee4185a0069fd94d7f7127b8c99f70dd10e26994c358561afb8c",
+      "reference_sha256": "614bf2d0eb8436f4c4394f911284f7edcb8a66cbd12ac8dfbcbf30feca5d6593"
+    },
+    {
+      "id": "aishell1:BAC009S0913W0284",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "cb82ecb41c912a2dc3beee073ff274299546868c11fc9addb735ef9c3d2e4016",
+      "reference_sha256": "d699734c3c4c774e313f48fcc3a98cee7adcc7c52bea576a04e646758b5fa0a3"
+    },
+    {
+      "id": "aishell1:BAC009S0915W0485",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "0433c7c8914f7855d2106c5ea38451b54e37bec834216d5c652253cb55596f18",
+      "reference_sha256": "c78e0baa47ee3951a27fdfb9138c9a93eb60632989a2d26b3c1342da405af128"
+    },
+    {
+      "id": "aishell1:BAC009S0908W0359",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "95696f41fe0b8bc88b164fcf29ebc0d571b3ba2575aac1f49c24ac4ef51edeb6",
+      "reference_sha256": "c15529fd6d2beab6049e6c8ad8e7d5acd0680e49e2392706aa06faa85a313bd6"
+    },
+    {
+      "id": "aishell1:BAC009S0769W0165",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "92582c8374cfb8c1afb499d759e7f216c7e6b3770af3884c6ae319a5387a6adc",
+      "reference_sha256": "4065d126f1bf76e8f28cb24e30f624d50def1b61b790c3cb05fc7ec1748559e5"
+    },
+    {
+      "id": "aishell1:BAC009S0766W0492",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "2b464b831faa3c3a8750b8ac64996695ba13ea642a552e69e9482344aa08f6b9",
+      "reference_sha256": "681de3a61140d2691ad92426e3ad91e6d819dc0e49e2641cfaaf7848212f669d"
+    },
+    {
+      "id": "aishell1:BAC009S0768W0139",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "021badabd2753d4bf34f285fa7acb44bc044dceb8a9c68d728b4ac93970b9a62",
+      "reference_sha256": "130ad16f27f2e511e8f9eb63dbc2984cbd8a861204cffdbf343815b12b9e6af1"
+    },
+    {
+      "id": "aishell1:BAC009S0765W0495",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "b627954b2b8d2d9115a6ac9ba58c0122f6c5a6fff849a0d5e58d382eab4fa318",
+      "reference_sha256": "4508726627b27c6cae9fab1c4032c6a75d6d7627cf943fc823e72ab9de712626"
+    },
+    {
+      "id": "aishell1:BAC009S0764W0456",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "6ee1601b847dde9539c73c6aee439f606b3edf427c183a66744e1b35a3e2bbb0",
+      "reference_sha256": "3fe8ac636bc23ae1e150832f3630a3ba471c10cd2e67604ac543340430ecb1f6"
+    },
+    {
+      "id": "aishell1:BAC009S0912W0335",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "d3a41575d26f81cf681f5cc0649554b54e9cb0a750c4e52f6357718511b74bec",
+      "reference_sha256": "8f5d4b4e3fa2ac6a5410da35b0cd9365a2bf0161b01588f3a5f789f681b99da2"
+    },
+    {
+      "id": "aishell1:BAC009S0902W0306",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "49f3313043cfca9ea1283b319dba08ef04954d1898b7ebd8f45f793e5410a73b",
+      "reference_sha256": "67976f0b27c66dd021e52e1af5b395dd288ae0cc5d4cd4cd9bcf2cbbceba3373"
+    },
+    {
+      "id": "aishell1:BAC009S0916W0347",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "13070899802d38f6c38708112a752b844b286780e6dfafc54f14dd406525dfb2",
+      "reference_sha256": "1d4b8ffa7a7661b148cd1f74a48d7932e5b12556646de62e6fe0dd5d19b31c0e"
+    },
+    {
+      "id": "aishell1:BAC009S0906W0191",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "6debdaf175141de503bcbff8bd514e877c53146deffefb7e14af211521b587c5",
+      "reference_sha256": "4ecd28bd3342344907ab4101fd04c6b6ee5a6f227237d4e4321731825259b1b6"
+    },
+    {
+      "id": "aishell1:BAC009S0770W0461",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "26403a1528835751df65d014d21e59f46227e879b9d6442debd5443923f7415a",
+      "reference_sha256": "7fd0f10b3b37fb931bd6bae207201287761ab491e2464a9fe1ccd3a5fa55a1f2"
+    },
+    {
+      "id": "aishell1:BAC009S0767W0468",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "670a1cb9435a9add532a5f2bf02a5d7ad835caec934124a6104d892dd2be5676",
+      "reference_sha256": "79082696627569ddd858a773f21a26d5244ee875e2a4da0e3757a0078dd03206"
+    },
+    {
+      "id": "aishell1:BAC009S0905W0398",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "0ccf1d4e8d48237265656c074aa80cace50fd963f3295b3b816feffafa455fde",
+      "reference_sha256": "80ebcb1799a3f57e5a2ad00f9c585590ecea1c75f109863dec488626a60f31f2"
+    },
+    {
+      "id": "aishell1:BAC009S0903W0472",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "7c7ee5913e1e9d4dfae98962d6caba3f3481fb77bcce4332098f53536e046dd3",
+      "reference_sha256": "86a961f5ecc2c197be8010fc5a121a75a3efb9b83e6948fb141135ba1e7fb9a4"
+    },
+    {
+      "id": "aishell1:BAC009S0907W0303",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "c91fcb4b3fe64e41a3d414b11d8dd6d255baedb0399292dbc71dcd4d093f1308",
+      "reference_sha256": "91d2a6b2bae5fe2dcaf9582c5bb1cabe1d0ebab9971baff812c34661cfb128a1"
+    },
+    {
+      "id": "aishell1:BAC009S0901W0460",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "aa60feb976d87f269b2abdce32542f6a0de9c0f8745cf6207ebbc6e84a92a42d",
+      "reference_sha256": "9eb82d2058713b1906a709ccaab02c9c17dccea6087578bb21fa0b31972a1003"
+    },
+    {
+      "id": "aishell1:BAC009S0904W0428",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "af85a62d2bd54e3bb79b2a5e3e4a67e6ee1ac44bb7ad7ee7d523a9f1b4225e58",
+      "reference_sha256": "5df0c13e928eef24689cd209f8b92bfd0c119a670b4e35fce40af4190a6454dd"
+    },
+    {
+      "id": "aishell1:BAC009S0914W0158",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "43a6d60b562a581b10445de26a8f05fd6b0350fa3bee01d054eb2e4f6cbccf20",
+      "reference_sha256": "b5e4f1e7a1ede44079194eae9739279a628e77d5c23ee4deeef611e726c14eac"
+    },
+    {
+      "id": "aishell1:BAC009S0913W0221",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "72915bd685963679e19cff0502709aca33bd7246e2e50f991b67394867ac1da0",
+      "reference_sha256": "e948d051e2a6b555f05b9fbc5fd3ebd66ebac968daab9067b398a82797d1a6d0"
+    },
+    {
+      "id": "aishell1:BAC009S0915W0381",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "3e2aaefc54dde344153061cb9a9b6d58f5805a5aeab5396466e52af4375e19b7",
+      "reference_sha256": "d6fb8aa0ddbb33b21df562ea44daa52828c5e74ed0c479b658c53e0f91425c90"
+    },
+    {
+      "id": "aishell1:BAC009S0908W0173",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "06bc3c23fcb2a9fb41edf35574b229b6cebf4f56586cb9350f06888ee582758d",
+      "reference_sha256": "01c4761d02b69c5751788f1f381ac920c4f2266b03a75995d389f9ac9cdbe964"
+    },
+    {
+      "id": "aishell1:BAC009S0769W0158",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "4bad7cd54e7ea16d90795ee0ad96b688eb96b6f5bf45c109d0811dc731da98f6",
+      "reference_sha256": "b4237f72781de8f364ff4f08773946ff0f52ffb36d35f26bafe258fddc497a15"
+    },
+    {
+      "id": "aishell1:BAC009S0766W0207",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "5d73eedbd1dca4d0cd236c968baff20e204c391b4534aa70c9977df6a5d965a5",
+      "reference_sha256": "8eea61733bd35b3d16f058a0d3e4af0e735750a9d258d3835c3d3de0f9c543fc"
+    },
+    {
+      "id": "aishell1:BAC009S0768W0410",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "c38c4c6b3c27f923dfab02888a6c8efef7ab66cbfb5855e28a40066a4e6ff035",
+      "reference_sha256": "146069c69dfb7a21f7d77886bd455bbe5ea020105a6f8eda640b380c51cd428f"
+    },
+    {
+      "id": "aishell1:BAC009S0765W0130",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "2281d99ed0b8172a623c47462d55d0dbdacbc3318e8e946a6f1af00735e51139",
+      "reference_sha256": "16e3058ed27fd5a97b1af6a6a0af9b5ee1ec883d79b73b831766d3c71ab815d0"
+    },
+    {
+      "id": "aishell1:BAC009S0764W0123",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "2c566703c6b1b075568cac56810846a48bb127c740d7a36de66084816035dd42",
+      "reference_sha256": "bedd4442cb3de585c6c4c7e138c9dc131e84ece344f14a7d99d06b42f17c5eb6"
+    },
+    {
+      "id": "aishell1:BAC009S0912W0324",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "bc911512b68ab71cbcf31446ba2372344b7a299008c7aa6ef41abd17a8741a96",
+      "reference_sha256": "5a07dfe83f1e62181346e9133360498829490c08f096bf41b0defff85a99eda6"
+    },
+    {
+      "id": "aishell1:BAC009S0902W0190",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "c0618e9311baac8f40d7bd8a7a4f2d4d71fdb38e42d9269e7f9dfd018038a294",
+      "reference_sha256": "5d54040c2a3e6c8e2ae06a6d8d256c59c740d33cd4a0bad91a0feeca88ff681b"
+    },
+    {
+      "id": "aishell1:BAC009S0916W0211",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "f746feb4cd1961ac09aad20b9a410e3a6d976a0583d79dc4bc829c799bd1c8f6",
+      "reference_sha256": "87b200b969b27332e0d285b20929bc6e384a98b439e1870af4a0b5aefeed674f"
+    },
+    {
+      "id": "aishell1:BAC009S0906W0260",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "01d2d17d62b8f1c5122f6e5eec349182b91fe632ccfe8ad8605e2ecc637f2920",
+      "reference_sha256": "1b001234ef311763caeda6b7192642b2b3c32e1041236d9d60ebad548b569411"
+    },
+    {
+      "id": "aishell1:BAC009S0770W0444",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "16534a54b7eb183f2e97b880178c9261be6c1173383f30c0b77037f763ed65b4",
+      "reference_sha256": "ae77694665dca07993d36b3f63dbf3960b29f857a5bacc35c0fa8d8bf00be522"
+    },
+    {
+      "id": "aishell1:BAC009S0767W0357",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "e3a8a454d9ad1c1b6c570c9b9d99fe8ff9eefcab89571fbb589b7211f6d1ebd6",
+      "reference_sha256": "32ee14d9e3fc998bc369717bf401681ff7b20c0b9f13d89877e1a4c40440e02d"
+    },
+    {
+      "id": "aishell1:BAC009S0905W0180",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "5765ccf7771049b788d70c92fe8ea96e76f417ad6c0b931e4c0f29d64d0eb51f",
+      "reference_sha256": "2d3698846b618fc25adff53d51be02cf12635fcfc95e6df4644895714a4e8dfd"
+    },
+    {
+      "id": "aishell1:BAC009S0903W0433",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "2322c71a51a81fec2018831943e6638433625442b10c53322db7eabd9868edc4",
+      "reference_sha256": "0247b960e73291f760d591b21cfce458a8dfdfe8dfab2df2a53a3e348f298093"
+    },
+    {
+      "id": "aishell1:BAC009S0907W0141",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "4b5310e12a90c6bbbd3c52d0dd65fb8776cb775a1167e5c9ff76d4870968c91e",
+      "reference_sha256": "ce23017c1e0cf3df5b216098d2f99aae98d7e06feaf1785a0666c8d153ef0285"
+    },
+    {
+      "id": "aishell1:BAC009S0901W0373",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "6106d00957cbfbe4cdcc8adae6f75a8b1fe6e6082c1a3cb35631e1a34a6b8ce5",
+      "reference_sha256": "e4fb1eaea190c5ca2f849b0d390dc7b013d69e81e837865de5065417bafc2ed2"
+    },
+    {
+      "id": "aishell1:BAC009S0904W0278",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "c5c563b8c81be45fffbf5639254acbd497915b956fd2513af62a41f23dc8b47f",
+      "reference_sha256": "751a09e5a6d7aa01d097315e6aab56e8981d853d27f603387af9470894e6f9b3"
+    },
+    {
+      "id": "aishell1:BAC009S0914W0466",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "3bf91912fd323d333961b35802bed2f84e5fa4cb49dfbc1a0a2b3cbc7e0589a5",
+      "reference_sha256": "f4f270a92362cc5a89db2fc6565cb81e389e75adcb3439da035a430f576d1cef"
+    },
+    {
+      "id": "aishell1:BAC009S0913W0444",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "c46f4c8fcdef4fcf125586cbb5626e8ca5843ac9e6494e0e1db67fb09ecdf3b9",
+      "reference_sha256": "20c1c892aa9a1f6ce0f24ef752f1c62ea9d2618ca4ec4956ec343316a10d5aa8"
+    },
+    {
+      "id": "aishell1:BAC009S0915W0181",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "750d26039291b02e9970d32a4787a1ed43fac2d9857f74761565f7498d34ee70",
+      "reference_sha256": "c509455e9840e343b804b7baa4c523aad27326f1c0735734c734be523862d74e"
+    },
+    {
+      "id": "aishell1:BAC009S0908W0277",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "a6cebc49f4229e55734a0def5d730eaeb2e41500ed9c320ff32835b5acb1026d",
+      "reference_sha256": "f01b8c410086d7ef4a871dcf823bce25154fe27e10b78f5419e6a608bed1f081"
+    },
+    {
+      "id": "aishell1:BAC009S0769W0432",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "cb57a035d034190a7a3e6f73579484da0263c3268ab266eb7986bf845422eac2",
+      "reference_sha256": "39b618bd695db379b9f8efec86c7cc599414f18eb3ebbddcf4d71f5cd0062c4d"
+    },
+    {
+      "id": "aishell1:BAC009S0766W0192",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "6b33c61c25fd32b49cc2e7a2bee4f3ca7f01957c92b1dceb7ed4f1957bf2ed4f",
+      "reference_sha256": "23ff31d62cfa7e26bd47db398dfacdc7830ca125c2b451b39b366e864f7b5397"
+    },
+    {
+      "id": "aishell1:BAC009S0768W0458",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "d1d39e9143d77bab41585a1925720952ccaac62186510d42201c7a169be375bc",
+      "reference_sha256": "63f7220c599bb2a2c33e2dfdb3e5bab72cd6d08fe63c151650346d2773ee0057"
+    },
+    {
+      "id": "aishell1:BAC009S0765W0268",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "ca8dd127b84e1d490b818807554fe2b5ac90ba875d8dfb45af45939326c56732",
+      "reference_sha256": "cd16bba77b84b04a4dd104dda946a7b0387bbe20918748e9316d15fc2361833d"
+    },
+    {
+      "id": "aishell1:BAC009S0764W0205",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "eb3fd6d4b8810a91faab2d712ef5b1c997bb09686a39d8a03e1e303027c899ab",
+      "reference_sha256": "2f4d61c50f2a0cc10d5d7632ce6df8d2bfba23b49ddc086f9735c27826f9fa04"
+    },
+    {
+      "id": "aishell1:BAC009S0912W0124",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "78726db7bc1e6624505fa54d07d523a3d0b904c17d6b64a8dd07eb80e15ac470",
+      "reference_sha256": "c538fab43f058303be41159b1b9115c5570a9e42fadf337935ed4b6dba2a7400"
+    },
+    {
+      "id": "aishell1:BAC009S0902W0446",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "438704d541af211c0e5f3224368e671189fd227572a283258679edf02113b743",
+      "reference_sha256": "e5820cfcdaacd42413c8f0a7e5d0253dc3282b215e9deeacd46328ee47749235"
+    },
+    {
+      "id": "aishell1:BAC009S0916W0304",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "2d593acb4556f5bb476941f62a12089eac3cb59e7cf902b79a0236bf89fda795",
+      "reference_sha256": "a1c690f8ba202027225b78f26c11ced87521477a334f978783aa0abbbc3ad9d5"
+    },
+    {
+      "id": "aishell1:BAC009S0906W0221",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "bd833ed4aa1196740863ac5acaabd28ce523bc7082824df7f06f8764603a6dff",
+      "reference_sha256": "6f9f11fe68a3500c06c3850838bff5058d1354d2885250ce05dc845cb2de9bd0"
+    },
+    {
+      "id": "aishell1:BAC009S0770W0425",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "f8c9e9279fc3d3c5ee1dcb9dda270a9943b8e9c0f8abf6eefa75e16264b775b0",
+      "reference_sha256": "0efb9195ece9672322b621dcb1e1af6db60fd4d5d1a17328b126ef688b5a4911"
+    },
+    {
+      "id": "aishell1:BAC009S0767W0130",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "bac75b2ca5cbe7989dc09a62ed60023c1339a7c1f4002a1596df42cfaf8f53ca",
+      "reference_sha256": "a5fd858c2bc6ae6991ca3c564371d55c8066f48d8451d68f17a73ce100428222"
+    },
+    {
+      "id": "aishell1:BAC009S0905W0194",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "23182e146384093736cc1bc88f6136054a44d9f94ba26704d303784f714959d9",
+      "reference_sha256": "076ce513db27c8be43cbb0c299974d1f8a1fbc62f1c2f08326dc424d437606e9"
+    },
+    {
+      "id": "aishell1:BAC009S0903W0333",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "ca42327e7493bb6f5f6e9c9fb293454f9fa8953567d351a78937f55e98d252f1",
+      "reference_sha256": "d2e991c0c935da020e7d4955b61803d30b77631bc4993fd370537b54852b7fd9"
+    },
+    {
+      "id": "aishell1:BAC009S0907W0387",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "7018afce2a67319cb7660ed5d8718ae51945b89a676b1191dd8696d81ae28e3a",
+      "reference_sha256": "b40bdf72f531ecd44d0fb4a083e8b7e53985b9ed578610cf6aeaa6394afee3a3"
+    },
+    {
+      "id": "aishell1:BAC009S0901W0356",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "a8718b84c6d614606fa278dc4d69d3cf230835efde38b1aaaf64dc450127943b",
+      "reference_sha256": "31c7d7ba6c58af477b00b288947f5d6a1626f396887bc59399967d8b207e6f1a"
+    },
+    {
+      "id": "aishell1:BAC009S0904W0405",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "0bae9e6715d1331550ca9c3423bf6b723f502a4d62e01aee82457cd62088d84d",
+      "reference_sha256": "bbb23f4e38e1f6ee3a65b0d4bfe063b02cef24378e1ad785d40e7aa725d1b661"
+    },
+    {
+      "id": "aishell1:BAC009S0914W0443",
+      "dataset": "TwinkStart/AISHELL-1",
+      "revision": "2a509ef3a7a88d3234205eaeecba39fdd9d50518",
+      "source_split": "test",
+      "audio_sha256": "1c1234a18892667a447ebc73ecb23c4a2ef0d5ba9f1352680885c834fc683924",
+      "reference_sha256": "55236f9cdf4c8235cea7f569ad9ea5200bcdb1e69b4699365775c57db389d511"
+    },
+    {
+      "id": "ascend:01299",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "a85aacd8e77c69da2ceeb8a966cf09c82bce287fabf875e11871922846051caa",
+      "reference_sha256": "6195b541c098ce4bdcaa4364c79287d194520a8b59922400a7b117d269e6bac4"
+    },
+    {
+      "id": "ascend:01006",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "24e879ca3ff0578495c653ab41abf4bf226c3aa0d2b9094507127ffb5a41deae",
+      "reference_sha256": "8a7f5706bb57669628ea8af10590203e6aff7c4b41cbc0b6a9afdf913e6438c6"
+    },
+    {
+      "id": "ascend:00131",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "b998d57288e989b2f80aeee18b6424e06e5ee82118648e2d4b17ed279d94043c",
+      "reference_sha256": "30bc2d3958717a51d73d2e4aa2cb1d992feb3837beb6b336d8c1895c4f764d87"
+    },
+    {
+      "id": "ascend:00214",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "5986a54a6256a5a96fd55e46b674bbd9de651ffac5237824f1b4798a4c3c13d1",
+      "reference_sha256": "5bbad81299f3a9ac890374007414e86d6085e9f1a8a40582f67e3d314a38f470"
+    },
+    {
+      "id": "ascend:01056",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "0777d355b46f6ce426156b16e6b8b8660698994b3a26b3750c525f48d465b2d5",
+      "reference_sha256": "23dd91f6d6baf2910ccb1c03e20cf118974e09863dafce1017d92ec8a9303079"
+    },
+    {
+      "id": "ascend:00698",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "621e6df72ebdf5c8743dc05b66df80de35dd5b514f671412d36e54c9febffbaf",
+      "reference_sha256": "97cb93b55b61bf2a7b5da1664ef8b31c8d45a5ddea993edac92124ba89d7c3cf"
+    },
+    {
+      "id": "ascend:01199",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "adf574ecd8679335aaa0f80d0e455e455cadad0007d72e7d55dc32ef3eabd927",
+      "reference_sha256": "3a2886f246f04e64ae38d1e69074e63b86a55d20e55b00589b69963339b56c9b"
+    },
+    {
+      "id": "ascend:01057",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "298e1bdf220a0ca11f65ac53718bf98bf49ed5f2fa793f3a29d49de3dfa239a0",
+      "reference_sha256": "1d4b67060ced74b30688da482ec6fd2649719c54e6d9d42b5b0c980488df3f65"
+    },
+    {
+      "id": "ascend:00259",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "05720da721c100a1a0d986c70031d14fafa73bde31fe255076d59a7197c0e30d",
+      "reference_sha256": "a73eff39d3f9f75ef9f3165defc1422b6a6477a6be3730b069d0d68c4cfdec32"
+    },
+    {
+      "id": "ascend:00409",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "95c3f26383b999d148bdfd7806a4dda10efd70ce81e9ad645dfa43e71d4536f7",
+      "reference_sha256": "b720c9814c7a763027fda2450edce1361b862ba37c01c9f242ef05770d01778b"
+    },
+    {
+      "id": "ascend:00373",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "2393448059d2d28c568035acd78c8719ca1a56d97afc62affb87a5de5e611f73",
+      "reference_sha256": "d48c7a52e710a2b83921e532e2036e1d8f33734b46480b361394d7c8f1d86f61"
+    },
+    {
+      "id": "ascend:00452",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "04d14a3a684898df3c8adb8c669999aa0231dc4e681e6ff2345ffe3a47302e2e",
+      "reference_sha256": "63ec81b3157dc57c05493c0bf4cb2d446361e3b34b88d66b45bcf4bef476c5b6"
+    },
+    {
+      "id": "ascend:00345",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "1e68b09cea25e3fb235a423eac133be7d18b953f00047e70e1a4472f4d99f2e2",
+      "reference_sha256": "20504bc8c3cb39b54f0755df3dbcf1cf6168b6b8af76aeb1b1d3dc1aa0814f66"
+    },
+    {
+      "id": "ascend:00915",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "5e7408f4f7c04392c3e3b413acc5330deacbc784b81608aafe7432d2e54bd507",
+      "reference_sha256": "b25548e4389d8c12a15eaf091828a7bf827855f62fc2b85f107dc6a9f427ad22"
+    },
+    {
+      "id": "ascend:00308",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "22d245bc4d688534b11099fa5e35bee39b91be14fd9a8039d215b39601808114",
+      "reference_sha256": "344353ce4248dfdc650642178b59c0d12d2bb7446b768481350a246defdbd7c7"
+    },
+    {
+      "id": "ascend:01107",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "3aa297c92440b2278f7d3da9d85d70215f5e1ba94b5f80e595a3006eebe77892",
+      "reference_sha256": "47a1a4528e66c4baeb3ab92f52c4b78739fd01578ce3df63adc1fd41a90ebccc"
+    },
+    {
+      "id": "ascend:00399",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "0b11df57dd23d1f1a4d2f37e3af9c66c4fc7d6dc0552d1a231a3440c5d6b91bd",
+      "reference_sha256": "f5ab8d2b3e9425fac4be8477c4e02bba165ca3500292795fa2903aa2011535a0"
+    },
+    {
+      "id": "ascend:00068",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "ddf1d1241915e223a8f46e6e00e9f5c0b6574add6d6c984fab26ee5508897958",
+      "reference_sha256": "45d2d917106711f0d403aaac541d19c2901133d660cf689a3e2999105e1a415d"
+    },
+    {
+      "id": "ascend:01052",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "f5a24d19c0981617c9d7323264d4bd64df542826b6723812dfd1398b5688d955",
+      "reference_sha256": "fbc37c8a789c533ab450d41f92ec362dc04e18d34c90c5ca0bd8770d86ce6f4d"
+    },
+    {
+      "id": "ascend:01282",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "f377c4afedc3963b8e407e88af67ff10366d62c8b3a0a0bc8217ddcb55224f82",
+      "reference_sha256": "ba4b1241ff9be08a3028cd091ec82400a3df1d160e75d2a38b46f0ef33bcab53"
+    },
+    {
+      "id": "ascend:00953",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "983edcf36802e47dc4f9cd9b08cd170fc7676e163eb8d317bba09cdd851d0606",
+      "reference_sha256": "840fa2fd8d0ea8ada9a8b8b00003226b3795d8a6dd7f6e5e2d4aff711c5e2b2e"
+    },
+    {
+      "id": "ascend:01079",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "ee8c90579f236f5182aee16bc41aa0ca896bf32746e7f8c21a36360e953314da",
+      "reference_sha256": "342f7a1e89609b56db1a749a148348165c58406e795fe24a18800a483f23f12a"
+    },
+    {
+      "id": "ascend:01047",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "a39c0a82c2d9582f8c59d1b3a31b3e8d7a49f5c6daa01b0fbfd3db616b102205",
+      "reference_sha256": "2e32526d0c16a6c64c12eaa1e228678ccca97202f7bc2d624421173bf9f594d3"
+    },
+    {
+      "id": "ascend:00361",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "a800458f8691c55f019acfb696e0b8baad7201b017f26c2ee47ad93894f2d880",
+      "reference_sha256": "52196a27c2d794ce0a4f44cd43169b280747bad8044a93b1014b1891c2b01fd3"
+    },
+    {
+      "id": "ascend:00960",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "e4156197ddf06d80edc026f9c1d532b3aee598139ec40ff9800ccd643d804d2b",
+      "reference_sha256": "9f54630b2b6859fd8ad9fd92a0c016a0773099717ecb85ccc4ab1622e330b58b"
+    },
+    {
+      "id": "ascend:00613",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "65606444266664443395b8f1be8e3e2a595f3be5bbdf85527a77bc7b64d733c8",
+      "reference_sha256": "eb2e0cc9ee8fb6fe04cfb2ad7d435f133ad6e68a78465ffabdddd82508ebf394"
+    },
+    {
+      "id": "ascend:01016",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "972f0dcc4afea5d3f16286f2cadd0ee92ac33a96e37e8b92c3c7aac10f486027",
+      "reference_sha256": "c8e14b51edae4def20cb3de0bcd2cfeeae2c72e96c32baab2c898cb1ffe5b9c0"
+    },
+    {
+      "id": "ascend:00299",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "50768d47bc810729cf5ed7877aaeac84ab09e102e56af0f157d203a573dda2b6",
+      "reference_sha256": "95aa9c9827ac7fc8f7b5532148c99458a93447717dcc7d51b7d19d3d893575a9"
+    },
+    {
+      "id": "ascend:00411",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "f25483e2d01d64078f109aa3a30f247618a58ec4cb0aa34491897792b9699696",
+      "reference_sha256": "a9bb0ae76b0d81d29d22f0cf296e6ae923380a471d8fc193073cdf83d4921bc0"
+    },
+    {
+      "id": "ascend:00347",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "2dec19f73ca2b68a45abbacc4343f39668e9e8fd7ca1b76eea16f5c99fcda859",
+      "reference_sha256": "5ab68d270d584334e871ed755f62a1def452c1b3cea223b85a18507674ea5afe"
+    },
+    {
+      "id": "ascend:00266",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "59aaddc711a756a54a4d5eb316ca05630b0129678798999385b1bf2f703c4e8a",
+      "reference_sha256": "2938663580c2f73cdb9bb7578d9b8072a0191f06d6cf61f79eb1b076ee23aefa"
+    },
+    {
+      "id": "ascend:00004",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "b1d784c7c355c79febc73733f61a9faa2564c9f07cdf12caa3dd470f381c0149",
+      "reference_sha256": "e29533b086fe392d12b226490b8e89d0830ddbcd415e50975e40cf7c85df3b28"
+    },
+    {
+      "id": "ascend:00360",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "85a990db4c3000e5905425ca1628257ffca587135f5a3637d781d14a9873591e",
+      "reference_sha256": "b5fba51162fa293ecaf864ab2cc82de5505a8e540a864844b822beba7b33dfd4"
+    },
+    {
+      "id": "ascend:00631",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "7545b52f2bec9a457d91e77e3b4ec004d1cd5accbdcd70d77f382f0a754f87ce",
+      "reference_sha256": "b9343008a6f780841d18fd65222132f2e096d15097bd4a7cdb308e29ec06dd24"
+    },
+    {
+      "id": "ascend:00687",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "c86f77f160b16e109fbee11603854dff977ec4a36e9afd37154b4a721f3c8726",
+      "reference_sha256": "74e14147ae3289cfb03c9205fd01dd16f8b1dd53005634ff220a5808665198b9"
+    },
+    {
+      "id": "ascend:01102",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "b71d0f55f7e844c41e144a0b11c3da685c0e66308ad47205034597897dfb7d82",
+      "reference_sha256": "72238465e380b7017ead5c395fda90781d4ead2cd065d54a3366af33f0c80a6c"
+    },
+    {
+      "id": "ascend:00494",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "a50bcdd16a6e6485da66e4394cac7e716c643372ba6478dc6af29627b6981a2d",
+      "reference_sha256": "bbd65c814f2f0d1645a8c5c89c42a9a5f468146240ce86040a26535261d7b05a"
+    },
+    {
+      "id": "ascend:01124",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "e070d668164cb25bf33ebe63637f186d5b0afb5bcc893fa80b1bcde4dde0bf54",
+      "reference_sha256": "7e48d1304992e696f60550d3274342712a2bf341cccfe3bd30b8e00777e7c60c"
+    },
+    {
+      "id": "ascend:01192",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "1db3419f6adbee64f8843ee7df35fa3a9162bda93b080dfc87bd152dd13a3efd",
+      "reference_sha256": "7c3372282e8ea042b2fc28d46044c0281742f2a866cf1f1881092963d053020e"
+    },
+    {
+      "id": "ascend:01264",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "c82b1ad26127e16cc5cbde1163cd309cd317a37b3e776528cedcb1906328a04a",
+      "reference_sha256": "6df9ffa4db9e9a3be4ab657752bdaf3741a80f7960cee051c20d6bf39cc4e83b"
+    },
+    {
+      "id": "ascend:00718",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "e4d9f5aaff9858ff0710a2f2e8fb46d4a7d2b2cf81d9ec54532a19e46de12f3f",
+      "reference_sha256": "b5ca6e33a3c15a2cb93f42e6b99d680394357efead5ad93dd2b57359b376d863"
+    },
+    {
+      "id": "ascend:00645",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "974fd5c19390e1b07fef13f81001ebfbc8cd90f08e495eb7ca8eabf93bf2bce6",
+      "reference_sha256": "cf0827c35e484ab696638f73980d7834cc9c3e7acd96fbd9392e183fe75f7885"
+    },
+    {
+      "id": "ascend:01259",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "4628f2a105f507cf01af121ae803c9dde920095b8fa71ed9abaed5c9dd23767c",
+      "reference_sha256": "4abd6b1db719d5f40426f35d3458240c08dfacf7e4e35e2460ab0ca1f826bd64"
+    },
+    {
+      "id": "ascend:00380",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "c5143f20a2e01c3d2c0f96f5825a35109200b99c02e3a3ed9057792462eca5c6",
+      "reference_sha256": "aa7c889bcf6e641b03ee902eca185844a2c826b499817f3fe46c002683939e2d"
+    },
+    {
+      "id": "ascend:00712",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "fa81b08d0ca30c00ab08b1c66bd620dce60ae33327c7ae885c4320b925baff0d",
+      "reference_sha256": "624cceae8d7bd4a1d7bc1488c08d72788166b45cfa2e9172edc5385df50cb02b"
+    },
+    {
+      "id": "ascend:00281",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "0dfd3499952791a3f9d137e1a78ffb78b63e859280eb2e7891d3f7d888fa0238",
+      "reference_sha256": "cbd980f193079426ab05975f2e85fbcdf3785e84786db5409df412937ea1310c"
+    },
+    {
+      "id": "ascend:00272",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "482061b948901e6c5f85716d023f0b092847e382605b20239854c592ded1f564",
+      "reference_sha256": "dc2a91a9191f18ee96daa582545f36da59c139ac5a6b9d82307da43b6214c13d"
+    },
+    {
+      "id": "ascend:01037",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "f7d6e5bd40d5a1acd3a9999e0c80107193d4b3fc1367f1e5dfa48cedf8db8e68",
+      "reference_sha256": "c608bae7afeb09e84ad52e658b3070e6aca742832b3226fb2ef24faa49ac9ab7"
+    },
+    {
+      "id": "ascend:00717",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "f79e8b580141969d2d918d6909338d681a3698be527787ce1feee4489d4ced41",
+      "reference_sha256": "6d33c011ed0df9bbc74c6c7cd2ad584595541087f3775c70817a50eb0ebe79dd"
+    },
+    {
+      "id": "ascend:00401",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "d03a1a75ce32e2cba8ebe45c8fcf8a38e2df83154c507d993489da1b8edc9d8e",
+      "reference_sha256": "cfecc4e23d255990ec93d1161c299bf5836a7e108d2043492f0ca2dbb8fec878"
+    },
+    {
+      "id": "ascend:01205",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "c09d545c6510f8ab2738f6117bdcf35a62baa9a08f4e0157eee672fdd68f1548",
+      "reference_sha256": "92bf3d7589024a4f2a70b248a86147df63e6238b871b9b5ca1484b34c6327762"
+    },
+    {
+      "id": "ascend:01003",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "5b162a00f36ed14b3c441d6aba3090da465ac8dcf8e1aa0f91727bbabca00e6d",
+      "reference_sha256": "d9beabb4880fb4e3e55c235854995f3abb80c8ad300f607b48b0855bdd9ecd88"
+    },
+    {
+      "id": "ascend:00719",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "6ed56196641366366af4091ce5301b93e8ceff25ce17b79e376d938884847251",
+      "reference_sha256": "c7e453a4175e261a318d68a0e67208ca179bf8155d818ace0bde5322fac06b6d"
+    },
+    {
+      "id": "ascend:00978",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "a70575d2ddb4662278dcbb27adddb39fb517a2bdf6904af1d35c1f71edecaa39",
+      "reference_sha256": "d237b8ed8b80b1502435e5b7bfa18d79953255ce64bcaa5ad5dbfbaf7d9139d9"
+    },
+    {
+      "id": "ascend:01145",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "621c74d243312a36bcb736407bde9c3274182ad8ce10939df8ec59d5303d57cc",
+      "reference_sha256": "358f6b7b7182fd6f0b634e30811d0a23d17017f67054bdc811453e8e0c8c4c4f"
+    },
+    {
+      "id": "ascend:01103",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "3e4ab301a5bf6fc21c7849152510a69c3e2e9749b2285a4216b16164a32a67b3",
+      "reference_sha256": "06b2a15e3bc6df326d67309669ec0f8c79c48086faf4b935c9a2090cf0859d77"
+    },
+    {
+      "id": "ascend:00615",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "05d8a4ea00c1c0e7f0c40654ea65fad6411c4a29c2e987639e7ef37029a97aa8",
+      "reference_sha256": "59ced12b134c972eb80b6b4ea01394c0ba5ee233d8f3ffe8cfea27957679e84a"
+    },
+    {
+      "id": "ascend:00806",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "82d7e0bca7abf0053971b3538ea1d8d38ff70e57ebaae3c8fbc373ab86bf8dad",
+      "reference_sha256": "d50df76243e23f24ba8a55de3cc8fe7b53c86cce33454b3e90d928eefc81f34b"
+    },
+    {
+      "id": "ascend:00699",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "d3e077ab84277a0dd87c78345340fb244f0b0614910ca38f198da71aaf1150a1",
+      "reference_sha256": "50ee416fe69c15afa3cf1a493c8ce69500cba1ed5f81ef897d319100f04b8eb4"
+    },
+    {
+      "id": "ascend:00323",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "5e1b600b1f1affa99ac13706f5cbe5c2491e46b1d2776f71f8ecc8ba68b303b7",
+      "reference_sha256": "18d80ff7700c80d5a6236188df2a51f2662d6816ac038b327caef4af64d02575"
+    },
+    {
+      "id": "ascend:00393",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "7c1e6b0caac21424dc86b30f61e0384f1d813bd401212813446eb6f6bae25ff6",
+      "reference_sha256": "9ca47b9c2892f3e89dacc76a289bef2786ef82f6fa39de4e041456b716dd4e35"
+    },
+    {
+      "id": "ascend:01064",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "feee20df04d9bfba1cdf004df0dd12cb19116231ab9cf0fbd510514e7dfb4ead",
+      "reference_sha256": "db2675a6138a2e3c873d4eda034dd138e60523533b005b9a0b61349eb098796a"
+    },
+    {
+      "id": "ascend:01120",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "156c8dd1a5c8e4e3444c627561d210ade58d7419b0d01842e7fa743c69d87aee",
+      "reference_sha256": "ac2d624398f87033eb80647d0c7b6c3d2d5b3b922a0f79f2e6f7202de0247103"
+    },
+    {
+      "id": "ascend:01082",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "fac422057eab9dce6bfa785a365ea39634f67080aaabf37ad776d7df44604e0e",
+      "reference_sha256": "74534adcef8ae0f88957b423957ac19c872ca51f850af3a1c8cdd0968b49b4d7"
+    },
+    {
+      "id": "ascend:00766",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "11baa67db82de209794af53760d78bed449d2c8b11d5bd3d2ac982b1b167f8e2",
+      "reference_sha256": "80f953abada63e2a9a6ea67dc5c4123b4ccaf7c8cf04a8a07c1fed95b4e21328"
+    },
+    {
+      "id": "ascend:01125",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "c39261fa24f10b64e7c996ca6dcd7454ce8743f77cc0779f7a8192c7b1a55d47",
+      "reference_sha256": "bf783735649a55069f9851af8953a76a28919de58594a4e412b05709275fd029"
+    },
+    {
+      "id": "ascend:00647",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "b1786189f72995c1863689dd3a72b5fde7855e9ac205051993ee959acd9747f3",
+      "reference_sha256": "0c7c77ed0eab04796ebe06c4968961c68e20fa17a14c2ff6c4099793b10792b0"
+    },
+    {
+      "id": "ascend:01013",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "5a23678aa5850dc8e43e34d37e1e96e7ef424bf1f10306e0ba97d0b541cf0dd7",
+      "reference_sha256": "56f76491737b523218970946c524b95f4f81a8304b2b8a6d1920253226d15a18"
+    },
+    {
+      "id": "ascend:00992",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "ba31bf23d08629e054b1dadb44e77147ce1e2102dd8a6e4a3907489155820ef5",
+      "reference_sha256": "88aa006eb3d80a05723514778efd0fb3b8418f1ed27bae72a9727cbe190e7a65"
+    },
+    {
+      "id": "ascend:00168",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "e0e5b133f3f975dc961d2893ac99e0a406006a87065d30c87897860fc3eaab4f",
+      "reference_sha256": "81c43e8de44e5afa742c1e5bbd041fa1ca8cbcb54f4dd53d6a6721da9a40b16c"
+    },
+    {
+      "id": "ascend:00994",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "edef26edd3b4333acd9bdeed6e2461c749a909f493957ccda2f3820b42f1f69f",
+      "reference_sha256": "9d84b463c4725afff6e7e8614d9091f6ba0feb67468bc929e5d2f648d0a3f38a"
+    },
+    {
+      "id": "ascend:00245",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "b89e921ce47924a6eca96f5a6bc296b62c3ff455b2dfd8c4603f9b217db5c021",
+      "reference_sha256": "499e8728e1b1682b49348a5952ca0f592cc394a2d2014913e11ad39dba8d6dff"
+    },
+    {
+      "id": "ascend:00289",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "eb4ff32187a5744572167520a534dbcd0faaa1cd36cffde34cc9f86aaaf31fbb",
+      "reference_sha256": "59b283060cb98cfd1bc946242df04b03c4e511ee956f0fa41c822ef7deb1c717"
+    },
+    {
+      "id": "ascend:00861",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "b155ee00ef8da59dabe97a86863481a94196552569deaa8f055817ea1a4f0b9b",
+      "reference_sha256": "befaa37fbab9d5f428c23dc70b4be2c17de7d5db1d6f27b64ac2e13de05accf6"
+    },
+    {
+      "id": "ascend:01269",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "339f77842ac6c7f69dc68adddea638cd4dbdac3ffa183f2b947a55be6c25bf60",
+      "reference_sha256": "8c9c3da775b983c3b45af04b8cdb5c3b28f607b94df889738ad4b23ec6009f69"
+    },
+    {
+      "id": "ascend:00539",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "5446c46d13a8a137d9f9dd979f31143a2fb1d9438b7de9721090fc85d1ee9260",
+      "reference_sha256": "24e40b323ff341bc4fbf96a25274bbeba12792b456cefdb7e639adb7b05a0118"
+    },
+    {
+      "id": "ascend:00642",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "aaaaf13b79140a7956edcff5757cbe0a4ad2e94f4007c7703e886ad5cd4a8520",
+      "reference_sha256": "bf6fbbeeeb7abc85391e02b6f3d859ffbeed7b4ecc48d416979c6ea263afa4c4"
+    },
+    {
+      "id": "ascend:01075",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "b5d346005263dc24c6b095dab958f162861c072612306c1ebf58c86e84cf0028",
+      "reference_sha256": "bdd1e338e6b2a9ab32b4f47bd2c0325aea1dbcba6a6eade672b15a8286a1006b"
+    },
+    {
+      "id": "ascend:00693",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "247ecd5467ca22ac68269c23913c2bf21cef9f209c75fa514fe8abefa3054e95",
+      "reference_sha256": "2d7a241228c098c51b1bd1b7038fb176c156b6cd69db95fd174102ecd075d2b9"
+    },
+    {
+      "id": "ascend:00648",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "6ffe03ebcfa70e904a6e330f68119fb519ffad6c64d90ff70a39984e4a653faf",
+      "reference_sha256": "feda512b2bebd8ff03fc8c8f3fccab4b4ca2ec786edfbeaaf07d016536a48714"
+    },
+    {
+      "id": "ascend:00809",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "e625095b826b4be0ecc2a9ea3da0f3266f23e7ca2502c8897b62c0f428679826",
+      "reference_sha256": "bd4f1882042fd9342a0c13c9542a9d35a11cdbe6c634f4ddd5de0274d9619290"
+    },
+    {
+      "id": "ascend:00408",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "fd4eafb31b819e209b5c371db33caf3a31324e5d39d1cfc69705ad1687dcb707",
+      "reference_sha256": "edca4aa179f0b0855b4674bd56f552cd1cb8f95e970ea5e44a001968f6f16cb9"
+    },
+    {
+      "id": "ascend:01302",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "ef1c826479fbe30a7aaa46e0655959a094c33c1c2c2abae96afaf2576efb89bc",
+      "reference_sha256": "4eeeae28bde15a22c301d7a142b63c0787f9eaaa3ef54928d40c6924dab31897"
+    },
+    {
+      "id": "ascend:01108",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "ad9aeb6860664a3e5a5402ffd905efb3832fa148fdd21e7481c465c02ebccba3",
+      "reference_sha256": "f223a660829752da46ec031b46a7659832a33009a0a83282675d80152cde3d1f"
+    },
+    {
+      "id": "ascend:00998",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "373c22507b92544ff7e7579b62feb04bf51cf90491e554611d65b56c55c414ca",
+      "reference_sha256": "c921de009988abcc71e75de9df8d199e33ae5997f3a30ef13c1b835979c1c427"
+    },
+    {
+      "id": "ascend:00635",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "9e1e0e8a42b48e0fe32d55b82d24a20605490a1552c2d5245bcf5cb551adb377",
+      "reference_sha256": "9c54887ffb26d9562bb6f5e1000e379a06c64c22ecdb9b3c86d331ac87393af1"
+    },
+    {
+      "id": "ascend:00832",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "4ad7831064641fc7eaa3d95e9ed15d25c911563515bfce5d4e4eb240850612de",
+      "reference_sha256": "09373d9185fa8a569cd5bd2373578fa3d9688025cf061a970377e7936f03f3d8"
+    },
+    {
+      "id": "ascend:01277",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "d4285c342dfe758382f44cbb69943ff4cec6b1bb73516729fba07d88848124ea",
+      "reference_sha256": "7fcd043b85f6ccef774ad96ebd21f28b704ff5b836e41495763fe97489ed68f3"
+    },
+    {
+      "id": "ascend:00038",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "fb71a80372d498b0a7f031f7c434c4218373b300934441f5a8aea68b97139846",
+      "reference_sha256": "58a602903b92df5d31654d06783c58fc4e45835ca23621378e53d9dc34e31f9d"
+    },
+    {
+      "id": "ascend:00870",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "2b0a15d2aa681e33dbf9eab5a60e50f3e9dc6ce1a8e0388dc807bf861264a1f7",
+      "reference_sha256": "5acb3327ee5b34c30156a758b18955ea384caf2bb24f08ec8a6419c857adb9e8"
+    },
+    {
+      "id": "ascend:00483",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "2a107e7cf56cb9f0c2afa723e969898e64cb263b561b77ea4e9347eb1db2f728",
+      "reference_sha256": "99ba81e345e9830b2f61c1ab2521e2eeaa24562cb77d1f1b46c45844c7c816c4"
+    },
+    {
+      "id": "ascend:00350",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "a653472fa7114d535c713a42b413b7694def360a9562cde63196d866f1d89c76",
+      "reference_sha256": "a6afeed1fa68c2ed6a2621d3f49f1babc16ab9cc3514f549d12cc6c647bb0b10"
+    },
+    {
+      "id": "ascend:01268",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "8ed89b2a31bd361efa7df2c834d47d83b9d679a9847a0041fcb9855e8148678f",
+      "reference_sha256": "a3340210d812f2b3c90742a2123fc7d4c8cb174ccd823f3e23d5c5baf59e7500"
+    },
+    {
+      "id": "ascend:01184",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "8bc0c37586bff4499afa1dac731afa45eb48a4cd6e8ab110acf6a3a09ec0ee6b",
+      "reference_sha256": "aa821377a30ff1ecf7e8b23d7b6c4a7e536414b2e4b3b66225dbfab3ad92bcbc"
+    },
+    {
+      "id": "ascend:00273",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "0ce359362260ca3784a35048fa58de10b999c45bb3b7c96304961123e7e0daf5",
+      "reference_sha256": "f42aace0690ee9ec88d607f47be6daa58f598ceeda2e0fb45d3d20f3e9b624f5"
+    },
+    {
+      "id": "ascend:00176",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "540de096bb26e009b39a87c2195a14fd24fa386f5734ce238716dfd333aaca93",
+      "reference_sha256": "821ea6fd74a74c12dfe83babf1c9f495bee9012e2301d5b7f3010fff99b8fd6f"
+    },
+    {
+      "id": "ascend:00779",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "21f60d50e88b0ec13ee9e1084ad39e3719fb66921b175e53b65f05a036ceb784",
+      "reference_sha256": "8db228f871cfc20d0200274656af0179046bc0325ea3296a17c00fc386a12ebe"
+    },
+    {
+      "id": "ascend:01224",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "983bd647e3bde25ffa0b9aaaf6cabddf5708fa89d663300d442a74e4a4224795",
+      "reference_sha256": "f6c61f6986ae04a259053ea5b5b730289f7c11d8ef4fc2c3c13ef2de103e7a0d"
+    },
+    {
+      "id": "ascend:00576",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "decfa7f9d778fda4f782a015e1474980cea3c15ace99b84bda1bd8ef0be4d874",
+      "reference_sha256": "57e780fe7ead69399e16f99bd504a664145d9cad8979767bfe25483cb91fb13a"
+    },
+    {
+      "id": "ascend:00813",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "51a3f6a37a15dc932907dd6d42f42fd26e3180b9364844a2d3e65ca2f69c716e",
+      "reference_sha256": "659d9e65a3c8282f20ba7de7f2b12624e2ecf80f4af8aa0ce60e65b74280c52a"
+    },
+    {
+      "id": "ascend:00194",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "27a3d1e4ee64bbf5e0f63bd687c7f2da232e684d54f17cdd6b89e49270d96204",
+      "reference_sha256": "2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df"
+    },
+    {
+      "id": "ascend:00529",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "65b6ef2c0f3a12f5517c3bdc7ae0f24f4c254d854d9ec600cc061e1eeee3c277",
+      "reference_sha256": "4b13e8db46b9d6936468f3e482a36afff82e8f2ba574f6cb1da1ff550f1caba7"
+    },
+    {
+      "id": "ascend:00776",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "207eb40c9c40dbeb2d59fb3110a91d5a9bf3d2ec52a865a41b08da1220ba8138",
+      "reference_sha256": "5f4d9899c3b6a3687a9a814e6406bf3952f37e184d579c1311629bf5c08a4cbe"
+    },
+    {
+      "id": "ascend:00847",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "96ac78db12b12d93160a37d25bee2d29208abb1795d3e2f8a465914af59cc602",
+      "reference_sha256": "d83189b68cdb041a91d58c611755baa352e5fc48d475df7e384d1a991c438cfa"
+    },
+    {
+      "id": "ascend:00136",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "3350884c379fc861a8cda259ba0728a9dbea60fd8ad3aa5ae3ae305e9c0db61e",
+      "reference_sha256": "0b51d342aa58dd37d09917603e2eccb7bf2757fb72cc8a80e2c9ddaea6206ec5"
+    },
+    {
+      "id": "ascend:00520",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "29059a770fa4af29659f37ba7a3c095f7da508d2225f074ae33cc170d2ecd5a3",
+      "reference_sha256": "41c93bbc2ae6120d93875c8301974b832f83c14a392fb1a2fc64aff1c370af27"
+    },
+    {
+      "id": "ascend:00445",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "001492f757c5797d9915032f1a254b3fd48b6ce10b84524648e4dfea79a0f1de",
+      "reference_sha256": "a718a65d043c982277d489bf0d77d6bfb20d412bd15c54149c430f8fb0db0573"
+    },
+    {
+      "id": "ascend:01087",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "7ddb6e70859b163df2ca6e450ea0bcff775a18bf9763a141611cd116d78d3f09",
+      "reference_sha256": "709bc4bc7f954b2cbffab2c2599ab348980d2f4db40109681b75df44b79d7748"
+    },
+    {
+      "id": "ascend:00164",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "d4083fca7fc9af9fe07cb80b11b53653049c5d79776c647c9d77c8c9113a27d4",
+      "reference_sha256": "dd016df192662e688f9662b592a701cb0b1d77914e29693494fbcf12f75411a5"
+    },
+    {
+      "id": "ascend:00051",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "59f61b9d328040dcfd564c8dd1569535cd426c580ceb1db2bf733b1f244269d7",
+      "reference_sha256": "4ee45c03807d6ebfe6a7f1e67e178448e8ef13e0397f91d3ae31f339b5e4588d"
+    },
+    {
+      "id": "ascend:00043",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "db31a7e0bc5a69b495b4d70c4c3ceb2634594a285371c78e86a46d0a29301f90",
+      "reference_sha256": "4ecf8f5dd381d6bb52f4fde0bfbe084e168bb511cf46da80f945a0fb5cb77ac2"
+    },
+    {
+      "id": "ascend:00464",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "ee30cd60145c7259bc0326a0d1b1aad38420f436de59e34060526e8a18837dbe",
+      "reference_sha256": "a2f767e9c59e9ff20177bf7af53842ea05a99b2da773926fcbc2bd732259adcd"
+    },
+    {
+      "id": "ascend:00085",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "2714be3bd806fc1e3a796145b69353a70620f63d4555d1f54649f5406c9d5da5",
+      "reference_sha256": "233e8a6d3840e3a026303b3b915a633079d3eada3a768f1f4b43aae3096b49cd"
+    },
+    {
+      "id": "ascend:00546",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "eb8c9af325ff08e7db007b5c4372edc871fb96edcd7057d4fcec930a05f19196",
+      "reference_sha256": "2f2a891e46e6952a6f318383535dcb1fe84499154b40c6b938d61322f764865f"
+    },
+    {
+      "id": "ascend:00110",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "a4e5fab46afc79ef7dcfda300bdbfefa64fc819058e8da93ec5d696ab69f329d",
+      "reference_sha256": "f86568921a6cae1e2938c842fd668ab02d2c44145a1d3e189196189fe4cb96fa"
+    },
+    {
+      "id": "ascend:00517",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "24a4f43e25e75f3334c64e0bcfbcef8b241a25722e326789fb3a1e4b14cf086d",
+      "reference_sha256": "e46ebad1498ba930024048761d44d251815de5f8c6b14b3a3215284e093ca88f"
+    },
+    {
+      "id": "ascend:00547",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "e6a77b5da3ba457311c453b696ddaf769acbc67165c0adf1026dfa3363c1fe72",
+      "reference_sha256": "ceb838f62d69fee2f07726cd43b63e7a1ff4f204b4191ba0df98ba49514e065b"
+    },
+    {
+      "id": "ascend:00040",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "0790bc90ef951d3edb3018c42b6fd7f7b5ee2b5988274e2cec9425dfa7e5491d",
+      "reference_sha256": "0bdba744eb68f4a81768bf05ae8932d149fa4cfee184366d08b944bedef73eb0"
+    },
+    {
+      "id": "ascend:00586",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "70ce5272646b57aa0cc8961a5a3d4e3b55c75e5d81cdd0e1e2288a209ae914ab",
+      "reference_sha256": "6436dac40135a9b308e12956f85c001ffeb8bec2f8fdbe891c7020d1648cae2e"
+    },
+    {
+      "id": "ascend:00784",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "123f0c5bf12b869292b4d8bc47ca61fe05357ebdce87d648a6e5361565133d8b",
+      "reference_sha256": "8618c1e42096022dfae18e3d6226e9883ca2dcedc7963ab9c83656ae1ece5ea9"
+    },
+    {
+      "id": "ascend:00057",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "20bc75439691a0d7a0e179e204245360d38acb536e65bba71057b4cde61ae016",
+      "reference_sha256": "dc867d4afa55f604cfa740d95cb9f5acee4e5d50acb65a9c23d6f0aeb9a65772"
+    },
+    {
+      "id": "ascend:00589",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "fa011ec89c909ec2f968725b7c2b8636e53be681be3167fab7d23d88330c0cef",
+      "reference_sha256": "ecea78c87fa54cdf73c44f9acd3d386d174cfd4654cb20af17a5f4c7f09f47e5"
+    },
+    {
+      "id": "ascend:00585",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "42135a5e9d6ffb87052a68da521600b4e26edb40683795b4c8b22fb599b2c9fb",
+      "reference_sha256": "5bf62a976dbab11a01a79a23f529a70abe70d4ecb9cda4114255602443d25faf"
+    },
+    {
+      "id": "ascend:01216",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "ee72362f1d2759d9e0636f39d7a29e494f89ae49fc5bb26d7c37862212bd6340",
+      "reference_sha256": "4bd301ce7321a7d7ac162ecf303ac7bbb89666524ae7112463874def01d7b6ed"
+    },
+    {
+      "id": "ascend:00125",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "25221e36d1ebaa849edcbd9ba8d6e62c5e5f7b5ec4125ebbffc4442cd7efbe6a",
+      "reference_sha256": "4f2dae8375c1623d52a45086abab5b1d646ff103e3ac88a5a7ce6732301ab4f3"
+    },
+    {
+      "id": "ascend:00543",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "461233bc316729e946cab8866c10a86dcdae3c2d138f6110485faf33ed803020",
+      "reference_sha256": "e90c34af105c9a6c4c98f3df43c3579638b259587135d01a0b74bd8671fd92e6"
+    },
+    {
+      "id": "ascend:00582",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "93e224b4edd2ceb60d5fa1a216fc7dd37415717415a5b0203a3098f63b8841d4",
+      "reference_sha256": "19eb8e0c32f6ad06232f0bc9cf92bc25abd64d5d502dd1efdcda8595bd1431c1"
+    },
+    {
+      "id": "ascend:01222",
+      "dataset": "CAiRE/ASCEND",
+      "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+      "source_split": "test",
+      "audio_sha256": "07221cbc208747d476b0691cc45e10be22d9929e0164fec4ef4953e369b83e91",
+      "reference_sha256": "8512abd20abb5467fd156939234f0c9d3e6b707c3a504d8e5f139d65d6619b2c"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0310",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "267cd08ad2bc90ddc0328f9ed1371881f75dba0bb843133ccb5879e1050c4d26",
+      "reference_sha256": "0f2ff34fdeade70ed54980d87df4a594431f78f6dc189a49527bc55ca9dbffe5"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0286",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "a0c75d88a8806fc1ea5ac17dc01c173a410cde2d73bfb73b06e447eff9d70254",
+      "reference_sha256": "e7d33ba5ba3ac06f516f3ad7477fb6f2d0c372dbe3f7f4c41e615782d6f230e4"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0439",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "c4a00d03c3e8ae7bf1623612f742c7bf5f66083aa8ac9bb8c36ecb4d65f7b053",
+      "reference_sha256": "b74488477836baf28b4fe4a50639696124f6ceef6772d1143cdb99b4897d299c"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0035",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "579dd5888939ea644fa53356ae608e132aa4af07ddc50eac01b5dcf95a5ee04a",
+      "reference_sha256": "691caf11b5f64147ac5f8d6d53b2806c63d8696ed9d3fde25e2f981f92869672"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0027",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "1232f5fabd409f3d8b443bf71cc7018e51a3dd7e757425294e70a6f902f91109",
+      "reference_sha256": "317616fd0794fc823a2f1f4e372cb65510508719c53c6e1707c18b49fc10188f"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0120",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "9efa48acc4b05deaf4f439ee317ce2b4c2f56ebc1478f30149469eaeccd79320",
+      "reference_sha256": "6a013889bd62fdadb32c0df9e2d3a67134c711dbca015d4fef444db456543fd4"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0256",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "e3efbd5f3722f4dcdc5fb9bdbfe35ec3dbf8f16e6058754a9e299c0977074526",
+      "reference_sha256": "a0d231ab692abb87d05eda76af163b9c5d4ffedb05bb8f5436caf14a7cb0ad8f"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0467",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "2f7e0ee0d532de311005f7e36457b440282d382c1c2405875e2e667f156d6a01",
+      "reference_sha256": "b4e02180d807971d5b6558e196d885136d25384b568f8a76d5c88bd287364419"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0020",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "604b7e1745b12baede7af044bbd2c765861f66b9dca6e3f724db2cfe02ac50e6",
+      "reference_sha256": "49036780eee04890b0bef65618fde0cbe865acde796b6f050706a388391e406e"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0222",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "3500264b85e07d49a2f2028fafb22fd421a93c350c322291160264eadfc0ba8d",
+      "reference_sha256": "92db7424706e216a6fa063f4a47497dfe4dcca04294be94ef931e5c0d36b9aad"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0448",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "ea56f173f4456ecc00808fcac57fade7fcf9d9c18bc6b0d286ba021d86537ee0",
+      "reference_sha256": "641cff0607d4b5882aec81c58c7810dd07433f25b54db309ad5f0226ad1c9a05"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0045",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "d491624cea2d33170f641a237f9c38b6522af6f2fc8c6ea8bd39d26144506bf4",
+      "reference_sha256": "b5f1ccc6e930bf507abecf95bf00a202adcd9fe87fa1e4a5bde3af331847b56f"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0263",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "d620de2805df0d237aba8be3bc7b9159f1d0dfdf129fe8814332c95f1187499c",
+      "reference_sha256": "958a6b1112a49214ffb298a1308fb67bab3c32ddc59c4a4b6db4c4ddfb42484b"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0311",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "a9cfdc045777b33716df1346dfe8dba0093eb73cc1be23285afa7ce26bb0f820",
+      "reference_sha256": "2c00fb84d541556c37f3f4f0e1fd0671f802dc0d7fb88fb566b74694c98d2368"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0276",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "bb90e62caae097b88c865b5d48ff32210deb0fbfcce2a77311fded5bcf056c57",
+      "reference_sha256": "0a5b6ca1b474baa5d88dfbd2e5f3f7946d5de8cdd26e53a993c6f6c5f1aafda7"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0063",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "1077ff3a876ba89ca27e71b63dcd07ef936be138d7700e7751c4b14f5a05678f",
+      "reference_sha256": "78bf1b3688c8f6e620ce82afce68eaa691b94e73686c23bafc1817ed2dc3632e"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0022",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "08c5661a4ce11ed0784126a36f5c555ce0de11cdb43d126a17ae9140aceda9fc",
+      "reference_sha256": "d144ebb432b9373c12f79c2177e0fb52f473da0018c68e0cc62c9e497d371549"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0119",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "9a97cbfa25619867c57264eae2c863d960d3e2ce467d8d385650c9e8c851b563",
+      "reference_sha256": "e39bce01dad632d1f38684a915e05751878e4c191cc5603e82bcbe702a0c7025"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0017",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "5047a81ec1c04cd1cd6eb8908bac8ce17fda91079c3b053d7095c8e368842402",
+      "reference_sha256": "46ac8bc877e4cfd5504ccaa9f61ac43489b7a17ea2a2cf8b5374dfd84f695ef8"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0040",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "178d358a9283df8c735f5ed0489666578151103dd0520e66932e110e95d7d915",
+      "reference_sha256": "c81297eaceaabe221fec50fc7de3961aa10a35075ed8c11d6da19746531a4ecd"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0029",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "60bdd7d4ce99aa4246df64f53f79b24b3cb249d8a83b93c355da7002a9659a2e",
+      "reference_sha256": "c7cd475f8a82307bfd44a322e1d7497033669b6deefc10cc84f20b8b66f07046"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0054",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "1d34cf4e671e960499c8f822fcaa4187b5dd25fff79031100e9d6d0874ea6da5",
+      "reference_sha256": "c8200d683d4db7fdc612db7953637735f1c66d3b6c447dee72da73a05d9ba743"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0112",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "bf0ddb7e1f9c5d6cd1e254a545fabc38a086529e0136790a9011a636d15ddb85",
+      "reference_sha256": "2649c9166d55b825036329e2cdc1c32fa159f794633bcf1269fc35763adf524c"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0297",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "fb10e7304f2f69aec30cb1719b2ff6de369d9ca318912a82cb5541b04c3f4016",
+      "reference_sha256": "cc12a3333d119f0d5ba0471b19e1e4b1bb249d4c236b1f2fda6174b2dc3c0d14"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0018",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "0406deb752f0cd99b6bbd6a9ffbff098cd922e69ccad68f568a3d10abf711d3e",
+      "reference_sha256": "e34db4477886b068d03a6683c55feb5edf7414c3d02067942660eacec402b699"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0065",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "4c2897659b00c11ed037f948a337a31fcbe61b821a79c56b41f55a0c6fca2982",
+      "reference_sha256": "fc9e5f9034a25edf3fb8982fb8c4fa3d9ff1e20439fe1c3a32278a0ef6230396"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0257",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "17abf331bd613963c7ba9cf4ee3910a8c462a61e8cba68b68a048e934927946a",
+      "reference_sha256": "41950ff9bbddae9c7947556c7c9bc60fd11135e7f6d0bbbbcdd4f21ec20d3401"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0465",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "3215e409ea45aa96237ba5292b8864850caf27b5324bb9dac42446744888c587",
+      "reference_sha256": "971b6b8fdf1aa8c7a12365ca723576507acd82fcad460d480f47fcca6b8e7b7c"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0069",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "b741623ad4680cf84d29ed18bb4555c90796a77b26c661e85c09afccd693010d",
+      "reference_sha256": "878363ad41187613684059b4ba788de45b1276669c455c439cf7de4ffe38b66b"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0053",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "15a3080b59385c062f215b42ad3c51b38fa754cae826d0408eafb44128092648",
+      "reference_sha256": "48155bd8efc4dae1725c26abacafe62ae0bb86931951b528a9ef5de1529ddd41"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0495",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "a0dab834e6332dc9df884e139729421a69ee581fc07149424776125b28aec6b5",
+      "reference_sha256": "9e3b38939a0bb58b6f26a319510a25aaab3db015bcf8ede707ae467c656b5cff"
+    },
+    {
+      "id": "aishell4:L_R003S01C02-0062",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "ab57dac797538f971991469cd07e7aeb0ae86dc781637bd384e16a12d26eacb3",
+      "reference_sha256": "5a844844de7b10114037539920d466e327d081e94f6a5aff57248a8f89faf598"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0242",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "86c8e21d3a94edc1410166d1bc1dbb06e64518969390ccc3964607683e509eb4",
+      "reference_sha256": "d0b8aacec1f6f983619ef7e2ae2d7eba25fbb79804aa49fa29c7cd1caf0eea3d"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0265",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "d8c2c8ce81dc161b1f5a4f0860b3f8c342e901fbf20ce6810b998913cc6581ac",
+      "reference_sha256": "d7961bc70180dd626f3d112118b17129a50c1cb99423d2c3f8762ba62c3ff19b"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0170",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "a7dc27c91fed3b476bbfe119e012403e473aeb0ac70fc936a1a322f710ac42f1",
+      "reference_sha256": "f64432b9c2d27b5eedb616f0a71b4eb0786f176aa5695b6ce81effebf53afe76"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0095",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "a7e437f226207746edaa94d55acf8c0bf9a2c8eba0237b1134db139e8cf86920",
+      "reference_sha256": "69df46428e7cb373e05ce9797fc094914376b3754f5b271f83af109d8a2e5f24"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0032",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "cec91f1edb1ee3b159faf3c03573738e282972b6a0c2953c8335573c89f0ff91",
+      "reference_sha256": "a8ce2e595202e5c498a043cddfe370c78fd2212b443d45659610970ebafb53fb"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0060",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "333388ab6ce06db7a7deeec476ac0a659bf37dfab185fb00572db733868ae012",
+      "reference_sha256": "43e8ce8a63fdd721351f576f0792f5bc6b92a0ee2bc4f7ca48a8cf99d3a43e41"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0071",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "c6f9681fe9ec1e3a7b8cdc8516dee320e9f2b44d0da1fa444a05d4de379d4e64",
+      "reference_sha256": "ee47fc0bd9421179aeea254441a8d775fb80925fec84e76ca62949d82543907f"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0145",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "8ef70184ef1f9c16e9c4630d987c163ad6fe224c96c22d2aa5769ac91c8452f3",
+      "reference_sha256": "3f0dba24359abee87e2144d3ce236768f24a296d9ef2ccfd67786bcd4cb4a4aa"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0238",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "83c146a16ee0a533cc58eea4f3479ae2dc39bdbada436b677a40de8331a9bd16",
+      "reference_sha256": "062cc95298061722e89085dd39140c2d44f17042481457064cce25d0b1e7879f"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0199",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "55fab648a4926dfbf5e07fe84a8ac5b17c048e855e19c62757b9b87e77435777",
+      "reference_sha256": "f29c0f9ef8acd0140f65b789205075ed0e588ffd814d97bb80263162b2ccde1e"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0057",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "1988f550007cbd67030948e8f71e686f0954d8b1a799385258e91c93018b181f",
+      "reference_sha256": "5bcda0ebf3f3f4e37115df40216e07d6a3b9ee5c46ed297be07db64783f3424b"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0074",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "805af1ae881b157de19c15480d1c6dceb10ad07baab72462ba32f1bf93ae741f",
+      "reference_sha256": "d983f0c88c849bce50b45f4eb8a30f173ffbac7c374177cc7044a434d6e040e7"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0016",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "43bd0d079485b8c38d44cc5bb955c6170af76d059c16c6ac8bfbd8ec52472ef1",
+      "reference_sha256": "30c6435bdbe40719d242b11083b8eaf1276fcd397ad4ebc3b7282c80acbb96d2"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0084",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "7241e4b1f32d39a96618f3058ccd9addf6a175a550c2690714c919075cce9e6a",
+      "reference_sha256": "2cbaf88660c5a83d5eb105f09d924032849412c3aeda012ce7da7aecfda24a57"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0206",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "ca9b900192abb6a92c0ada1fa3f60d8cbbfcc92f2e62547fca629da88bab4d61",
+      "reference_sha256": "aac8c31f74c61ae1807a427eaa5046d768955cfdbbdc8b6b9a31bd51b5b7efd2"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0058",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "78a0a8827c207e3c58a280698dea34707fc07a5a938bac2883011e2c40dae393",
+      "reference_sha256": "ba0d2350bb5ae7e28bab34a4875643f8a89892d963ae97b04f228e6e442148f2"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0070",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "d4da3c79eb600f3897e5b31b50b32ce7ed8f38d1779ad92761ea5bdeb0a44df1",
+      "reference_sha256": "1dc33fa4b3b4ef97f3630bda557d2f489faf626964d05c1d25bdf1da4c7ecbbb"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0174",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "435e92ba5a2329e177060619b60fd63bef485c6ffb41fc54d173fa4bf452d310",
+      "reference_sha256": "04c5ecb3531289682856c27f8c4046fba7b98f4cc6c6bce89c2ea95892d3d9fc"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0135",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "faea2d5e80e5c8ff4e8f04934608dc80f0bef323a3ed1509844f1a95a5ea8a5a",
+      "reference_sha256": "f8045d25a1c012a3a04cf1be67e15b62f7361487d89cfa8053c633cf8e8394c8"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0218",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "4eb97e156727c84dc2a8e04a967f019e0544767c40edb73d09470abbd9b9406f",
+      "reference_sha256": "dedd5019a0004b5ce2edda0ff990f90ec29ec2cbb203c26c5d20a53cf66ea65e"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0241",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "9e3e386e4d2274b371e45707d34e74af28ac0fd826e6f297e23d087e3e56d5d9",
+      "reference_sha256": "c1fe1976b35b61a17027e92946d7ca9ee0a0af1830ede1ed93f8857b8f041ac5"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0075",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "e1f5d2384264f93717644729430fa6fd502be118773d828434d9ef649e6a10df",
+      "reference_sha256": "c8cce9279b6b40ad1c3675cfaa42c952efab22bd8c5587a357c3226a71ee7ca9"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0021",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "66fbce3c67fa275fff98513c645bbc41cb9f367eebe2c891fc1ec5a6181e6686",
+      "reference_sha256": "27fab941fe2657f09b4013633a49bb4fd83690afcfaee06fa18fdec685bab498"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0097",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "3248db25ff32476fe2f7093a027ce14607e5e525ad839e1724a96889601627c0",
+      "reference_sha256": "925c35dd1ac164ddd41ccd6c257b39c6ae9cc9d566ef9efd0a767e7a1a55d809"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0190",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "20f398b9bd9ecd1b61834cf97f86766789ba2e0649750c67fadb73671f5a6a75",
+      "reference_sha256": "a49a7612e32ce9fcbd26b63a9c1c379d8686a3831ef481236babbc9a45b6f68c"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0056",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "4ecc6e9a93f66ff564525b3ffbf130d7a16e62e1236ee78a0bb5371da4b9fbc8",
+      "reference_sha256": "f23100e865df16cf4b2b99cef611340aae51dcf15f68f5c5cabeecd971924952"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0114",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "02b87f5ad91e9c5c463d8d821f220574ca3d2162fed5d2af9e6970b0a057cbbc",
+      "reference_sha256": "6c04adb0b240971ef88b5703e7593adb7f11b47ee706e568b3f0839fbb122fb5"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0177",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "81a674da3836ae4841e579b7b5d2bdcc2c07a1ba87be781d724255e5a638b0e1",
+      "reference_sha256": "e5deda515b7e75430d8627f7040779523b4da68a794eb9101f2d1745b5abb4ea"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0006",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "b6b8d85b1f6f801678023a7b8832c4c4e0a4b5e7bb74fbcec757e518a2ffee09",
+      "reference_sha256": "32ceddce4f4a6b7576a41dea7cd537dc00a0f8ffed49b354707d9b70b8a384d7"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0033",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "4d254e799beeefe342f7012e32a0f01ed7b845ffc6a63411405a55b19a5a9822",
+      "reference_sha256": "41d1f337fb8dc0305d03c58234f4a84e125e574b9b6caccd318d9e6c7f7e41a7"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0055",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "7e558796d6d9454dad777a9feaec47d43c7d032adc5aaf8d4c35a8879c184e62",
+      "reference_sha256": "3e8d78fd3438e7ee09fbf226a1792582e0172b1c0a868642fd9e2196b3cf11a2"
+    },
+    {
+      "id": "aishell4:S_R004S01C01-0077",
+      "dataset": "AISHELL/AISHELL-4",
+      "revision": "aada72727856313b19d4a030383c426364931dbf",
+      "source_split": "test",
+      "audio_sha256": "ac5089b60106f053c3f6cc2f64487e36568311542de0dcb595030268b68fb042",
+      "reference_sha256": "e55775b0fb1b0a513b6af851d998ec5868171bdf6bd8205c4a20947453cb0768"
+    }
+  ]
+}
