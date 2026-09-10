@@ -98,6 +98,9 @@ Harness 的可执行 contract 已写入代码和测试：
 
 ## 产品能力
 
+**0.7.0 已接入正式流程的音频覆盖检查**：默认进行基础漏转提示；通过 `npm run setup:coverage` 配置本地识别器，再使用本地网关，可按预算进行双模型复核和有证据的补回。原始转写保留，未解决项支持回听。静态网页版仅做基础检查，详见[接入与使用说明](docs/coverage-release-0.7.0.md)。
+
+
 逐字稿纠错的实验工具链与真实录音结果见[美团面试实测报告](docs/meituan-transcript-live-test-2026-09-09.md)和[13个纠错工具的开源机制对照](docs/transcript-tool-design-2026-09-09.md)。该实验复用现有 Harness，通过 `scripts/transcript-repair.mjs` 运行，尚未接入浏览器默认转写流程；测试保留未解决项，未宣称追平飞书。
 
 ![言澜会议工作台](./docs/yanlan-workspace.png)

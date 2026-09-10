@@ -28,6 +28,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   relayPath: "/api/relay",
   contextHint: "",
   chunkSeconds: 10,
+  asrCoverageEnabled: true,
 });
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;

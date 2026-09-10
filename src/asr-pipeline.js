@@ -1,4 +1,5 @@
 import { assessTranscriptionQuality, reconcileTranscriptBoundary } from "./asr-quality.js";
+import { replayCoverageSegment } from './asr-coverage-runtime.js';
 
 const DEFAULT_FALLBACK_CHUNK_SECONDS = 10;
 const DEFAULT_MINIMUM_CHUNK_SECONDS = 5;
@@ -11,6 +12,7 @@ export async function transcribePcmAdaptively({
   transcribe,
   fallbackChunkSeconds = DEFAULT_FALLBACK_CHUNK_SECONDS,
   minimumChunkSeconds = DEFAULT_MINIMUM_CHUNK_SECONDS,
+  reviewCoverage,
 }) {
   if (!(pcm instanceof Float32Array) || !pcm.length) return { rawSegments: [], segments: [], qualityEvents: [], reconciliations: [] };
   if (!Number.isFinite(sampleRate) || sampleRate <= 0) throw new TypeError("sampleRate must be a positive number");
@@ -34,7 +36,13 @@ export async function transcribePcmAdaptively({
     const result = await transcribe({ pcm: samples, startSeconds: absoluteStart, durationSeconds, depth });
     const resultSegments = transcriptionSegments(result);
     const assessment = assessTranscriptionQuality(qualityEnvelope(result, resultSegments), durationSeconds);
-    if (assessment.ok) return offsetSegments(resultSegments, durationSeconds, absoluteStart);
+    if (assessment.ok) {
+      const segments = offsetSegments(resultSegments, durationSeconds, absoluteStart);
+      if (!reviewCoverage) return segments;
+      const reviewed = await reviewCoverage({ pcm: samples, sampleRate, segments, startSeconds: absoluteStart, durationSeconds });
+      qualityEvents.push(...reviewed.events);
+      return reviewed.segments;
+    }
 
     const energy = assessment.reasonCode === "empty_transcript" ? pcmEnergy(samples) : null;
     if (energy?.silence) {
@@ -102,7 +110,8 @@ export function reconcileTranscriptSegments(values) {
 
 export function replayTranscriptReconciliations(values, reconciliationLedger) {
   if (!Array.isArray(reconciliationLedger)) return null;
-  const sources = normalizedTranscriptSegments(values);
+  let sources;
+  try { sources = normalizedTranscriptSegments(values); } catch { return null; }
   const segments = sources.map((segment) => ({ ...segment }));
   for (const entry of reconciliationLedger) {
     const segmentId = Number(entry?.segmentId);
@@ -237,6 +246,7 @@ function comparableSpeaker(value) {
 
 function normalizedTranscriptSegments(values) {
   return (values || [])
+    .map(replayCoverageSegment)
     .map((segment, sourceIndex) => ({
       ...segment,
       speaker: String(segment?.speaker || "发言人 1"),

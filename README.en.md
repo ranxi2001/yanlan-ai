@@ -19,6 +19,9 @@ Yanlan is a browser-first, self-hostable recording, transcription, and meeting-i
 
 **Our goal is to make Yanlan the first-choice open-source Agent Harness for recording-to-knowledge workflows.**
 
+
+**0.7.0 integrates audio coverage checks into the production pipeline.** Basic omission warnings are enabled by default. Run `npm run setup:coverage`, then use the local gateway for budgeted SenseVoice/MiMo review and evidence-backed repairs. Original ASR is retained. Static hosting provides basic checks only; see the [integration notes](docs/coverage-release-0.7.0.md).
+
 ## Why Yanlan Is an Agent Harness
 
 A model wrapper asks a model for an answer. An Agent Harness owns the control loop around that model: typed Responses items, strict tools, exact `call_id` correlation, immutable run state, budgets and cancellation, privacy-minimized runtime metadata traces, completion invariants, and deterministic finalizers.

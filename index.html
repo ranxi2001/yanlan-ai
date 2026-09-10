@@ -159,6 +159,7 @@
             <div class="field field-wide"><label for="asrApiKeyInput">MiMo API Key</label><div class="key-input-row"><span class="secret-input"><input id="asrApiKeyInput" type="password" placeholder="sk-..." maxlength="8192" autocomplete="off" aria-describedby="asrConnectionResult" /><button class="toggle-key-button" data-key-input="asrApiKeyInput" type="button" title="显示或隐藏密钥" aria-label="显示或隐藏 MiMo 密钥"><i data-lucide="eye"></i></button></span><button class="secondary-button connection-test-button" id="testAsrButton" type="button" title="发送 1 秒测试音频并验证当前配置" aria-label="测试 MiMo 连接" aria-describedby="asrTestDescription asrConnectionResult"><i data-lucide="plug-zap"></i><span>测试</span></button></div><span class="visually-hidden" id="asrTestDescription">发送 1 秒低音量测试音频，可能产生极少量 API 用量。</span><p class="connection-test-result" id="asrConnectionResult" role="status"></p></div>
             <label class="field"><span>语音模型</span><input id="asrModelInput" value="mimo-v2.5-asr" /></label>
             <label class="field"><span>实时分段</span><select id="chunkSecondsInput"><option value="5">5 秒</option><option value="10" selected>10 秒</option><option value="15">15 秒</option></select></label>
+            <label class="field field-wide"><span><input id="asrCoverageInput" type="checkbox" checked /> 检查转写遗漏</span><small>基础检查不增加远端请求；本地网关配置双模型复核后，可按预算补听疑难片段并补回有一致依据的内容。</small></label>
           </div>
         </section>
         <section class="settings-section">

@@ -18,6 +18,7 @@ import {
   transcribeAudioWithRetry,
 } from "./api.js";
 import { assessTranscriptionQuality } from "./asr-quality.js";
+import { createCoverageSession, localCoverageScout } from './asr-coverage-runtime.js';
 import { reconcileTranscriptSegments, transcriptionQualityError, transcribePcmAdaptively } from "./asr-pipeline.js";
 import { createStreamingAudioDecoder, isStreamingAudioOpenError, mapAsyncIterableWithConcurrency } from "./audio-stream.js";
 import {
@@ -93,6 +94,7 @@ const elements = {
   testChatButton: $("#testChatButton"), chatConnectionResult: $("#chatConnectionResult"),
   chatProtocolInput: $("#chatProtocolInput"), chatPathInput: $("#chatPathInput"), contextHintInput: $("#contextHintInput"),
   transportModeInput: $("#transportModeInput"), relayPathInput: $("#relayPathInput"), transportHelp: $("#transportHelp"), shareDialog: $("#shareDialog"),
+  asrCoverageInput: $('#asrCoverageInput'),
   clearKeysButton: $("#clearKeysButton"), importKeysButton: $("#importKeysButton"), exportKeysButton: $("#exportKeysButton"), importKeysInput: $("#importKeysInput"),
   shareUrlInput: $("#shareUrlInput"), shareHint: $("#shareHint"), copyShareButton: $("#copyShareButton"),
   copySharePrimaryButton: $("#copySharePrimaryButton"), downloadShareButton: $("#downloadShareButton"), toast: $("#toast"),
@@ -1105,7 +1107,9 @@ async function processStoredAudio(
 
 async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = audioDurationOrNull(meeting.duration), processingConfig = { ...state.config }, signal) {
   throwIfSignalAborted(signal);
+  meeting.asrCoverageMode = processingConfig.asrCoverageEnabled === false ? 'off' : localCoverageScout(processingConfig) ? 'local' : 'basic';
   if (processingConfig.asrProtocol === "openai-transcriptions") {
+    meeting.asrCoverageMode = 'unsupported';
     updateMeetingTaskProgress(meeting, "正在上传并转写音频");
     const result = await transcribeAudioWithRetry({ config: processingConfig, blob, fileName, language: meeting.language, signal });
     throwIfSignalAborted(signal);
@@ -1124,6 +1128,7 @@ async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = au
       throw new Error(`当前浏览器无法流式解码这段音频（${error.message}）。整文件兼容方式仅用于时长已知、不超过 ${Math.round(MAX_MIMO_FALLBACK_SECONDS / 60)} 分钟且不超过 ${Math.round(MAX_MIMO_FALLBACK_BYTES / 1024 / 1024)} MiB 的文件；请使用最新版 Chrome 或 Edge，或改用标准 Transcriptions 协议`);
     }
     updateMeetingTaskProgress(meeting, "正在使用兼容方式转写音频");
+    if (processingConfig.asrCoverageEnabled !== false) meeting.asrCoverageMode = 'unsupported';
     const result = await transcribeAudioWithRetry({ config: processingConfig, blob, fileName, language: meeting.language, signal });
     throwIfSignalAborted(signal);
     requireTranscriptionQuality(result, meeting.duration, meeting);
@@ -1136,7 +1141,7 @@ async function transcribeStoredBlob(meeting, blob, fileName, probedDuration = au
 
 async function transcribeStreamingBlob(meeting, blob, probedDuration, processingConfig, signal) {
   throwIfSignalAborted(signal);
-  const chunkSeconds = Math.max(15, Number(processingConfig.chunkSeconds) * 3);
+  const chunkSeconds = Math.min(30, Math.max(15, (Number(processingConfig.chunkSeconds) || 10) * 3));
   const decoder = await createStreamingAudioDecoder(blob, {
     chunkSeconds,
     maxDurationSeconds: MAX_MIMO_UPLOAD_SECONDS,
@@ -1145,6 +1150,13 @@ async function transcribeStreamingBlob(meeting, blob, probedDuration, processing
   const expectedDuration = audioDurationOrNull(decoder.durationSeconds) ?? audioDurationOrNull(probedDuration);
   if (expectedDuration !== null) meeting.duration = storedAudioDuration(expectedDuration);
   let completedSeconds = 0;
+  const reviewCoverage = createCoverageSession({
+    enabled: processingConfig.asrCoverageEnabled !== false,
+    durationSeconds: expectedDuration, chunkSeconds, scout: localCoverageScout(processingConfig), signal,
+    onProgress: seconds => updateMeetingTaskProgress(meeting, `正在检查转写遗漏 · ${formatTimestamp(seconds)}`),
+    transcribe: ({ pcm, startSeconds }) => transcribeAudioWithRetry({ config: processingConfig,
+      blob: encodeWav(pcm, decoder.sampleRate), fileName: `coverage-${Math.round(startSeconds * 1000)}.wav`, language: meeting.language, signal }, { attempts: 1 }),
+  });
   try {
     const results = await mapAsyncIterableWithConcurrency(decoder, ASR_REQUEST_CONCURRENCY, async ({ pcm, startSeconds, durationSeconds }, index) => {
       throwIfSignalAborted(signal);
@@ -1154,6 +1166,7 @@ async function transcribeStreamingBlob(meeting, blob, probedDuration, processing
           pcm,
           sampleRate: decoder.sampleRate,
           startSeconds,
+          reviewCoverage,
           transcribe: async ({ pcm: part, startSeconds, depth }) => {
             throwIfSignalAborted(signal);
             if (depth > 0) {
@@ -1194,6 +1207,33 @@ async function transcribeStreamingBlob(meeting, blob, probedDuration, processing
   } finally {
     decoder.dispose();
   }
+}
+
+async function reviewRecordedCoverage(meeting, blob, config, signal) {
+  const chunkSeconds = Math.max(5, Math.min(15, Number(config.chunkSeconds) || 10));
+  const decoder = await createStreamingAudioDecoder(blob, { chunkSeconds, maxDurationSeconds: MAX_MIMO_UPLOAD_SECONDS, signal });
+  const original = meeting.rawSegments;
+  const replacements = new Map(), events = [];
+  const review = createCoverageSession({ durationSeconds: meeting.duration, chunkSeconds, scout: localCoverageScout(config), signal,
+    onProgress: seconds => updateMeetingTaskProgress(meeting, `正在检查录音转写遗漏 · ${formatTimestamp(seconds)}`),
+    transcribe: ({ pcm, startSeconds }) => transcribeAudioWithRetry({ config, blob: encodeWav(pcm, 16000),
+      fileName: `coverage-${Math.round(startSeconds * 1000)}.wav`, language: meeting.language, signal }, { attempts: 1 }),
+  });
+  try {
+    for await (const chunk of decoder) {
+      const segments = original.filter(s => s.start_seconds >= chunk.startSeconds - .0001
+        && s.end_seconds <= chunk.startSeconds + chunk.durationSeconds + .0001);
+      if (!segments.length) continue;
+      const result = await review({ ...chunk, sampleRate: decoder.sampleRate, segments });
+      signal.throwIfAborted();
+      result.segments.forEach((segment, i) => replacements.set(segments[i], segment));
+      events.push(...result.events);
+    }
+    signal.throwIfAborted();
+    meeting.rawSegments = original.map(s => replacements.get(s) || s);
+    meeting.asrQualityEvents.push(...events);
+    meeting.asrCoverageMode = 'local';
+  } finally { decoder.dispose(); }
 }
 
 function requireTranscriptionQuality(result, duration, meeting) {
@@ -1736,12 +1776,17 @@ async function retryFailedPersistence(recorder) {
 async function transcribeLiveChunk(recorder, chunk) {
   recorder.meeting.asrQualityEvents ||= [];
   recorder.meeting.asrReconciliations ||= [];
+  // Live PCM may be 44.1/48 kHz. Keep the live path lightweight; the completed
+  // recording receives the same 16 kHz coverage pass as uploaded files below.
+  recorder.coverageReview ||= createCoverageSession({ enabled: recorder.config.asrCoverageEnabled !== false });
+  recorder.meeting.asrCoverageMode = recorder.config.asrCoverageEnabled === false ? 'off' : 'basic';
   let result;
   try {
     result = await transcribePcmAdaptively({
       pcm: chunk.pcm,
       sampleRate: chunk.sampleRate,
       startSeconds: chunk.start,
+      reviewCoverage: recorder.coverageReview,
       transcribe: ({ pcm, startSeconds }) => transcribeAudioWithRetry({
         config: recorder.config,
         blob: encodeWav(pcm, chunk.sampleRate),
@@ -1857,6 +1902,8 @@ async function finishStoppedRecording(recorder) {
       assertMeetingRunCurrent(meeting, finalizationController, meetingProcessingRuns, "Recording replay was superseded");
       meeting.rawSegments = transcription.rawSegments;
       meeting.segments = transcription.segments;
+    } else if (recorder.config.asrCoverageEnabled !== false && localCoverageScout(recorder.config)) {
+      await reviewRecordedCoverage(meeting, blob, recorder.config, finalizationController.signal);
     }
     if (!meeting.rawSegments.length) {
       meeting.status = "recorded";
@@ -2137,6 +2184,7 @@ function openSettings() {
   elements.chatProtocolInput.value = state.config.chatProtocol;
   elements.chatPathInput.value = state.config.chatPath;
   elements.transportModeInput.value = state.config.transportMode;
+  elements.asrCoverageInput.checked = state.config.asrCoverageEnabled !== false;
   elements.relayPathInput.value = state.config.relayPath;
   elements.contextHintInput.value = state.config.contextHint;
   renderTransportHelp();
@@ -2169,6 +2217,7 @@ function settingsConfigFromForm() {
     chatBaseUrl: elements.chatBaseUrlInput.value.trim(), chatApiKey: elements.chatApiKeyInput.value.trim(),
     chatModel: elements.chatModelInput.value.trim(), chatProtocol: elements.chatProtocolInput.value, chatPath: elements.chatPathInput.value.trim(),
     transportMode: elements.transportModeInput.value, relayPath: elements.relayPathInput.value.trim(), contextHint: elements.contextHintInput.value.trim(),
+    asrCoverageEnabled: elements.asrCoverageInput.checked,
   };
 }
 
@@ -2927,7 +2976,7 @@ function summaryRetryState(meeting) {
 }
 function correctionNotice(meeting) {
   const recovered = meeting.asrQualityEvents?.filter((item) => item.action === "split").length || 0;
-  const quality = recovered ? `<p class="correction-note"><i data-lucide="scan-search"></i>已细分复核 ${recovered} 个异常转写片段</p>` : "";
+  const quality = (recovered ? `<p class="correction-note"><i data-lucide="scan-search"></i>已细分复核 ${recovered} 个异常转写片段</p>` : "") + coverageNotice(meeting);
   const runUsage = meeting.agentRun?.usage || {};
   const agent = meeting.agentRun?.profile && Number(runUsage.modelTurns) > 0
     ? `<p class="correction-note"><i data-lucide="route"></i>Luna Agent · ${Number(runUsage.modelTurns)} 轮 · ${Number(runUsage.toolCalls) || 0} 次工具调用</p>`
@@ -2946,6 +2995,19 @@ function correctionNotice(meeting) {
   const accepted = correctionDetails ? `<p class="correction-note"><i data-lucide="spell-check-2"></i>${correctionDetails}</p>` : "";
   const rejected = meeting.rejectedCorrections ? `<p class="inline-warning">已保留原始文本：${meeting.rejectedCorrections} 个校正建议未通过安全校验</p>` : "";
   return `${quality}${agent}${canonicalReviewWarning}${unsupportedAgentWarning}${accepted}${rejected}`;
+}
+function coverageNotice(meeting) {
+  const events = meeting.asrQualityEvents || [];
+  const repaired = events.filter(e => e.action === 'coverage_repaired').length;
+  const pending = events.filter(e => e.action === 'coverage_pending');
+  const unavailable = events.some(e => e.action === 'coverage_unavailable');
+  const messages = [];
+  if (repaired) messages.push(`<p class="correction-note">已依据两路音频识别补回或修正 ${repaired} 个片段，原始转写保留在本机。</p>`);
+  if (unavailable) messages.push('<p class="inline-warning" role="status">本地音频复核未完成，已保留原文。请检查本地复核服务后重新转写。</p>');
+  else if (meeting.asrCoverageMode === 'basic') messages.push('<p class="correction-note">已启用基础漏转检查；双模型补回需使用已配置本地复核服务的网关。</p>');
+  else if (meeting.asrCoverageMode === 'unsupported') messages.push('<p class="correction-note">本次兼容转写未执行音频覆盖检查。</p>');
+  if (pending.length) messages.push(`<div class="inline-warning coverage-notice" role="status"><p>${pending.length} 个片段需要回听核对，纪要可能遗漏内容。</p><div class="evidence-list">${pending.map(e => `<button type="button" class="evidence-item" data-seek="${Number(e.start_seconds) || 0}"><time>${formatTimestamp(e.start_seconds)}</time><span>检查漏转或识别分歧</span></button>`).join('')}</div></div>`);
+  return messages.join('');
 }
 function analysisRunNotice(meeting) {
   const notices = [];

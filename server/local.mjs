@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
+import { createCoverageWorker } from './coverage.mjs';
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -22,12 +23,28 @@ const MIME_TYPES = new Map([
   [".woff2", "font/woff2"],
 ]);
 
-export function createLocalServer({ distDir = fileURLToPath(new URL("../dist", import.meta.url)) } = {}) {
+export function createLocalServer({ distDir = fileURLToPath(new URL("../dist", import.meta.url)), coverageWorker = createCoverageWorker() } = {}) {
   const root = path.resolve(distDir);
-  return createServer(async (request, response) => {
+  const server = createServer(async (request, response) => {
     setSecurityHeaders(response);
     try {
       const url = new URL(request.url || "/", "http://127.0.0.1");
+      if (url.pathname === '/api/coverage/scout') {
+        if (request.method !== 'POST') return json(response, 405, { error: 'Method not allowed' });
+        if (!validLocalRequest(request)) return json(response, 403, { error: 'Local same-origin requests only' });
+        if (request.headers['content-type'] !== 'application/octet-stream') return json(response, 415, { error: 'PCM16 required' });
+        const bytes = await readLimitedBody(request, 960000);
+        const lengths = String(request.headers['x-coverage-parts'] || '').split(',').map(Number);
+        if (!lengths.length || lengths.length > 3 || lengths.some(n => !Number.isInteger(n) || n <= 0 || n > 320000)
+          || lengths.reduce((a, b) => a + b, 0) * 2 !== bytes.length) return json(response, 400, { error: 'Invalid audio parts' });
+        const controller = new AbortController();
+        const cancel = () => { if (!response.writableEnded) controller.abort(); };
+        response.on('close', cancel);
+        try { return json(response, 200, await coverageWorker.scout(bytes, lengths, controller.signal)); }
+        catch { if (!response.destroyed) return json(response, 503, { error: 'Local coverage unavailable' }); }
+        finally { response.off('close', cancel); }
+        return;
+      }
       if (url.pathname === "/api/relay/status") {
         if (request.method !== "GET") return json(response, 405, { error: "Method not allowed" });
         return json(response, 200, { ok: true, service: "yanlan-local-relay" });
@@ -40,6 +57,8 @@ export function createLocalServer({ distDir = fileURLToPath(new URL("../dist", i
       else response.destroy();
     }
   });
+  server.on('close', () => coverageWorker.close());
+  return server;
 }
 
 async function relayRequest(request, response, requestUrl) {
@@ -195,4 +214,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const port = Number(process.env.PORT) || DEFAULT_PORT;
   const address = await listenLocalServer(server, { port });
   console.log(`Yanlan local gateway: http://${address.address}:${address.port}`);
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
+    server.closeAllConnections();
+    server.close();
+  });
 }

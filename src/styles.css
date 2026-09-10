@@ -2877,3 +2877,6 @@ textarea:focus-visible {
     transition-duration: 0.001ms !important;
   }
 }
+.inline-warning.coverage-notice { display: block; }
+.coverage-notice > p { margin: 0 0 8px; }
+.coverage-notice .evidence-list { max-height: 260px; overflow-y: auto; }

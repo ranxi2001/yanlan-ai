@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from 'node:crypto';
 import { mkdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -319,6 +320,12 @@ await page.route("https://gpt.example/v1/responses", async (route) => {
   await route.fulfill({ contentType: "application/json", body: JSON.stringify({ output: [{ type: "message", content: [{ type: "output_text", text: content }] }] }) });
   gptResponses += 1;
 });
+
+if (process.argv.includes('--coverage-only')) {
+  try { await verifyCoverageIntegration(browser, baseUrl); }
+  finally { await browser.close(); await developmentServer?.close(); }
+  process.exit(0);
+}
 
 if (process.argv.includes("--races-only")) {
   try {
@@ -1375,10 +1382,72 @@ try {
 
   assert.ok(browserErrors.some((message) => /status of 503/.test(message)));
   assert.deepEqual(browserErrors.filter((message) => !/Failed to load resource: the server responded with a status of 503/.test(message)), []);
-  console.log("Browser flow passed: connection tests, key JSON backup, semantic Chinese segmentation, crash recovery, ASR retries, meeting/interview workflows, cross-tab deletion tombstones, sharing, and responsive layout.");
+  await verifyCoverageIntegration(browser, baseUrl);
+  console.log("Browser flow passed: connection tests, key JSON backup, semantic Chinese segmentation, crash recovery, ASR retries, meeting/interview workflows, cross-tab deletion tombstones, sharing, responsive layout, and production coverage repair.");
 } finally {
   await browser.close();
   await developmentServer?.close();
+}
+
+async function verifyCoverageIntegration(browserHandle, appUrl) {
+  const coverageContext = await browserHandle.newContext({ viewport: { width: 1280, height: 900 } });
+  const coveragePage = await coverageContext.newPage();
+  const core = '今天会议讨论采购安排还有仓库盘点现在这些事情已经说完了';
+  const full = core + '，然后安排保洁部门清理小广告并把安全通道的垃圾清理干净。';
+  let reviews = 0, scans = 0;
+  try {
+    await coveragePage.addInitScript(() => localStorage.setItem('yanlan.config.v1', JSON.stringify({
+      asrBaseUrl: 'https://mimo.example', asrApiKey: 'coverage-test-key', asrModel: 'mimo-v2.5-asr',
+      chatBaseUrl: 'https://gpt.example/v1', chatApiKey: 'coverage-text-test', chatModel: 'test',
+      chatProtocol: 'chat-completions', chatPath: 'chat/completions', transportMode: 'relay', chunkSeconds: 10,
+    })));
+    await coveragePage.route('**/api/coverage/scout', async route => {
+      scans++;
+      const body = route.request().postDataBuffer(), lengths = route.request().headers()['x-coverage-parts'].split(',').map(Number);
+      let offset = 0;
+      const parts = lengths.map((frames, i) => {
+        const chunk = body.subarray(offset, offset + frames * 2); offset += frames * 2;
+        return { pcm_sha256: createHash('sha256').update(chunk).digest('hex'), text: i ? full.slice(35) : full.slice(0, 35) };
+      });
+      await route.fulfill({ json: { model: 'sensevoice-small-int8', parts } });
+    });
+    await coveragePage.route('**/api/relay?**', async route => {
+      if (!new URL(route.request().url()).searchParams.get('url').includes('mimo.example')) {
+        // Exercise correction failure recovery: repaired ASR must survive it.
+        return route.fulfill({ status: 503, json: { error: { message: 'test text service unavailable' } } });
+      }
+      const request = route.request().postDataJSON();
+      const wav = Buffer.from(request.messages[0].content[0].input_audio.data.split(',')[1], 'base64');
+      const seconds = (wav.length - 44) / 32000;
+      let text = core;
+      if (seconds < 29) { reviews++; text = seconds > 15 ? full.slice(0, 35) : full.slice(35); }
+      await route.fulfill({ json: { choices: [{ message: { content: text } }] } });
+    });
+    await coveragePage.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    await coveragePage.locator('#fileInput').setInputFiles({ name: 'coverage.wav', mimeType: 'audio/wav', buffer: createWavFixture({ seconds: 210 }) });
+    await coveragePage.waitForFunction(() => JSON.parse(localStorage.getItem('yanlan.meetings.v1') || '[]')[0]?.status === 'done', null, { timeout: 60000 });
+    const meeting = await coveragePage.evaluate(() => JSON.parse(localStorage.getItem('yanlan.meetings.v1'))[0]);
+    assert.equal(scans, 7); assert.equal(reviews, 2);
+    assert.equal(meeting.rawSegments.filter(s => s.asr_coverage).length, 1);
+    assert.ok(meeting.rawSegments.every(s => s.text === core));
+    assert.equal(meeting.segments.filter(s => s.text === full).length, 1);
+    assert.ok(meeting.correctionError);
+    await coveragePage.getByText(/已依据两路音频识别补回或修正 1 个片段/).waitFor();
+    assert.equal(await coveragePage.locator('#insightContent [data-seek]').count(), 6);
+    await coveragePage.screenshot({ path: fileURLToPath(new URL('../artifacts/coverage-production-desktop.png', import.meta.url)), fullPage: true });
+    await coveragePage.reload();
+    await coveragePage.getByText(/已依据两路音频识别补回或修正 1 个片段/).waitFor();
+    await coveragePage.locator('#settingsButton').click();
+    assert.ok(await coveragePage.locator('#asrCoverageInput').isChecked());
+    await coveragePage.locator('#asrCoverageInput').uncheck();
+    await coveragePage.locator('#saveSettingsButton').click();
+    assert.equal(await coveragePage.evaluate(() => JSON.parse(localStorage.getItem('yanlan.config.v1')).asrCoverageEnabled), false);
+    await coveragePage.setViewportSize({ width: 390, height: 844 });
+    await coveragePage.evaluate(async () => { await Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {}))); });
+    await coveragePage.screenshot({ path: fileURLToPath(new URL('../artifacts/coverage-production-mobile.png', import.meta.url)), fullPage: true });
+    assert.equal(await coveragePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    console.log('Coverage browser flow passed: default migration, exact audio hashes, bounded review, original preservation, correction failure fallback, reload, pending seeks, disable setting and mobile layout.');
+  } finally { await coverageContext.close(); }
 }
 
 async function verifyRetryReadDeletionRace(browserHandle, appUrl, audioFixture) {
